@@ -16,7 +16,10 @@
     "DhTerrainReadWaitMixin",
     "CullingRayScratchMixin",
     "DhRelativePositionMixin",
-    "DhQuadReuseMixin"
+    "DhQuadReuseMixin",
+    "DhCloudBatchMixin",
+    "DhCloudUniformMixin",
+    "DhCloudBarrierMixin"
   ],
   "injectors": {
     "defaultRequire": 1

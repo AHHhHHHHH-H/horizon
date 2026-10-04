@@ -2,7 +2,40 @@
 
 ## Starting point
 
-The first playable Java foundation is in the root README. Client optimization has priority. Vanilla gameplay, world formats and multiplayer behavior must be preserved; existing modpack compatibility is not required. Any language, renderer or architecture is in scope when measured gains justify it. Windows/Linux and Apple Silicon/Intel macOS are targets, with the M2 Pro/16 GB Mac prioritized.
+The first playable Java foundation is in the root README. Current implementation
+and performance work targets the physical **M2 Pro / 16 GB MacBook Pro**: 8
+performance cores, 4 efficiency cores and a 19-core GPU. Windows/Linux,
+NVIDIA/AMD and other Macs are deferred until this device has a convincing,
+repeatable gameplay improvement. Existing portable packs remain available.
+
+Vanilla gameplay, world formats and multiplayer behavior must be preserved;
+existing modpack compatibility is not required. Any language, renderer or
+architecture is in scope when measured gains justify it. Full Retina resolution,
+32 detailed chunks and 128-chunk distant terrain are the user's supplied workload;
+reducing those settings is a separate quality tradeoff, not proof of a faster
+renderer.
+
+The user's 4 October capture reports 84.27 average FPS, 48.18 slowest-1%-average
+FPS and 18.14 ms p99 at 3456×2234, OpenGL, FOV 110 and normal simulation distance
+12. About 81.59 seconds of frame intervals were accepted within 120.09 elapsed
+seconds; menu, paused or unfocused frames were excluded. Tick execution averages
+7.89 ms with no execution above 50 ms. Its 1,646 tick invocations correspond to
+82.3 seconds at 20 TPS, so the 13.71 observed invocation rate across the whole
+recording does not demonstrate an overloaded server. GPU time and movement route
+are unknown. Original captures remain private under `.local/user-baseline/`.
+
+Initial physical-Mac inspection verifies the existing Vulkan backend creates a
+MoltenVK 1.4.2 device on this GPU and renders a nonuniform demo-world framebuffer.
+This establishes an available Metal-backed path, not an FPS gain or complete
+visual equivalence. Matched private OpenGL/Vulkan measurements come first.
+
+A stationary 60-second warm-up exposed Minecraft's default AFK limiter: an
+otherwise unlimited recording settled at 29.96 FPS. That run is rejected as a
+renderer baseline. Private stationary instances now select the vanilla
+`minimized` inactivity option; playable defaults retain their normal idle power
+saving. Recorder metadata captures the option, effective limiter boundaries and
+throttled observations. The private benchmark checks active duration, sample
+files, unchanged settings and normal tick-manager state before accepting a run.
 
 Inspect both pinned game JARs locally, retain bytecode as the reference, and measure actual Minecraft workloads before selecting a subsystem to replace. The Rust face-count experiment establishes a small correctness/benchmark workflow; it does not identify a Minecraft bottleneck.
 
@@ -46,7 +79,7 @@ jfr summary .local/baseline.jfr
 jfr print --events jdk.ExecutionSample,jdk.GarbageCollection .local/baseline.jfr > .local/baseline-events.txt
 ```
 
-Collect CPU profiles, allocation/GC information, frame-time percentiles, server tick-time percentiles, and relevant GPU timings. JFR samples alone do not measure FPS or GPU cost. JVM compilation/warm-up, profiling overhead, world generation, and background activity must be controlled when comparing runs. The [core comparison](core-performance.md) now contains stationary Linux software-rendering observations; Mac GPU, movement/generation and populated dedicated-server measurements remain open.
+Collect CPU profiles, allocation/GC information, frame-time percentiles, server tick-time percentiles, and relevant GPU timings. JFR samples alone do not measure FPS or GPU cost. JVM compilation/warm-up, profiling overhead, world generation, and background activity must be controlled when comparing runs. The [core comparison](core-performance.md) contains stationary Linux software-rendering observations; [physical M2 Pro observations](m2-pro-performance.md) now include repeated renderer measurements and GPU pass timings. Movement/generation and populated dedicated-server measurements remain open.
 
 ## First native integration experiment
 

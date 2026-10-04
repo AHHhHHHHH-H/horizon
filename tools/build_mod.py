@@ -33,6 +33,10 @@ def test_metrics():
                     "dev.horizonlab.metrics.MetricsTest"], check=True)
     subprocess.run(["java", "-Xms32M", "-Xmx256M", "-XX:+UseZGC", "-XX:+UseCompactObjectHeaders", "-cp", str(destination),
                     "dev.horizonlab.metrics.MetricsTest"], check=True)
+    subprocess.run(["javac", "--release", "25", "-d", str(destination),
+                    str(SOURCE / "main/java/dev/horizonlab/metrics/VisualSettingsChanges.java"),
+                    str(SOURCE / "test/java/dev/horizonlab/metrics/VisualSettingsChangesTest.java")], check=True)
+    subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.metrics.VisualSettingsChangesTest"], check=True)
     budget_sources = [SOURCE / "main/java/dev/horizonlab/budget/TerrainBudget.java",
                       SOURCE / "test/java/dev/horizonlab/budget/TerrainBudgetTest.java"]
     subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, budget_sources)], check=True)
@@ -65,6 +69,14 @@ def build():
     dh = lock["projects"]["distanthorizons"]
     jars.append(runtime.fetch(dh["url"], ROOT / ".local/pack-cache" / dh["filename"],
                               dh["hashes"]["sha512"], "sha512"))
+    # Fabric Loader provides MixinExtras at runtime; compile against that exact embedded JAR.
+    loader = next(jar for jar in jars if jar.name == f"fabric-loader-{lock['fabric_loader']}.jar")
+    with zipfile.ZipFile(loader) as archive:
+        embedded = "META-INF/jars/mixinextras-fabric-0.5.5.jar"
+        extras = BUILD / Path(embedded).name
+        extras.parent.mkdir(parents=True, exist_ok=True)
+        extras.write_bytes(archive.read(embedded))
+        jars.append(extras)
     culling = lock["projects"]["entityculling"]
     jars.append(runtime.fetch(culling["url"], ROOT / ".local/pack-cache" / culling["filename"],
                               culling["hashes"]["sha512"], "sha512"))

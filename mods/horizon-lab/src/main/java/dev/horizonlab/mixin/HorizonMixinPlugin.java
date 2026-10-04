@@ -21,9 +21,32 @@ public final class HorizonMixinPlugin implements IMixinConfigPlugin {
     private static boolean cullingEmpty;
     private static boolean terrainReadWait;
     private static boolean cullingRayScratch;
+    private static boolean cloudBatch;
 
     @Override public void onLoad(String mixinPackage) {
         var loader = FabricLoader.getInstance();
+        try {
+            var properties = new Properties();
+            var cloudFile = loader.getConfigDir().resolve("horizon-cloud-batch.properties");
+            if (Files.exists(cloudFile)) {
+                try (var reader = Files.newBufferedReader(cloudFile)) { properties.load(reader); }
+            }
+            boolean requested = Boolean.parseBoolean(properties.getProperty("enabled", "false"));
+            dev.horizonlab.render.CloudBatchStatus.requested = requested;
+            boolean supported = loader.getModContainer("distanthorizons")
+                .map(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("3.3.4")).orElse(false)
+                && loader.getModContainer("minecraft")
+                .map(mod -> mod.getMetadata().getVersion().getFriendlyString().equals("26.3")).orElse(false)
+                && System.getProperty("os.name", "").startsWith("Mac")
+                && Set.of("aarch64", "arm64").contains(System.getProperty("os.arch", ""))
+                && !loader.isModLoaded("iris");
+            cloudBatch = requested && supported;
+            if (requested) LoggerFactory.getLogger("horizonlab").info(
+                "DH cloud batching: {} (requires Mac ARM, Minecraft 26.3, DH 3.3.4, no Iris; runtime requires M2 Pro Vulkan)",
+                cloudBatch ? "hooks enabled" : "unavailable");
+        } catch (Exception error) {
+            LoggerFactory.getLogger("horizonlab").warn("Cloud batching disabled: invalid configuration", error);
+        }
         var file = loader.getConfigDir().resolve("horizon-worker-pacing.properties");
         try {
             Properties properties = new Properties();
@@ -173,7 +196,10 @@ public final class HorizonMixinPlugin implements IMixinConfigPlugin {
     public static boolean cullingEmptyEnabled() { return cullingEmpty; }
     public static boolean cullingRayScratchEnabled() { return cullingRayScratch; }
     public static boolean terrainReadWaitEnabled() { return terrainReadWait; }
+    public static boolean cloudBatchEnabled() { return cloudBatch; }
     @Override public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        if (mixinClassName.endsWith("DhCloudBatchMixin") || mixinClassName.endsWith("DhCloudUniformMixin")
+                || mixinClassName.endsWith("DhCloudBarrierMixin")) return cloudBatch;
         if (mixinClassName.endsWith("DhWorkerPacingMixin")) return workerPacing;
         if (mixinClassName.endsWith("DhDebounceWaitMixin")) return debounceWait;
         if (mixinClassName.endsWith("DhPriorityDispatchMixin")) return dispatchRetry;

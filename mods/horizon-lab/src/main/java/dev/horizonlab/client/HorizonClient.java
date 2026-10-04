@@ -4,6 +4,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.platform.FramerateLimitTracker.FramerateThrottleReason;
 import dev.horizonlab.HorizonLab;
 import dev.horizonlab.metrics.Recording;
 import dev.horizonlab.metrics.Reports;
@@ -30,6 +31,11 @@ public final class HorizonClient implements ClientModInitializer {
     private static DistantTerrainBudget terrainBudget;
     private static long previousBudgetFrame;
     private static int targetFps = 60;
+    private static long limiterObservations;
+    private static long throttledObservations;
+    private static long afkObservations;
+    private static long cloudDrawsStart, cloudPassesStart;
+    private static Map<String, Object> visualSettingsStart = Map.of();
 
     @Override public void onInitializeClient() {
         KeyMapping benchmarkKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
@@ -103,14 +109,22 @@ public final class HorizonClient implements ClientModInitializer {
         context.put("empty_culling_whitelist", dev.horizonlab.mixin.HorizonMixinPlugin.cullingEmptyEnabled());
         context.put("interruptible_terrain_read", dev.horizonlab.mixin.HorizonMixinPlugin.terrainReadWaitEnabled());
         context.put("adaptive_target_fps", targetFps);
-        context.putAll(visualSettings(client));
+        visualSettingsStart = visualSettings(client);
+        context.putAll(visualSettingsStart);
         var device = RenderSystem.getDevice().getDeviceInfo();
         context.put("gpu", device.name());
         context.put("graphics_backend", device.backendName());
         context.put("graphics_driver", device.driverInfo());
+        context.put("frame_limiter_effective_fps_start", client.getFramerateLimitTracker().getFramerateLimit());
+        context.put("frame_limiter_reason_start", client.getFramerateLimitTracker().getThrottleReason().name());
+        cloudDrawsStart = dev.horizonlab.render.CloudBatchStatus.draws;
+        cloudPassesStart = dev.horizonlab.render.CloudBatchStatus.passes;
         context.putAll(dev.horizonlab.metrics.SoftwareContext.capture());
         frames = new Recording(label, "frames", output, seconds, context);
         previousStart = 0;
+        limiterObservations = 0;
+        throttledObservations = 0;
+        afkObservations = 0;
         if (client.getSingleplayerServer() != null) HorizonLab.startTicks(label, seconds, output, profile, "integrated", context);
         message("Recording " + seconds + " seconds. Close chat, keep the game focused, and run your route.");
         return 1;
@@ -124,6 +138,7 @@ public final class HorizonClient implements ClientModInitializer {
         context.put("vsync", client.options.enableVsync().get());
         context.put("fps_limit", client.options.framerateLimit().get());
         context.put("fps_limit_unlimited", client.options.framerateLimit().get() >= Options.UNLIMITED_FRAMERATE_CUTOFF);
+        context.put("inactivity_fps_limit", client.options.inactivityFpsLimit().get().getSerializedName());
         context.put("framebuffer_width", client.getWindow().getWidth());
         context.put("framebuffer_height", client.getWindow().getHeight());
         context.put("graphics_preset", client.options.graphicsPreset().get().toString());
@@ -142,6 +157,8 @@ public final class HorizonClient implements ClientModInitializer {
             catch (RuntimeException | LinkageError unavailable) { context.put("dh_capture_status", "unavailable"); }
         } else context.put("dh_capture_status", "not_installed");
         context.putAll(ShaderSettings.read(loader.isModLoaded("iris")));
+        context.put("dh_cloud_batch_requested", dev.horizonlab.render.CloudBatchStatus.requested);
+        context.put("dh_cloud_batch_enabled", dev.horizonlab.render.CloudBatchStatus.active);
         return context;
     }
 
@@ -165,6 +182,10 @@ public final class HorizonClient implements ClientModInitializer {
             previousBudgetFrame = now;
         }
         if (recording != null) {
+            var reason = client.getFramerateLimitTracker().getThrottleReason();
+            limiterObservations++;
+            if (reason != FramerateThrottleReason.NONE) throttledObservations++;
+            if (reason == FramerateThrottleReason.SHORT_AFK || reason == FramerateThrottleReason.LONG_AFK) afkObservations++;
             if (previousStart != 0) recording.add(now - previousStart);
             previousStart = now;
         }
@@ -182,18 +203,17 @@ public final class HorizonClient implements ClientModInitializer {
         frames = null;
         previousStart = 0;
         HorizonLab.finishTicks();
+        var limiter = Minecraft.getInstance().getFramerateLimitTracker();
+        recording.context.put("frame_limiter_effective_fps_end", limiter.getFramerateLimit());
+        recording.context.put("frame_limiter_reason_end", limiter.getThrottleReason().name());
+        recording.context.put("frame_limiter_observations", limiterObservations);
+        recording.context.put("frame_limiter_throttled_observations", throttledObservations);
+        recording.context.put("frame_limiter_afk_observations", afkObservations);
+        recording.context.put("dh_cloud_batch_draws_recorded", dev.horizonlab.render.CloudBatchStatus.draws - cloudDrawsStart);
+        recording.context.put("dh_cloud_batch_passes_recorded", dev.horizonlab.render.CloudBatchStatus.passes - cloudPassesStart);
         Map<String, Object> end = visualSettings(Minecraft.getInstance());
-        java.util.List<String> changed = new java.util.ArrayList<>();
-        for (var setting : end.entrySet()) {
-            // Adaptive duty cycle is expected to change; visual quality changes are separate.
-            if (!setting.getKey().equals("dh_runtime_ratio")
-                    && !java.util.Objects.equals(recording.context.get(setting.getKey()), setting.getValue()))
-                changed.add(setting.getKey());
-        }
-        for (String setting : recording.context.keySet()) {
-            if ((setting.startsWith("dh_") || setting.startsWith("iris_")) && !end.containsKey(setting))
-                changed.add(setting);
-        }
+        var changed = dev.horizonlab.metrics.VisualSettingsChanges.between(visualSettingsStart, end);
+        visualSettingsStart = Map.of();
         recording.context.put("visual_settings_end", end);
         recording.context.put("visual_settings_changed", changed);
         Reports.write(recording.finish()).whenComplete((path, error) -> {

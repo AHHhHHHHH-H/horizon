@@ -1,0 +1,90 @@
+{
+  "note": "Diagnostic overlap is not causation. GC and thread waits can overlap each other; sampled stacks can miss short work. Profiling intervals are not ordinary FPS measurements.",
+  "slow_frames": [
+    {
+      "render_thread_wait_overlap_ms": 0.0,
+      "render_thread_sample_leaf_methods": [],
+      "start": "2026-10-04T18:30:25.104841333Z",
+      "render_thread_sample_inclusive_methods": [],
+      "gc_pause_overlap_ms": 0.0,
+      "interval_ms": 43.896459
+    },
+    {
+      "render_thread_wait_overlap_ms": 0.0,
+      "render_thread_sample_leaf_methods": [
+        {
+          "samples": 3,
+          "method": "org.lwjgl.util.vma.Vma.nvmaCreateBuffer"
+        }
+      ],
+      "start": "2026-10-04T18:31:21.695948833Z",
+      "render_thread_sample_inclusive_methods": [
+        {
+          "samples": 3,
+          "method": "com.mojang.blaze3d.framegraph.FrameGraphBuilder.execute"
+        },
+        {
+          "samples": 3,
+          "method": "com.mojang.renderpearl.backend.vulkan.VulkanDevice.createBuffer"
+        },
+        {
+          "samples": 3,
+          "method": "com.mojang.renderpearl.backend.vulkan.VulkanGpuBuffer$Direct.<init>"
+        },
+        {
+          "samples": 3,
+          "method": "com.mojang.renderpearl.frontend.FrontendGpuDevice.createBuffer"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.common.render.blaze.wrappers.buffer.BlazeVertexBufferWrapper.uploadVertexBuffer"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.core.api.internal.ClientApi.renderLodLayer"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.core.api.internal.ClientApi.renderLods"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.core.dataObjects.render.bufferBuilding.LodBufferContainer.lambda$uploadBuffersAsync$0"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.core.render.RenderThreadTaskHandler$QueuedRunnable.run"
+        },
+        {
+          "samples": 3,
+          "method": "com.seibel.distanthorizons.core.render.RenderThreadTaskHandler.runRenderThreadTasks"
+        },
+        {
+          "samples": 3,
+          "method": "net.fabricmc.loader.impl.game.minecraft.MinecraftGameProvider.launch"
+        },
+        {
+          "samples": 3,
+          "method": "net.fabricmc.loader.impl.launch.knot.Knot.launch"
+        }
+      ],
+      "gc_pause_overlap_ms": 0.0,
+      "interval_ms": 63.974708
+    }
+  ],
+  "frame_events": 11408,
+  "slow_frame_threshold_ms": 25,
+  "schema": 1,
+  "profiling": true,
+  "original_mod_sha256": "804fd1777770e15d8d39911a708e828a028da36d3cb43d1bc2e1c7cddc318e64",
+  "fixture_sha256": "c4e31f8e0571b27821d65c2231f3e9c06cebf4820cb912af9c608b2f3e994739",
+  "gpu": "Apple M2 Pro",
+  "graphics_backend": "Vulkan",
+  "frame_csv_samples": 11409,
+  "limits": [
+    "One profiling capture with normal simulation; not an ordinary throughput comparison.",
+    "JFR frame events cover one fewer interval than the recorder CSV.",
+    "Samples identify DH terrain vertex-buffer upload inside Vulkan allocation during the 63.97 ms frame; this is a candidate, not proof of a general cause.",
+    "The first 43.90 ms diagnostic interval has no sampled stack and must not be attributed to GC or allocation."
+  ]
+}

@@ -25,7 +25,7 @@ class FixtureTimeout(RuntimeError):
         self.run = run
 
 
-def run_fixture(command, instance, environment):
+def run_fixture(command, instance, environment, timeout=240):
     # Keep all children of this private fixture in a controllable process group.
     process = subprocess.Popen(command, cwd=build_pack.ROOT, env=environment, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -37,7 +37,7 @@ def run_fixture(command, instance, environment):
             try: os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
             except ProcessLookupError: pass
     try:
-        output, _ = process.communicate(timeout=240)
+        output, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         stop_tree()
         try: output, _ = process.communicate(timeout=10)

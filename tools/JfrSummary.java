@@ -150,6 +150,105 @@ public final class JfrSummary {
             .reversed().thenComparingLong(Map.Entry::getKey)).map(e -> e.getValue().result(e.getKey())).toList();
     }
 
+    record Span(long start, long end) {}
+
+    static long coveredNs(List<Span> spans) {
+        var ordered = spans.stream().filter(s -> s.end > s.start)
+            .sorted(Comparator.comparingLong(Span::start)).toList();
+        long total = 0, start = 0, end = 0;
+        for (Span span : ordered) {
+            if (span.start > end) {
+                total += end - start;
+                start = span.start;
+            }
+            end = Math.max(end, span.end);
+        }
+        return total + end - start;
+    }
+
+    static final class Stall {
+        final Instant start, end;
+        final long intervalNs;
+        final List<Span> pauses = new ArrayList<>(), waits = new ArrayList<>();
+        final Map<String, Long> samples = new HashMap<>();
+        final Map<String, Long> inclusiveSamples = new HashMap<>();
+
+        Stall(RecordedEvent event) {
+            start = event.getStartTime(); end = event.getEndTime();
+            intervalNs = event.getLong("intervalNs");
+        }
+
+        void overlap(RecordedEvent event, List<Span> spans) {
+            Instant first = event.getStartTime().isAfter(start) ? event.getStartTime() : start;
+            Instant last = event.getEndTime().isBefore(end) ? event.getEndTime() : end;
+            if (!first.isBefore(last)) return;
+            if (spans.size() >= 4096) throw new IllegalArgumentException("Too many overlapping diagnostic events");
+            spans.add(new Span(Duration.between(start, first).toNanos(), Duration.between(start, last).toNanos()));
+        }
+
+        Map<String, Object> result() {
+            return Map.of("start", start.toString(), "interval_ms", intervalNs / 1e6,
+                "gc_pause_overlap_ms", coveredNs(pauses) / 1e6,
+                "render_thread_wait_overlap_ms", coveredNs(waits) / 1e6,
+                "render_thread_sample_leaf_methods", top(samples),
+                "render_thread_sample_inclusive_methods", top(inclusiveSamples));
+        }
+    }
+
+    /** Two bounded streaming passes, without expanding JFR class-loader graphs. */
+    static Map<String, Object> frameStalls(Path path) throws Exception {
+        var stalls = new ArrayList<Stall>();
+        long frames = 0;
+        try (var file = new RecordingFile(path)) {
+            while (file.hasMoreEvents()) {
+                var event = file.readEvent();
+                String type = event.getEventType().getName();
+                if (!type.equals("dev.horizonlab.FrameInterval")
+                        && !type.equals("dev.horizonlab.metrics.MacBenchmarkIntegration$FrameIntervalEvent")) continue;
+                frames++;
+                if (event.getLong("intervalNs") < 25_000_000) continue;
+                if (stalls.size() >= 4096) throw new IllegalArgumentException("Too many slow frames for bounded analysis");
+                stalls.add(new Stall(event));
+            }
+        }
+        if (frames == 0) throw new IllegalArgumentException("No private frame-interval events captured");
+        try (var file = new RecordingFile(path)) {
+            while (file.hasMoreEvents()) {
+                var event = file.readEvent();
+                String type = event.getEventType().getName();
+                boolean pause = type.equals("jdk.GCPhasePause");
+                boolean wait = type.equals("jdk.ThreadPark") || type.equals("jdk.JavaMonitorEnter")
+                    || type.equals("jdk.JavaMonitorWait");
+                boolean sample = type.equals("jdk.ExecutionSample") || type.equals("jdk.NativeMethodSample");
+                if (!pause && !wait && !sample) continue;
+                if (!pause) {
+                    var thread = event.getThread(sample ? "sampledThread" : "eventThread");
+                    if (thread == null || !threadName(thread).equals("Render thread")) continue;
+                }
+                for (Stall stall : stalls) {
+                    if (pause) stall.overlap(event, stall.pauses);
+                    else if (wait) stall.overlap(event, stall.waits);
+                    else if (!event.getStartTime().isBefore(stall.start) && event.getStartTime().isBefore(stall.end)) {
+                        var stack = event.getStackTrace();
+                        if (stack != null && !stack.getFrames().isEmpty()) {
+                            var method = stack.getFrames().getFirst().getMethod();
+                            stall.samples.merge(method.getType().getName() + "." + method.getName(), 1L, Long::sum);
+                            var methods = new java.util.HashSet<String>();
+                            for (var frame : stack.getFrames()) {
+                                var inclusive = frame.getMethod();
+                                methods.add(inclusive.getType().getName() + "." + inclusive.getName());
+                            }
+                            for (String inclusive : methods) stall.inclusiveSamples.merge(inclusive, 1L, Long::sum);
+                        }
+                    }
+                }
+            }
+        }
+        return Map.of("frame_events", frames, "slow_frame_threshold_ms", 25,
+            "slow_frames", stalls.stream().sorted(Comparator.comparing(s -> s.start)).map(Stall::result).toList(),
+            "note", "Diagnostic overlap is not causation. GC and thread waits can overlap each other; sampled stacks can miss short work. Profiling intervals are not ordinary FPS measurements.");
+    }
+
     static String json(Object value) {
         if (value == null) return "null";
         if (value instanceof String string) {
@@ -172,6 +271,10 @@ public final class JfrSummary {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--frame-stalls")) {
+            System.out.println(json(frameStalls(Path.of(args[1]))));
+            return;
+        }
         if (args.length != 1) throw new IllegalArgumentException("Usage: java tools/JfrSummary.java private-recording.jfr");
         System.out.println(json(summarize(Path.of(args[0]))));
     }

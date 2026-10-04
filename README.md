@@ -2,7 +2,18 @@
 
 Client-first performance research for Minecraft Java **26.3**, preserving vanilla gameplay rules. Any language or renderer may be used when measured gains justify it. Not affiliated with Mojang or Microsoft.
 
-**First playable release:** pinned Java performance packs, distant terrain, an original frame/tick recorder, and Mac/client/server starter downloads. The M2 Pro/16 GB Mac is the first testing target. A Rust rewrite or custom renderer has not been completed; no M2 FPS improvement has been measured yet.
+**Current focus: the physical M2 Pro / 16 GB Mac.** Initial matched renderer tests show 13–15% higher average FPS at 2560×1600 and 70 → 89 FPS in one full Retina terrain-view pair through Vulkan/MoltenVK. Repeated warmed-cache, movement and gameplay validation continue. [Measurements and limits](docs/m2-pro-performance.md). Work on NVIDIA, AMD, Windows and Linux is deferred.
+
+The playable foundation includes pinned Java performance packs, distant terrain,
+an original frame/tick recorder and starter downloads. The local `m2-metal`
+profile preserves the user's 32 detailed chunks and 128-chunk LOD through the
+game's Vulkan/MoltenVK backend. `m2-metal-batched` adds an original, opt-in cloud
+rendering change for this M2 Pro. Two prototype pairs improve roughly 84 → 96
+FPS at full Retina resolution, with identical frozen sky/cloud pixels. The
+production artifact confirms +14.1% in a fixed view and +24.7–25.3% in two
+matched flyover pairs. Isolated stalls and broader gameplay testing remain.
+The published 0.21.0 starter
+predates these local 0.22.0 profiles.
 
 ## Play on your Mac
 
@@ -14,13 +25,15 @@ If Prism is already installed, follow the [Mac import and first comparison guide
 
 Core and balanced also pass [macOS title/demo-world rendering probes](docs/client-graphics-smoke.md)
 on the hosted ARM64 software renderer, including readback, saves and clean exits.
-Physical M2 GPU performance and macOS 27 remain to be tested.
+Physical M2 GPU testing on macOS 27 is now underway; see the linked observations.
 
 | Profile | Full-detail chunks | Distant LOD radius | Suggested maximum heap |
 | --- | ---: | ---: | ---: |
 | baseline | 12 | none | 6144 MiB |
 | core-performance | 12 | none | 6144 MiB |
 | m2-balanced | 12 | 128 | 6144 MiB |
+| m2-metal (local Mac test) | 32 | 128 | 6144 MiB |
+| m2-metal-batched (M2 Pro experiment) | 32 | 128 | 6144 MiB |
 | adaptive (experiment) | 12 | 128 | 6144 MiB |
 | worker-pacing (experiment) | 12 | 128 | 6144 MiB |
 | adaptive-pacing (experiment) | 12 | 128 | 6144 MiB |

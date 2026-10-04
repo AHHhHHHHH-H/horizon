@@ -8,7 +8,7 @@ from pathlib import Path
 
 MATCH_FIELDS = ("minecraft", "kind", "os", "os_version", "architecture", "gpu", "graphics_backend", "graphics_driver",
                 "server_runtime_kind", "client_graphics_capture_status", "java_version", "heap_max_bytes", "framebuffer_width", "framebuffer_height", "render_distance",
-                "simulation_distance", "vsync", "fps_limit", "graphics_preset", "ambient_occlusion",
+                "simulation_distance", "vsync", "fps_limit", "inactivity_fps_limit", "graphics_preset", "ambient_occlusion",
                 "improved_transparency", "mipmap_levels", "entity_distance_scaling", "entity_shadows", "particles",
                 "clouds", "cloud_range", "fov", "world_difficulty", "dh_capture_status", "dh_rendering_enabled", "dh_renderer_mode",
                 "dh_lod_radius_chunks", "dh_horizontal_quality", "dh_vertical_quality", "dh_max_horizontal_resolution",
@@ -119,6 +119,9 @@ def compare(baseline, candidate):
                   if baseline.get(key) != candidate.get(key)]
     warnings = ["World, route, warm-up, shader state and LOD cache must also match; these are not verified by this tool."]
     warnings.extend(software_warnings(baseline, candidate))
+    for name, report in [("baseline", baseline), ("candidate", candidate)]:
+        if report.get("private_profiling_enabled"):
+            warnings.append(f"{name} includes private profiling overhead; keep separate from ordinary performance comparisons.")
     if baseline["kind"] == "ticks":
         warnings.extend(server_context_warnings(baseline, candidate))
         tick_mismatches, tick_warnings = compare_tick_states(baseline, candidate)
@@ -127,10 +130,14 @@ def compare(baseline, candidate):
         warnings.append("Tick durations exclude scheduler sleep. Observed TPS counts measured invocations, including frozen ticks, and includes recording time spent paused; tick execution capacity is not TPS.")
     if baseline["kind"] == "frames":
         for field in ["adaptive_budget_enabled", "adaptive_target_fps", "precise_worker_pacing", "debounce_queue_wait",
-                      "wakeable_idle_wait", "dispatch_retry_backoff", "tick_membership_dedup", "empty_culling_whitelist", "culling_ray_scratch", "terrain_position_arithmetic", "terrain_quad_reuse", "interruptible_terrain_read", "dh_thread_count", "dh_runtime_ratio"]:
+                      "wakeable_idle_wait", "dispatch_retry_backoff", "tick_membership_dedup", "empty_culling_whitelist", "culling_ray_scratch", "terrain_position_arithmetic", "dh_cloud_batch_requested", "dh_cloud_batch_enabled", "terrain_quad_reuse", "interruptible_terrain_read", "dh_thread_count", "dh_runtime_ratio"]:
             if field in baseline and field in candidate and baseline[field] != candidate[field]:
                 warnings.append(f"Experiment {field} differs: {baseline[field]!r} vs {candidate[field]!r}.")
         for name, report in [("baseline", baseline), ("candidate", candidate)]:
+            if "frame_limiter_throttled_observations" not in report:
+                warnings.append(f"{name} effective frame-limiter state was not captured; AFK throttling is unknown.")
+            elif report["frame_limiter_throttled_observations"]:
+                warnings.append(f"{name} includes {report['frame_limiter_throttled_observations']} frame-limiter throttled observations, including {report.get('frame_limiter_afk_observations', 'unknown')} AFK observations. Configured unlimited FPS does not override this limiter.")
             if report.get("dh_capture_status") not in ["available", "not_installed"]:
                 warnings.append(f"{name} distant-terrain configuration was not captured; quality equivalence is unknown.")
             if report.get("iris_capture_status") not in ["available", "not_installed"]:

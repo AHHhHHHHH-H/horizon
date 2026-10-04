@@ -160,11 +160,16 @@ def main():
     parser.add_argument("command", choices=["prepare", "demo"])
     parser.add_argument("--instance", type=Path, default=CACHE / "demo")
     parser.add_argument("--heap", default="4G")
+    parser.add_argument("--width", type=int, default=1280, help="Logical window width; Retina framebuffer can be larger")
+    parser.add_argument("--height", type=int, default=800, help="Logical window height; Retina framebuffer can be larger")
+    parser.add_argument("--fullscreen", action="store_true", help="Use the game's native fullscreen mode")
     parser.add_argument("--compact-headers", action="store_true", help="Enable Java 25 compact object headers for this demo process")
     parser.add_argument("--gc", choices=["default", "g1", "zgc"], default="default", help="Select a collector for this process; default leaves JVM policy in use")
     args = parser.parse_args()
     if not re.fullmatch(r"[1-9][0-9]*[MGmg]", args.heap):
         parser.error("--heap must look like 4G")
+    if not (64 <= args.width <= 8192 and 64 <= args.height <= 8192):
+        parser.error("--width and --height must be between 64 and 8192")
     manifest, jars, natives = prepare_client()
     if args.command == "prepare":
         return
@@ -179,7 +184,9 @@ def main():
                "--username", "HorizonDemo", "--version", manifest["id"], "--gameDir", str(instance),
                "--assetsDir", str(CACHE / "assets"), "--assetIndex", manifest["assetIndex"]["id"],
                "--accessToken", "0", "--uuid", "00000000000000000000000000000000", "--demo",
-               "--width", "1280", "--height", "800"]
+               "--width", str(args.width), "--height", str(args.height)]
+    if args.fullscreen:
+        command.append("--fullscreen")
     subprocess.run(command, cwd=instance, check=True)
 
 

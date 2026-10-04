@@ -1,0 +1,98 @@
+{
+  "gpu": "Apple M2 Pro",
+  "graphics_backend": "Vulkan",
+  "framebuffer_width": 3456,
+  "framebuffer_height": 2234,
+  "original_mod_sha256": "804fd1777770e15d8d39911a708e828a028da36d3cb43d1bc2e1c7cddc318e64",
+  "fixture_sha256": "8e9711a36f5ebd99bd81c65385aa58813f324b8642bbf75bc1222c30d3fb0dbb",
+  "production_cloud_batch": true,
+  "cloud_batch": {
+    "draws": 18463,
+    "passes": 998
+  },
+  "schema": 1,
+  "performance_measurement": false,
+  "protocol": "Frozen world ticks and DH wall clock after 120 seconds warmup; hidden HUD; control, production batch, control with five seconds settling per image.",
+  "rgb_regions_y_end_exclusive": {
+    "sky": [
+      80,
+      893
+    ],
+    "near_terrain": [
+      1340,
+      2234
+    ]
+  },
+  "readback_sha256": {
+    "cloud-image-control-a.png": "ba3caf0704a3d0a1c8914e3dc44f965e17c95ba36bb9fdd4ec4221151c3bbaf1",
+    "cloud-image-batched.png": "0c7ffc6c14313d2fef649817d037c95d1bf38f2884aa063716741551b0713eb4",
+    "cloud-image-control-b.png": "3a06c42a107a3916ad26f9965a4602b3fed79b9b8ff53510d1946a0c80f269e4"
+  },
+  "pairs": {
+    "control_a_vs_batched": {
+      "full": {
+        "maximum_channel_difference": 252,
+        "mean_absolute_channel_difference": 0.014238338887231009,
+        "changed_pixels": 36459,
+        "total_pixels": 7720704
+      },
+      "sky": {
+        "maximum_channel_difference": 0,
+        "mean_absolute_channel_difference": 0.0,
+        "changed_pixels": 0,
+        "total_pixels": 2809728
+      },
+      "near_terrain": {
+        "maximum_channel_difference": 0,
+        "mean_absolute_channel_difference": 0.0,
+        "changed_pixels": 0,
+        "total_pixels": 3089664
+      }
+    },
+    "control_a_vs_control_b": {
+      "full": {
+        "maximum_channel_difference": 253,
+        "mean_absolute_channel_difference": 0.026262371928777478,
+        "changed_pixels": 36131,
+        "total_pixels": 7720704
+      },
+      "sky": {
+        "maximum_channel_difference": 0,
+        "mean_absolute_channel_difference": 0.0,
+        "changed_pixels": 0,
+        "total_pixels": 2809728
+      },
+      "near_terrain": {
+        "maximum_channel_difference": 1,
+        "mean_absolute_channel_difference": 3.2365978954345846e-07,
+        "changed_pixels": 3,
+        "total_pixels": 3089664
+      }
+    },
+    "batched_vs_control_b": {
+      "full": {
+        "maximum_channel_difference": 229,
+        "mean_absolute_channel_difference": 0.0222054879969495,
+        "changed_pixels": 38818,
+        "total_pixels": 7720704
+      },
+      "sky": {
+        "maximum_channel_difference": 0,
+        "mean_absolute_channel_difference": 0.0,
+        "changed_pixels": 0,
+        "total_pixels": 2809728
+      },
+      "near_terrain": {
+        "maximum_channel_difference": 1,
+        "mean_absolute_channel_difference": 3.2365978954345846e-07,
+        "changed_pixels": 3,
+        "total_pixels": 3089664
+      }
+    }
+  },
+  "limits": [
+    "One fixed daytime view; no proof for other weather, camera height, movement or shaders.",
+    "Distant-cache generation continues and changes far terrain in both A/B and A/A comparisons.",
+    "Only private validation freezes simulation and clouds; playable renderer preserves normal simulation and time."
+  ]
+}

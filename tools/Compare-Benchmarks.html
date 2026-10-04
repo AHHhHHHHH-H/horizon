@@ -30,7 +30,7 @@
 </main>
 <script>
 'use strict';
-const SETTINGS=['minecraft','kind','os','os_version','architecture','gpu','graphics_backend','graphics_driver','server_runtime_kind','client_graphics_capture_status','java_version','heap_max_bytes','framebuffer_width','framebuffer_height','render_distance','simulation_distance','vsync','fps_limit','graphics_preset','ambient_occlusion','improved_transparency','mipmap_levels','entity_distance_scaling','entity_shadows','particles','clouds','cloud_range','fov','world_difficulty','dh_capture_status','dh_rendering_enabled','dh_renderer_mode','dh_lod_radius_chunks','dh_horizontal_quality','dh_vertical_quality','dh_max_horizontal_resolution','dh_transparency','dh_lod_shading','dh_lod_only_mode','dh_camera_quality_dropoff','dh_ambient_occlusion','iris_capture_status','iris_shaders_enabled','iris_shader_pack'];
+const SETTINGS=['minecraft','kind','os','os_version','architecture','gpu','graphics_backend','graphics_driver','server_runtime_kind','client_graphics_capture_status','java_version','heap_max_bytes','framebuffer_width','framebuffer_height','render_distance','simulation_distance','vsync','fps_limit','inactivity_fps_limit','graphics_preset','ambient_occlusion','improved_transparency','mipmap_levels','entity_distance_scaling','entity_shadows','particles','clouds','cloud_range','fov','world_difficulty','dh_capture_status','dh_rendering_enabled','dh_renderer_mode','dh_lod_radius_chunks','dh_horizontal_quality','dh_vertical_quality','dh_max_horizontal_resolution','dh_transparency','dh_lod_shading','dh_lod_only_mode','dh_camera_quality_dropoff','dh_ambient_occlusion','iris_capture_status','iris_shaders_enabled','iris_shader_pack'];
 const state={baseline:null,candidate:null},generation={baseline:0,candidate:0};
 let comparison=null,chartData=null;
 const $=id=>document.getElementById(id);
@@ -117,6 +117,7 @@ function compareReports(a,b){
   if(a.kind==='ticks'&&a.peak_players!==b.peak_players)differences.push({setting:'peak_players',baseline:a.peak_players??null,candidate:b.peak_players??null});
   const warnings=['World, camera route, shaders and terrain-cache warm-up still need to match. These are not verified by the captured settings.'];
   warnings.push(...softwareWarnings(a,b));
+  for(const [name,report]of [['Baseline',a],['Candidate',b]])if(report.private_profiling_enabled)warnings.push(name+' includes private profiling overhead; keep separate from ordinary performance comparisons.');
   if(a.kind==='ticks'){
     warnings.push(...serverContextWarnings(a,b));
     const tick=compareTickStates(a,b);differences.push(...tick.differences);warnings.push(...tick.warnings);
@@ -126,10 +127,12 @@ function compareReports(a,b){
     else if(JSON.stringify(a[key])!==JSON.stringify(b[key]))warnings.push('JVM '+key+' differs. Treat it as an explicit experiment variable.');
   }
   if(a.kind==='frames'){
-    for(const key of ['adaptive_budget_enabled','adaptive_target_fps','precise_worker_pacing','debounce_queue_wait','wakeable_idle_wait','dispatch_retry_backoff','tick_membership_dedup','empty_culling_whitelist','culling_ray_scratch','terrain_position_arithmetic','terrain_quad_reuse','interruptible_terrain_read','dh_thread_count','dh_runtime_ratio']){
+    for(const key of ['adaptive_budget_enabled','adaptive_target_fps','precise_worker_pacing','debounce_queue_wait','wakeable_idle_wait','dispatch_retry_backoff','tick_membership_dedup','empty_culling_whitelist','culling_ray_scratch','terrain_position_arithmetic','dh_cloud_batch_requested','dh_cloud_batch_enabled','terrain_quad_reuse','interruptible_terrain_read','dh_thread_count','dh_runtime_ratio']){
       if(key in a&&key in b&&JSON.stringify(a[key])!==JSON.stringify(b[key]))warnings.push('Experiment '+key+' differs.');
     }
     for(const [label,r] of [['Baseline',a],['Candidate',b]]){
+      if(!('frame_limiter_throttled_observations' in r))warnings.push(label+' effective frame-limiter state was not captured; AFK throttling is unknown.');
+      else if(r.frame_limiter_throttled_observations)warnings.push(label+' includes '+r.frame_limiter_throttled_observations+' frame-limiter throttled observations, including '+(r.frame_limiter_afk_observations??'unknown')+' AFK observations. Configured unlimited FPS does not override this limiter.');
       if(!['available','not_installed'].includes(r.dh_capture_status))warnings.push(label+' distant-terrain configuration was not captured; quality equivalence is unknown.');
       if(!['available','not_installed'].includes(r.iris_capture_status))warnings.push(label+' Iris state was not captured; shader equivalence is unknown.');
       if(Array.isArray(r.visual_settings_changed)&&r.visual_settings_changed.length){
@@ -197,6 +200,7 @@ function renderDetails(side){
   fields.push(['Rejected dispatch retry', r.dispatch_retry_backoff===true?'on':r.dispatch_retry_backoff===false?'off':'not captured']);
   fields.push(['Wakeable queue idle', r.wakeable_idle_wait===true?'on':r.wakeable_idle_wait===false?'off':'not captured']);
   if(r.kind==='frames')fields.push(['Tick membership deduplication',r.tick_membership_dedup===true?'on':r.tick_membership_dedup===false?'off':'not captured']);
+  if(r.kind==='frames')fields.push(['DH cloud batching',r.dh_cloud_batch_enabled===true?'on':r.dh_cloud_batch_enabled===false?'off':'not captured']);
   if(r.kind==='frames')fields.push(['Terrain quad reuse',r.terrain_quad_reuse===true?'on':r.terrain_quad_reuse===false?'off':'not captured']);
   if(r.kind==='frames')fields.push(['Terrain position arithmetic',r.terrain_position_arithmetic===true?'on':r.terrain_position_arithmetic===false?'off':'not captured']);
   if(r.kind==='frames')fields.push(['Culling ray scratch',r.culling_ray_scratch===true?'on':r.culling_ray_scratch===false?'off':'not captured']);

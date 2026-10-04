@@ -14,7 +14,11 @@ def main(collector="default"):
     BUILD.mkdir(parents=True, exist_ok=True)
     fixture = BUILD / "fixture.jfr"
     gc_flags = ["-XX:+UseZGC"] if collector == "zgc" else []
-    subprocess.run(["java", "-Xmx128M", *gc_flags, str(ROOT / "tests/java/JfrFixture.java"), str(fixture)], check=True)
+    classes = BUILD / "classes"
+    classes.mkdir(exist_ok=True)
+    subprocess.run(["javac", "--release", "25", "-d", str(classes),
+                    str(ROOT / "tools/JfrSummary.java"), str(ROOT / "tests/java/JfrFixture.java")], check=True)
+    subprocess.run(["java", "-Xmx128M", *gc_flags, "-cp", str(classes), "JfrFixture", str(fixture)], check=True)
     summary = json.loads(subprocess.check_output(
         ["java", str(ROOT / "tools/JfrSummary.java"), str(fixture)], text=True))
     events = json.loads(subprocess.check_output(
@@ -63,7 +67,12 @@ def main(collector="default"):
             for child in value:
                 no_weight_keys(child)
     no_weight_keys(summary)
+    frames = json.loads(subprocess.check_output(
+        ["java", "-cp", str(classes), "JfrSummary", "--frame-stalls", str(fixture)], text=True))
+    assert frames["frame_events"] == 1 and len(frames["slow_frames"]) == 1
+    assert 0 < frames["slow_frames"][0]["gc_pause_overlap_ms"] < frames["slow_frames"][0]["interval_ms"]
     print("Streaming JFR summary matches real JDK allocation counters, stack-sample counts, GC event counts, heap observations and escaped thread names.")
+    print("Frame/GC overlap and 10,000 seeded interval-union cases checked.")
 
 
 if __name__ == "__main__":

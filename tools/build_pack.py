@@ -19,6 +19,8 @@ PROFILES = {
     "baseline": {"title": "Vanilla baseline", "mods": ["fabric-api"], "render": 12, "lod": 0, "heap": 6144},
     "core-performance": {"title": "Full-detail performance comparison", "mods": CORE, "render": 12, "lod": 0, "heap": 6144},
     "m2-balanced": {"title": "M2 Pro balanced", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144},
+    "m2-metal": {"title": "M2 Pro Metal-backed renderer", "mods": CORE + ["distanthorizons"], "render": 32, "lod": 128, "heap": 6144, "backend": "vulkan", "fov": 110, "clouds": "false"},
+    "m2-metal-batched": {"title": "M2 Pro cloud batching experiment", "mods": CORE + ["distanthorizons"], "render": 32, "lod": 128, "heap": 6144, "backend": "vulkan", "fov": 110, "clouds": "false", "cloud_batch": True},
     "adaptive": {"title": "Adaptive terrain experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True},
     "worker-pacing": {"title": "Precise worker pacing experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "pacing": True},
     "adaptive-pacing": {"title": "Adaptive precise pacing experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True, "pacing": True},
@@ -77,6 +79,10 @@ def options(profile):
               "renderDistance": profile["render"], "simulationDistance": 12, "enableVsync": "false",
               "maxFps": 260, "guiScale": 2, "onboardAccessibility": "false",
               "preferredGraphicsBackend": json.dumps(profile.get("backend", "opengl"))}
+    if "fov" in profile:
+        values["fov"] = (profile["fov"] - 70) / 40
+    if "clouds" in profile:
+        values["renderClouds"] = json.dumps(profile["clouds"])
     return "".join(f"{key}:{value}\n" for key, value in values.items())
 
 
@@ -86,7 +92,8 @@ def overrides(profile_name, mod_bytes):
              "config/horizon-profile.txt": (profile_name + "\n").encode(),
              "options.txt": options(profile).encode()}
     experiment = any(profile.get(key, False) for key in ["adaptive", "pacing", "queue_wait", "dispatch_retry", "tick_dedup", "culling_empty", "culling_rays", "terrain_position", "quad_reuse"])
-    config = ROOT / "packs/config" / f"{'m2-balanced' if experiment else profile_name}.toml"
+    config = ROOT / "packs/config" / f"{'m2-balanced' if experiment or profile_name in {'m2-metal', 'm2-metal-batched'} else profile_name}.toml"
+    files["config/horizon-cloud-batch.properties"] = f"enabled={str(profile.get('cloud_batch', False)).lower()}\n".encode()
     files["config/horizon-adaptive.properties"] = (
         f"enabled={str(profile.get('adaptive', False)).lower()}\ntargetFps={profile.get('target_fps', 60)}\n").encode()
     files["config/horizon-worker-pacing.properties"] = (

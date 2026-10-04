@@ -2,8 +2,11 @@
 
 For the 16 GB M2 Pro, start with the published 0.21.0 packs. Core and balanced
 pass title/demo-world rendering and save/exit probes on the hosted macOS ARM64
-software renderer. Gameplay and FPS on this physical Mac remain unmeasured.
-The Linux software-rendering observations do not predict an M2 speedup.
+software renderer. [Physical M2 measurements](m2-pro-performance.md) now compare
+OpenGL with the bundled Metal-backed Vulkan path, including full Retina.
+Repeated gameplay validation continues; Linux software-rendering observations
+do not predict an M2 speedup. The new local `m2-metal` profile is built separately
+from the published starter below.
 
 ## Import after installing Prism
 
@@ -55,6 +58,13 @@ Warm each run for at least three minutes after entering the world and dismissing
 menus. Longer generation workloads may need more time. Press **F8** (possibly
 **Fn+F8**) in focused gameplay for a 120-second recording. Keep the view or route
 consistent and avoid menus during recording. After it finishes, save and quit.
+
+For a stationary comparison, select the game's **Minimized** inactivity FPS
+option on both sides; the default **AFK** option imposes a 30 FPS idle cap after
+one minute. Restore your preferred idle behavior after testing. New recordings
+capture effective limiter observations; older recordings do not establish that
+a configured unlimited cap stayed unlimited throughout a stationary run.
+
 Repeat three pairs in this order:
 
 | Pair | First run | Second run |

@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "performance_measurement": false,
+  "protocol": "Freeze world ticks and DH wall-clock cloud movement after 120 seconds warmup; hide HUD; render control, batched, control with five seconds settling per image.",
+  "gpu": "Apple M2 Pro",
+  "graphics_backend": "Vulkan",
+  "framebuffer": [
+    3456,
+    2234
+  ],
+  "fixture_sha256": "4385a40953ed82d88077ed3d5d63e904b4193e0bf44ea58f0ed37220b07c23ab",
+  "original_mod_sha256": "6828ab3385bde5a97cc46fa98a5122211f5ac4e2197da8ed9555c29393ebbba6",
+  "batch_draws_exercised": 18500,
+  "image_sha256": {
+    "cloud-image-control-a.png": "9a645c433f5dc0ed2795ad2f81690659dc1437110c780a2b3f5481186a09ace1",
+    "cloud-image-batched.png": "7bc48a6f9b115b84eea95d1f9a47fd72859e34eef5fe73db3c28a73a3394a84a",
+    "cloud-image-control-b.png": "f82b9cb66e081d1d35cd820b64d2ecdcc6f51ca7dbac1961ff77af24f951188f"
+  },
+  "rgb_difference_regions": {
+    "full": {
+      "y_pixels": [
+        0,
+        2234
+      ]
+    },
+    "sky": {
+      "y_pixels": [
+        80,
+        893
+      ]
+    },
+    "near_terrain": {
+      "y_pixels": [
+        1340,
+        2234
+      ]
+    }
+  },
+  "rgb_differences": {
+    "full": {
+      "control_a_vs_batched": {
+        "mean_abs_channel_difference": 0.00039249443228665847,
+        "root_mean_square_channel_difference": 0.09972327790283458,
+        "pixels_any_rgb_change_percent": 0.007486363937796346,
+        "pixels_over_8_levels_percent": 0.0017874017706157367,
+        "max_channel_difference": 69
+      },
+      "batched_vs_control_b": {
+        "mean_abs_channel_difference": 0.008503067423212529,
+        "root_mean_square_channel_difference": 0.2330295622442773,
+        "pixels_any_rgb_change_percent": 0.4726123420869392,
+        "pixels_over_8_levels_percent": 0.02376726267449186,
+        "max_channel_difference": 63
+      },
+      "control_a_vs_control_b": {
+        "mean_abs_channel_difference": 0.008845480066757297,
+        "root_mean_square_channel_difference": 0.2529589023079416,
+        "pixels_any_rgb_change_percent": 0.4744256482310421,
+        "pixels_over_8_levels_percent": 0.025593521005338377,
+        "max_channel_difference": 70
+      }
+    },
+    "sky": {
+      "control_a_vs_batched": {
+        "mean_abs_channel_difference": 0.0,
+        "root_mean_square_channel_difference": 0.0,
+        "pixels_any_rgb_change_percent": 0.0,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 0
+      },
+      "batched_vs_control_b": {
+        "mean_abs_channel_difference": 0.0,
+        "root_mean_square_channel_difference": 0.0,
+        "pixels_any_rgb_change_percent": 0.0,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 0
+      },
+      "control_a_vs_control_b": {
+        "mean_abs_channel_difference": 0.0,
+        "root_mean_square_channel_difference": 0.0,
+        "pixels_any_rgb_change_percent": 0.0,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 0
+      }
+    },
+    "near_terrain": {
+      "control_a_vs_batched": {
+        "mean_abs_channel_difference": 1.0788659651448615e-07,
+        "root_mean_square_channel_difference": 0.000328460951278057,
+        "pixels_any_rgb_change_percent": 3.236597895434584e-05,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 1
+      },
+      "batched_vs_control_b": {
+        "mean_abs_channel_difference": 4.315463860579446e-07,
+        "root_mean_square_channel_difference": 0.000656921902556114,
+        "pixels_any_rgb_change_percent": 0.00012946391581738337,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 1
+      },
+      "control_a_vs_control_b": {
+        "mean_abs_channel_difference": 5.394329825724308e-07,
+        "root_mean_square_channel_difference": 0.000734461015011982,
+        "pixels_any_rgb_change_percent": 0.00016182989477172923,
+        "pixels_over_8_levels_percent": 0.0,
+        "max_channel_difference": 1
+      }
+    }
+  },
+  "limits": [
+    "One daytime fixed scene on the pinned M2 Pro Vulkan/DH build.",
+    "Sky-region RGB pixels are identical across all three images.",
+    "Far-terrain cache generation continues: whole-image differences must be compared with the control/control variation.",
+    "Near-terrain RGB differs by at most one channel level, including control/control variation.",
+    "Other weather, heights, moving camera, callbacks and shader stacks are not covered."
+  ]
+}

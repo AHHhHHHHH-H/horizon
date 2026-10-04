@@ -62,6 +62,30 @@ class PackTests(unittest.TestCase):
         self.assertNotIn("distanthorizons", candidate["mods"])
         self.assertNotIn("iris", candidate["mods"])
 
+    def test_m2_metal_retains_supplied_detail_and_balanced_terrain_quality(self):
+        files = build_pack.overrides("m2-metal", b"fixture")
+        balanced = build_pack.overrides("m2-balanced", b"fixture")
+        options = dict(line.split(":", 1) for line in files["options.txt"].decode().splitlines())
+        self.assertEqual(options["renderDistance"], "32")
+        self.assertEqual(options["simulationDistance"], "12")
+        self.assertEqual(float(options["fov"]), 1.0)
+        self.assertEqual(json.loads(options["renderClouds"]), "false")
+        self.assertEqual(json.loads(options["preferredGraphicsBackend"]), "vulkan")
+        self.assertEqual(files["config/DistantHorizons.toml"], balanced["config/DistantHorizons.toml"])
+        for name in balanced:
+            if name.startswith("config/horizon-") and name != "config/horizon-profile.txt":
+                self.assertEqual(files[name], balanced[name])
+
+    def test_cloud_batch_is_opt_in_and_keeps_metal_visual_settings(self):
+        metal = build_pack.overrides("m2-metal", b"fixture")
+        batch = build_pack.overrides("m2-metal-batched", b"fixture")
+        self.assertEqual(batch["options.txt"], metal["options.txt"])
+        self.assertEqual(batch["config/DistantHorizons.toml"], metal["config/DistantHorizons.toml"])
+        self.assertEqual(batch["config/horizon-cloud-batch.properties"], b"enabled=true\n")
+        for profile in build_pack.PROFILES:
+            if profile != "m2-metal-batched":
+                self.assertEqual(build_pack.overrides(profile, b"fixture")["config/horizon-cloud-batch.properties"], b"enabled=false\n")
+
     def test_missing_exact_iris_sodium_dependency_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Missing pinned dependency"):
             build_pack.validate_selection(build_pack.read_lock(), ["iris"])
@@ -232,13 +256,17 @@ class PackTests(unittest.TestCase):
             with mock.patch.object(runtime, "prepare_client", return_value=(manifest, [root / "game.jar"], root / "natives")), \
                  mock.patch.object(runtime.platform, "system", return_value="Darwin"), \
                  mock.patch.object(runtime.subprocess, "run") as run, \
-                 mock.patch("sys.argv", ["runtime.py", "demo", "--instance", str(root / "instance")]):
+                 mock.patch("sys.argv", ["runtime.py", "demo", "--instance", str(root / "instance"),
+                                        "--width", "1728", "--height", "1117", "--fullscreen"]):
                 runtime.main()
             command = run.call_args.args[0]
             self.assertEqual(command.count("-XstartOnFirstThread"), 1)
             self.assertLess(command.index("-XstartOnFirstThread"),
                             command.index("net.fabricmc.loader.impl.launch.knot.KnotClient"))
             self.assertEqual(command.count("-cp"), 1)
+            self.assertEqual(command[command.index("--width") + 1], "1728")
+            self.assertEqual(command[command.index("--height") + 1], "1117")
+            self.assertEqual(command.count("--fullscreen"), 1)
             self.assertTrue(run.call_args.kwargs["check"])
 
     def test_native_architecture_is_selected_even_with_os_only_rules(self):
@@ -251,6 +279,32 @@ class PackTests(unittest.TestCase):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_private_profiling_is_visible_in_frame_and_tick_comparisons(self):
+        for kind in ["frames", "ticks"]:
+            baseline = self.report(kind)
+            candidate = {**baseline, "private_profiling_enabled": True}
+            warnings = compare_benchmarks.compare(baseline, candidate)["warnings"]
+            self.assertTrue(any("candidate includes private profiling overhead" in item for item in warnings))
+
+    def test_afk_cap_is_explicit_even_with_unlimited_configured_fps(self):
+        baseline = self.report()
+        baseline.update(fps_limit=260, fps_limit_unlimited=True, inactivity_fps_limit="afk",
+                        frame_limiter_throttled_observations=3600, frame_limiter_afk_observations=3600)
+        candidate = {**baseline, "inactivity_fps_limit": "minimized",
+                     "frame_limiter_throttled_observations": 0, "frame_limiter_afk_observations": 0}
+        result = compare_benchmarks.compare(baseline, candidate)
+        self.assertTrue(any("inactivity_fps_limit" in item for item in result["mismatches"]))
+        self.assertTrue(any("3600 AFK" in item for item in result["warnings"]))
+        self.assertFalse(any("candidate includes" in item for item in result["warnings"]))
+        legacy = self.report()
+        self.assertTrue(any("AFK throttling is unknown" in item for item in compare_benchmarks.compare(legacy, legacy)["warnings"]))
+
+    def test_cloud_batch_experiment_is_visible_in_comparison(self):
+        baseline = {**self.report(), "dh_cloud_batch_requested": False, "dh_cloud_batch_enabled": False}
+        candidate = {**baseline, "dh_cloud_batch_requested": True, "dh_cloud_batch_enabled": True}
+        result = compare_benchmarks.compare(baseline, candidate)
+        self.assertTrue(any("dh_cloud_batch_enabled" in warning for warning in result["warnings"]))
+
     def report(self, kind="frames"):
         return {"schema": 1, "kind": kind, "elapsed_seconds": 120, "framebuffer_width": 1920,
                 "stats": {"count": 1000, "meanRate": 100, "lowOnePercentRate": 50,
