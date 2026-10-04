@@ -3,7 +3,9 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,8 +73,20 @@ def main(collector="default"):
         ["java", "-cp", str(classes), "JfrSummary", "--frame-stalls", str(fixture)], text=True))
     assert frames["frame_events"] == 1 and len(frames["slow_frames"]) == 1
     assert 0 < frames["slow_frames"][0]["gc_pause_overlap_ms"] < frames["slow_frames"][0]["interval_ms"]
+    uploads = json.loads(subprocess.check_output(
+        ["jfr", "print", "--json", "--events", "dev.horizonlab.TerrainUpload", str(fixture)],
+        text=True))["recording"]["events"]
+    assert len(uploads) == 2
+    durations = [float(re.fullmatch(r"PT([0-9.]+)S", event["values"]["duration"]).group(1)) * 1000
+                 for event in uploads]
+    assert math.isclose(frames["slow_frames"][0]["terrain_upload_overlap_ms"], max(durations), abs_tol=1e-6)
+    loads = frames["slow_frames"][0]["render_thread_class_loads"]
+    payload = next(row for row in loads if row["class_name"] == "JfrFixture$LoadPayload")
+    assert payload["duration_ms"] >= 5
+    coverage = frames["slow_frames"][0]["render_thread_class_load_overlap_ms"]
+    assert payload["overlap_ms"] <= coverage <= frames["slow_frames"][0]["interval_ms"]
     print("Streaming JFR summary matches real JDK allocation counters, stack-sample counts, GC event counts, heap observations and escaped thread names.")
-    print("Frame/GC overlap and 10,000 seeded interval-union cases checked.")
+    print("Frame/GC overlap, nested upload coverage, real slow class loading and 10,000 seeded interval-union cases checked.")
 
 
 if __name__ == "__main__":

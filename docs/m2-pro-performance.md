@@ -75,6 +75,37 @@ Mac ARM, the actual Apple M2 Pro Vulkan device and no Iris. Unsupported devices
 or backends use the original renderer. All other profiles leave the experiment
 off. These 0.22.0 artifacts are local builds, not a published starter update.
 
+Two ordinary full-Retina flyover pairs compare G1 and ZGC on that same batched
+renderer and exact fixture, in opposite order. ZGC changes average FPS by
+-0.33%/-0.64%, improves 1% lows from 60.01 → 67.69 and 61.40 → 65.38 FPS,
+and reduces frames over 16 ms from 45 to 21/26 per 120-second run. p99 changes
+12.65 → 12.40 and 12.43 → 12.48 ms; it does not consistently improve. ZGC's
+worst frames are 52.67/43.17 ms versus G1's 42.72/38.80 ms. Sampled peak RSS
+falls 17.45%/14.92%, while peak JVM heap grows 38.41%/39.49%. RSS is not a
+complete unified-memory measure. Collector MXBean time includes concurrent
+work and must not be interpreted as pause time. Both pairs have matching end
+positions and quality settings, normal sampled 20 TPS, and no profiling.
+[Collector observations](../benchmarks/m2-pro-2026-10-04/collector-observations.json)
+retain both pairs. ZGC is an optional smoother-play candidate; G1 remains
+available and isolated worst-frame hitches remain unresolved.
+
+The local Prism ZIPs carry the selected collector and 512–6144 MiB memory
+settings, alongside the same pinned mods and game configuration:
+
+```sh
+python3 tools/build_mac_candidate.py --gc zgc
+python3 tools/build_mac_candidate.py --gc g1
+```
+
+Import `dist/horizon-m2-metal-batched-zgc-0.22.0-prism.zip` into Prism as a new
+instance, or use the G1 counterpart for comparison. `dist/Mac-Import-zgc.command`
+opens its import in an installed Prism Launcher. Enable automatic native Java
+25 selection in Prism. Select fullscreen when comparing with these full-Retina
+runs. The archives are generated from explicit configuration and pinned mod
+inputs, with no world, account, game binary, logs or private benchmark fixture.
+Archive hashes/settings are checked locally; Prism UI import is a separate
+verification step.
+
 The verified production-artifact pair at 3456×2234 averages 82.93 → 94.63 FPS
 (+14.12%), with 1% lows 69.04 → 84.63 (+22.57%) and p99 13.03 → 10.93 ms
 (-16.11%). Both warm and record for 120 seconds from the common copied cache;
@@ -120,6 +151,33 @@ interval has no stack samples and remains unattributed.
 retain the correlation. `java tools/JfrSummary.java --frame-stalls recording.jfr`
 uses two bounded streaming passes; overlap coverage avoids double counting
 within each event category. GC and thread waits can overlap each other.
+
+A separate full-route upload/JFR diagnostic measures 2,336 original terrain
+uploads and 849 MB of destination allocations in 120 seconds. Destination
+allocation peaks at 0.098 ms and staging/copy/barrier work at 0.116 ms, with
+zero existing-capacity reuse candidates. Six of eight frame intervals over
+25 ms overlap 20.79–29.21 ms top-level GC pauses. Two intervals remain
+unattributed; the first whole-upload timing also includes private event setup
+outside its JFR duration. These measurements weaken allocation as a general
+explanation and motivate clean G1/ZGC comparisons before changing the collector.
+They do not prove that garbage collection explains every hitch or that pooling
+would help. [Upload diagnostic observations](../benchmarks/m2-pro-2026-10-04/upload-diagnostic-observations.json)
+retain bounded counters and overlap measurements. The private `--vbo-profile`
+option measures complete uploads as well as their nested allocation and copy
+work; those timings must not be added together. Combined JFR events allow
+streaming overlap analysis without expanding the full recording to JSON.
+
+A later ZGC upload/JFR diagnostic captures 193 top-level pauses totaling
+2.16 ms, with a longest pause of 0.031 ms, across 15 seconds of late warmup
+plus the timed route. Complete uploads peak at 0.291 ms. Four frame intervals
+over 25 ms have no meaningful GC or upload overlap; one 39.46 ms interval
+samples class-loader/mixin processing. The initial 89.86 ms diagnostic interval
+has no samples and remains unattributed. [ZGC diagnostic observations](../benchmarks/m2-pro-2026-10-04/zgc-diagnostic-observations.json)
+retain the bounded data. This supports separating GC-related frame tails from
+other hitches, not claiming that ZGC fixes every stall. Subsequent private JFR
+captures enable individual class-load durations, and Apple Metal System Trace
+is available for native driver and thread-wait diagnosis. Neither profiler is
+part of the playable candidate.
 
 The optional private pass profiler samples every twentieth frame and brackets
 the actual Vulkan render-pass operations with device timestamps. Pass timing

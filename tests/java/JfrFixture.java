@@ -10,6 +10,10 @@ public final class JfrFixture {
     public static final class FrameInterval extends jdk.jfr.Event {
         public long intervalNs;
     }
+    @jdk.jfr.Name("dev.horizonlab.TerrainUpload")
+    @jdk.jfr.StackTrace(false)
+    public static final class TerrainUpload extends jdk.jfr.Event {}
+    public static final class LoadPayload {}
 
     static void checkOverlapCoverage() {
         var random = new java.util.Random(0x4d3250524fL);
@@ -41,6 +45,8 @@ public final class JfrFixture {
             recording.enable("jdk.GCPhasePause");
             recording.enable("jdk.GCHeapSummary");
             recording.enable(FrameInterval.class).withThreshold(Duration.ZERO);
+            recording.enable(TerrainUpload.class).withThreshold(Duration.ZERO);
+            recording.enable("jdk.ClassLoad").withThreshold(Duration.ZERO);
             recording.start();
             for (int batch = 0; batch < 12; batch++) {
                 Object[] objects = new Object[100_000];
@@ -48,14 +54,36 @@ public final class JfrFixture {
                 retained = objects;
                 Thread.sleep(120);
             }
-            var frame = new FrameInterval();
-            long started = System.nanoTime();
-            frame.begin();
-            System.gc();
-            Thread.sleep(40);
-            frame.end();
-            frame.intervalNs = System.nanoTime() - started;
-            frame.commit();
+            var renderer = new Thread(() -> {
+                var frame = new FrameInterval();
+                long started = System.nanoTime();
+                frame.begin();
+                System.gc();
+                try (var input = JfrFixture.class.getResourceAsStream("JfrFixture$LoadPayload.class")) {
+                    byte[] bytes = input.readAllBytes();
+                    var slowLoader = new ClassLoader(null) {
+                        @Override protected Class<?> findClass(String name) throws ClassNotFoundException {
+                            if (!name.equals("JfrFixture$LoadPayload")) throw new ClassNotFoundException(name);
+                            java.util.concurrent.locks.LockSupport.parkNanos(10_000_000);
+                            return defineClass(name, bytes, 0, bytes.length);
+                        }
+                    };
+                    Class.forName("JfrFixture$LoadPayload", false, slowLoader);
+                } catch (Exception failure) { throw new AssertionError(failure); }
+                var outer = new TerrainUpload();
+                outer.begin();
+                var inner = new TerrainUpload();
+                inner.begin();
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000_000);
+                inner.end(); inner.commit();
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000_000);
+                outer.end(); outer.commit();
+                frame.end();
+                frame.intervalNs = System.nanoTime() - started;
+                frame.commit();
+            }, "Render thread");
+            renderer.start();
+            renderer.join();
             Thread.sleep(250);
             recording.stop();
             recording.dump(Path.of(args[0]));

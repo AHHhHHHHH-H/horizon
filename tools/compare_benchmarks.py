@@ -118,6 +118,8 @@ def compare(baseline, candidate):
     mismatches = [f"{key}: {baseline.get(key)!r} vs {candidate.get(key)!r}" for key in MATCH_FIELDS
                   if baseline.get(key) != candidate.get(key)]
     warnings = ["World, route, warm-up, shader state and LOD cache must also match; these are not verified by this tool."]
+    warnings.append("Memory peaks are sampled and can miss short spikes. RSS includes resident JVM and native pages, but is not a complete GPU/unified-memory measurement. Heap/nonheap measure JVM pools only. CPU includes the whole process and integrated server.")
+    warnings.append("GC collection time comes from collector MXBean counters. It may include concurrent cycles and overlapping collector phases; it is not a measured stop-the-world pause total. Use JFR pause events for that comparison.")
     warnings.extend(software_warnings(baseline, candidate))
     for name, report in [("baseline", baseline), ("candidate", candidate)]:
         if report.get("private_profiling_enabled"):
@@ -130,7 +132,7 @@ def compare(baseline, candidate):
         warnings.append("Tick durations exclude scheduler sleep. Observed TPS counts measured invocations, including frozen ticks, and includes recording time spent paused; tick execution capacity is not TPS.")
     if baseline["kind"] == "frames":
         for field in ["adaptive_budget_enabled", "adaptive_target_fps", "precise_worker_pacing", "debounce_queue_wait",
-                      "wakeable_idle_wait", "dispatch_retry_backoff", "tick_membership_dedup", "empty_culling_whitelist", "culling_ray_scratch", "terrain_position_arithmetic", "dh_cloud_batch_requested", "dh_cloud_batch_enabled", "terrain_quad_reuse", "interruptible_terrain_read", "dh_thread_count", "dh_runtime_ratio"]:
+                      "wakeable_idle_wait", "dispatch_retry_backoff", "tick_membership_dedup", "empty_culling_whitelist", "culling_ray_scratch", "terrain_position_arithmetic", "dh_cloud_batch_requested", "dh_cloud_batch_enabled", "private_render_class_prewarm", "terrain_quad_reuse", "interruptible_terrain_read", "dh_thread_count", "dh_runtime_ratio"]:
             if field in baseline and field in candidate and baseline[field] != candidate[field]:
                 warnings.append(f"Experiment {field} differs: {baseline[field]!r} vs {candidate[field]!r}.")
         for name, report in [("baseline", baseline), ("candidate", candidate)]:

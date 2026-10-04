@@ -37,11 +37,21 @@ import net.minecraft.world.level.GameType;
 public final class MacBenchmarkIntegration implements ClientModInitializer {
     private boolean opening, finished, readbackRequested;
     private long ready, started;
-    private int warmupSeconds, seconds;
+    private int warmupSeconds, seconds, postRecordSeconds;
     private float yaw, pitch;
     private String label;
     private boolean gpuProfile;
     private boolean jfrProfile;
+    private boolean vboProfile;
+    private boolean renderClassPrewarm;
+    private static final String[] PREWARM_RENDER_CLASSES = {
+        "net.minecraft.client.renderer.extract.TransientBlock",
+        "net.minecraft.client.renderer.block.MovingBlockRenderState",
+        "net.caffeinemc.mods.sodium.client.render.frapi.render.NonTerrainBlockRenderContext",
+        "net.caffeinemc.mods.sodium.client.model.light.data.SingleBlockLightDataCache",
+        "it.unimi.dsi.fastutil.longs.Long2IntLinkedOpenHashMap"
+    };
+    private static VboTiming vboTiming;
     private jdk.jfr.Recording flightRecording;
     private static long flightDeadline, previousFlightFrame;
     private static FrameIntervalEvent flightFrame;
@@ -56,6 +66,103 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
     private long imageReady;
     private static GpuTiming gpuTiming;
     private static PassTiming passTiming;
+
+    public static void profileVboAllocation(long bytes, long start, long duration, boolean capacityFits) {
+        if (vboTiming != null) vboTiming.add(bytes, start, duration, capacityFits);
+    }
+
+    public static void profileVboUpload(long bytes, long start, long duration, boolean copy) {
+        if (vboTiming != null && vboTiming.started != 0 && start >= vboTiming.started && start < vboTiming.deadline) {
+            (copy ? vboTiming.copy : vboTiming.upload).add(bytes, start - vboTiming.started, duration);
+        }
+    }
+
+    @jdk.jfr.Name("dev.horizonlab.TerrainUpload")
+    @jdk.jfr.Label("Private DH terrain upload")
+    @jdk.jfr.StackTrace(false)
+    public static final class TerrainUploadEvent extends jdk.jfr.Event {
+        public long bytes;
+    }
+
+    public static TerrainUploadEvent beginTerrainUpload(long bytes) {
+        if (flightDeadline == 0 || System.nanoTime() >= flightDeadline) return null;
+        var event = new TerrainUploadEvent();
+        event.bytes = bytes;
+        event.begin();
+        return event;
+    }
+
+    private static final class UploadTiming {
+        private final long[] durations = new long[300_000];
+        private final com.google.gson.JsonArray slow = new com.google.gson.JsonArray();
+        private int count, dropped, slowDropped;
+        private long bytes;
+
+        void add(long size, long offset, long duration) {
+            bytes += size;
+            if (count == durations.length) { dropped++; return; }
+            durations[count++] = duration;
+            if (duration < 1_000_000) return;
+            if (slow.size() >= 128) { slowDropped++; return; }
+            var event = new JsonObject();
+            event.addProperty("recording_offset_ns", offset);
+            event.addProperty("duration_ns", duration);
+            event.addProperty("bytes", size);
+            slow.add(event);
+        }
+
+        JsonObject summary() {
+            var result = new JsonObject();
+            result.addProperty("bytes", bytes);
+            result.addProperty("dropped_samples", dropped);
+            result.addProperty("dropped_slow_events", slowDropped);
+            result.add("duration", new com.google.gson.Gson().toJsonTree(
+                SampleStats.of(java.util.Arrays.copyOf(durations, count), count)));
+            result.add("slow_events", slow);
+            return result;
+        }
+    }
+
+    private static final class VboTiming {
+        private final UploadTiming upload = new UploadTiming(), copy = new UploadTiming();
+        private final long[] durations = new long[300_000];
+        private final com.google.gson.JsonArray slow = new com.google.gson.JsonArray();
+        private long started, deadline, totalCalls, bytesAllocated, capacityReuseCandidates;
+        private int count, dropped, slowDropped;
+
+        void add(long bytes, long start, long duration, boolean capacityFits) {
+            totalCalls++;
+            if (started == 0 || start < started || start >= deadline) return;
+            bytesAllocated += bytes;
+            if (capacityFits) capacityReuseCandidates++;
+            if (count == durations.length) { dropped++; return; }
+            durations[count++] = duration;
+            if (duration < 5_000_000) return;
+            if (slow.size() >= 128) { slowDropped++; return; }
+            var event = new JsonObject();
+            event.addProperty("recording_offset_ns", start - started);
+            event.addProperty("duration_ns", duration);
+            event.addProperty("bytes", bytes);
+            event.addProperty("existing_capacity_fits", capacityFits);
+            slow.add(event);
+        }
+
+        JsonObject summary() {
+            var result = new JsonObject();
+            result.addProperty("instrumented_calls_total", totalCalls);
+            result.addProperty("bytes_allocated_during_recording", bytesAllocated);
+            result.addProperty("capacity_reuse_candidates", capacityReuseCandidates);
+            result.addProperty("dropped_samples", dropped);
+            result.addProperty("dropped_slow_events", slowDropped);
+            result.add("allocation_duration", new com.google.gson.Gson().toJsonTree(
+                SampleStats.of(java.util.Arrays.copyOf(durations, count), count)));
+            result.add("slow_allocations", slow);
+            result.add("whole_upload", upload.summary());
+            result.add("staging_copy_and_barrier", copy.summary());
+            result.addProperty("note", "Original DH destination allocation, complete upload, and staging/copy/barrier timings. Nested durations are not additive. Profiling is separate from ordinary FPS measurements.");
+            return result;
+        }
+    }
 
     @jdk.jfr.Name("dev.horizonlab.FrameInterval")
     @jdk.jfr.Label("Private Minecraft frame interval")
@@ -275,6 +382,16 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
             cloudBatchEnabled = !cloudImageCheck && Boolean.parseBoolean(config.getProperty("cloudBatch", "false"));
             gpuProfile = Boolean.parseBoolean(config.getProperty("gpuProfile", "false"));
             jfrProfile = Boolean.parseBoolean(config.getProperty("jfrProfile", "false"));
+            vboProfile = Boolean.parseBoolean(config.getProperty("vboProfile", "false"));
+            if (vboProfile) vboTiming = new VboTiming();
+            renderClassPrewarm = Boolean.parseBoolean(config.getProperty("renderClassPrewarm", "false"));
+            postRecordSeconds = Integer.parseInt(config.getProperty("postRecordSeconds", "3"));
+            if (renderClassPrewarm) {
+                for (String type : PREWARM_RENDER_CLASSES) {
+                    Class.forName(type, false, MacBenchmarkIntegration.class.getClassLoader());
+                }
+                System.out.println("HORIZON_MAC_RENDER_CLASSES_PREWARMED " + PREWARM_RENDER_CLASSES.length);
+            }
             passProfile = Boolean.parseBoolean(config.getProperty("passProfile", "false"));
             scene = config.getProperty("scene", "spawn");
             if (warmupSeconds < 0 || warmupSeconds > 300 || seconds < 10 || seconds > 120
@@ -330,7 +447,10 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
             long now = System.nanoTime();
             if (scene.equals("flyover")) client.options.keyUp.setDown(
                 started != 0 && now - started < seconds * 1_000_000_000L);
-            if (ready == 0) ready = now;
+            if (ready == 0) {
+                ready = now;
+                System.out.println("HORIZON_MAC_BENCHMARK_READY");
+            }
             if (jfrProfile && started == 0 && flightRecording == null
                     && now - ready >= Math.max(0, warmupSeconds - 15L) * 1_000_000_000L) {
                 try {
@@ -338,9 +458,18 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
                     flightRecording.setName("Private M2 Pro diagnostics");
                     flightRecording.setMaxSize(128L * 1024 * 1024);
                     flightRecording.enable(FrameIntervalEvent.class).withThreshold(java.time.Duration.ZERO);
+                    if (vboProfile) flightRecording.enable(TerrainUploadEvent.class).withThreshold(java.time.Duration.ofMillis(1));
                     flightRecording.enable("jdk.ThreadPark").withThreshold(java.time.Duration.ofMillis(1));
                     flightRecording.enable("jdk.JavaMonitorEnter").withThreshold(java.time.Duration.ofMillis(1));
+                    flightRecording.enable("jdk.ClassLoad").withThreshold(java.time.Duration.ofMillis(1));
                     flightRecording.start();
+                    var frameEvent = new FrameIntervalEvent();
+                    frameEvent.begin(); frameEvent.end();
+                    if (vboProfile) {
+                        // Initialize the private event machinery during warmup, before timing uploads.
+                        var event = new TerrainUploadEvent();
+                        event.begin(); event.end(); event.commit();
+                    }
                 } catch (Exception error) { throw new AssertionError("Private JFR start failed", error); }
             }
             if (cloudImageCheck) {
@@ -353,25 +482,30 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
                         .getDeclaredMethod("start", String.class, int.class);
                     method.setAccessible(true);
                     if (!method.invoke(null, label, seconds).equals(1)) throw new AssertionError("Recording failed to start");
-                    if (gpuProfile || passProfile || jfrProfile) {
-                        for (String[] target : new String[][]{{"dev.horizonlab.client.HorizonClient", "frames"},
-                                {"dev.horizonlab.HorizonLab", "ticks"}}) {
-                            var field = Class.forName(target[0]).getDeclaredField(target[1]);
-                            field.setAccessible(true);
-                            var recording = (Recording) field.get(null);
-                            if (recording != null) synchronized (recording) {
+                    for (String[] target : new String[][]{{"dev.horizonlab.client.HorizonClient", "frames"},
+                            {"dev.horizonlab.HorizonLab", "ticks"}}) {
+                        var field = Class.forName(target[0]).getDeclaredField(target[1]);
+                        field.setAccessible(true);
+                        var recording = (Recording) field.get(null);
+                        if (recording != null) synchronized (recording) {
+                            recording.context.put("private_render_class_prewarm", renderClassPrewarm);
+                            if (gpuProfile || passProfile || jfrProfile || vboProfile) {
                                 recording.context.put("private_profiling_enabled", true);
                             }
                         }
                     }
                     started = now;
+                    if (vboTiming != null) {
+                        vboTiming.started = now;
+                        vboTiming.deadline = now + seconds * 1_000_000_000L;
+                    }
                     if (jfrProfile) flightDeadline = now + seconds * 1_000_000_000L;
                     if (gpuProfile) gpuTiming = new GpuTiming(now + seconds * 1_000_000_000L);
                     if (passProfile) passTiming = new PassTiming(now + seconds * 1_000_000_000L);
                     System.out.println("HORIZON_MAC_BENCHMARK_STARTED");
                 } catch (ReflectiveOperationException error) { throw new AssertionError("Private recorder start failed", error); }
             }
-            if (started == 0 || now - started < (seconds + 3L) * 1_000_000_000L || readbackRequested) return;
+            if (started == 0 || now - started < (seconds + (long) postRecordSeconds) * 1_000_000_000L || readbackRequested) return;
             Path output = client.gameDirectory.toPath().resolve("horizon-benchmarks");
             try (var paths = Files.list(output)) {
                 var reports = paths.filter(p -> p.getFileName().toString().startsWith(label + "-")
@@ -380,7 +514,11 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
                 var result = new JsonObject();
                 result.add("cloud_batch", MacCloudBatchState.summary());
                 result.addProperty("warmup_seconds", warmupSeconds);
+                result.addProperty("post_record_seconds", postRecordSeconds);
                 result.addProperty("scene", scene);
+                result.addProperty("render_class_prewarm", renderClassPrewarm);
+                if (renderClassPrewarm) result.add("prewarmed_render_classes",
+                    new com.google.gson.Gson().toJsonTree(PREWARM_RENDER_CLASSES));
                 result.addProperty("camera_yaw", yaw);
                 result.addProperty("camera_pitch", pitch);
                 result.addProperty("player_x", client.player.getX());
@@ -389,6 +527,10 @@ public final class MacBenchmarkIntegration implements ClientModInitializer {
                 var device = RenderSystem.getDevice().getDeviceInfo();
                 result.addProperty("graphics_backend", device.backendName());
                 result.addProperty("gpu", device.name());
+                if (vboTiming != null) {
+                    result.add("vbo_allocation_profile", vboTiming.summary());
+                    vboTiming = null;
+                }
                 if (flightRecording != null) {
                     flightDeadline = 0;
                     flightFrame = null;

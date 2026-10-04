@@ -127,7 +127,7 @@ function compareReports(a,b){
     else if(JSON.stringify(a[key])!==JSON.stringify(b[key]))warnings.push('JVM '+key+' differs. Treat it as an explicit experiment variable.');
   }
   if(a.kind==='frames'){
-    for(const key of ['adaptive_budget_enabled','adaptive_target_fps','precise_worker_pacing','debounce_queue_wait','wakeable_idle_wait','dispatch_retry_backoff','tick_membership_dedup','empty_culling_whitelist','culling_ray_scratch','terrain_position_arithmetic','dh_cloud_batch_requested','dh_cloud_batch_enabled','terrain_quad_reuse','interruptible_terrain_read','dh_thread_count','dh_runtime_ratio']){
+    for(const key of ['adaptive_budget_enabled','adaptive_target_fps','precise_worker_pacing','debounce_queue_wait','wakeable_idle_wait','dispatch_retry_backoff','tick_membership_dedup','empty_culling_whitelist','culling_ray_scratch','terrain_position_arithmetic','dh_cloud_batch_requested','dh_cloud_batch_enabled','private_render_class_prewarm','terrain_quad_reuse','interruptible_terrain_read','dh_thread_count','dh_runtime_ratio']){
       if(key in a&&key in b&&JSON.stringify(a[key])!==JSON.stringify(b[key]))warnings.push('Experiment '+key+' differs.');
     }
     for(const [label,r] of [['Baseline',a],['Candidate',b]]){

@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--seed-world", type=Path, required=True)
     parser.add_argument("--warmup", type=int, default=60)
     parser.add_argument("--seconds", type=int, default=120)
+    parser.add_argument("--post-record-seconds", type=int, default=3, help="Keep the private world alive after capture for external profiler shutdown")
     parser.add_argument("--render", type=int, default=32)
     parser.add_argument("--scene", choices=["spawn", "overlook", "flyover"], default="spawn",
                         help="Use survival spawn, a fixed spectator view, or a vanilla-input flyover")
@@ -75,6 +76,8 @@ def main():
     parser.add_argument("--cloud-batch", action="store_true", help="Test private M2 Pro cloud batching; not part of playable packs")
     parser.add_argument("--gpu-profile", action="store_true", help="Add asynchronous GPU timings; keep separate from ordinary benchmarks")
     parser.add_argument("--jfr-profile", action="store_true", help="Capture JVM events and frame intervals separately from ordinary benchmarks")
+    parser.add_argument("--vbo-profile", action="store_true", help="Measure original DH allocation, staging/copy and complete terrain uploads")
+    parser.add_argument("--render-prewarm", action="store_true", help="Privately preload five measured rendering classes without initializing them")
     parser.add_argument("--pass-profile", action="store_true", help="Sample native Vulkan render-pass times separately from normal benchmarks")
     parser.add_argument("--fixture", type=Path, help="Reuse an earlier private fixture JAR for an identical-code comparison")
     parser.add_argument("--gc", choices=["default", "g1", "zgc"], default="default")
@@ -85,15 +88,21 @@ def main():
         parser.error("--label must contain 1 to 64 letters, digits, underscores or hyphens")
     if not (0 <= args.warmup <= 300 and 10 <= args.seconds <= 120 and 2 <= args.render <= 32):
         parser.error("Invalid warmup, measurement duration or view distance")
+    if not 3 <= args.post_record_seconds <= 120:
+        parser.error("Post-recording delay must be between 3 and 120 seconds")
     production_cloud_batch = bool(build_pack.PROFILES[args.profile].get("cloud_batch"))
     if args.cloud_batch and production_cloud_batch:
         parser.error("Do not combine private and production cloud batch mixins")
-    if args.cloud_image_check and (not (args.cloud_batch or production_cloud_batch) or args.scene != "overlook" or args.gpu_profile or args.pass_profile or args.jfr_profile):
+    if args.cloud_image_check and (not (args.cloud_batch or production_cloud_batch) or args.scene != "overlook" or args.gpu_profile or args.pass_profile or args.jfr_profile or args.vbo_profile):
         parser.error("--cloud-image-check requires cloud batching and --scene overlook, without profiling")
     if args.cloud_batch and (args.backend != "vulkan" or "distanthorizons" not in build_pack.PROFILES[args.profile]["mods"]):
         parser.error("--cloud-batch requires Vulkan and a Distant Horizons profile")
     if args.pass_profile and args.backend != "vulkan":
         parser.error("--pass-profile requires the Vulkan backend")
+    if args.vbo_profile and (args.backend != "vulkan" or "distanthorizons" not in build_pack.PROFILES[args.profile]["mods"]):
+        parser.error("--vbo-profile requires Vulkan and Distant Horizons")
+    if args.render_prewarm and (args.cloud_image_check or args.backend != "vulkan" or "sodium" not in build_pack.PROFILES[args.profile]["mods"]):
+        parser.error("--render-prewarm requires Vulkan and Sodium, without cloud image checks")
     if not (args.seed_world / "level.dat").is_file():
         parser.error("--seed-world must be an existing disposable demo-world directory")
     root = build_pack.ROOT
@@ -103,6 +112,8 @@ def main():
     mixins = ["MacGpuTimingMixin"] if args.gpu_profile else []
     if args.jfr_profile:
         mixins.append("MacFrameIntervalMixin")
+    if args.vbo_profile:
+        mixins.append("MacDhVertexAllocationMixin")
     if args.cloud_image_check and production_cloud_batch:
         mixins.append("MacDhCloudClockMixin")
     if args.cloud_batch:
@@ -128,6 +139,9 @@ def main():
         f"label={args.label}\nwarmupSeconds={args.warmup}\nseconds={args.seconds}\n"
         f"gpuProfile={str(args.gpu_profile).lower()}\nscene={args.scene}\n"
         f"jfrProfile={str(args.jfr_profile).lower()}\n"
+        f"vboProfile={str(args.vbo_profile).lower()}\n"
+        f"renderClassPrewarm={str(args.render_prewarm).lower()}\n"
+        f"postRecordSeconds={args.post_record_seconds}\n"
         f"passProfile={str(args.pass_profile).lower()}\ncloudBatch={str(args.cloud_batch).lower()}\n"
         f"cloudImageCheck={str(args.cloud_image_check).lower()}\n"
         f"productionCloudBatch={str(production_cloud_batch).lower()}\n")
@@ -137,7 +151,7 @@ def main():
         command.append("--compact-headers")
     if args.fullscreen:
         command.append("--fullscreen")
-    run = run_fixture(command, instance, os.environ.copy(), timeout=args.warmup + args.seconds + 180)
+    run = run_fixture(command, instance, os.environ.copy(), timeout=args.warmup + args.seconds + args.post_record_seconds + 180)
     result_file = instance / "mac-benchmark-result.json"
     if run.returncode or not result_file.is_file():
         raise RuntimeError(f"Mac benchmark failed; inspect the private log in {instance}")
@@ -153,6 +167,12 @@ def main():
         return
     frames = result["frames"]
     validate_capture(result, instance, args.render, args.seconds)
+    if result.get("post_record_seconds", 3) != args.post_record_seconds:
+        raise AssertionError("This fixture does not provide the requested profiler shutdown delay")
+    if bool(result.get("render_class_prewarm")) != args.render_prewarm:
+        raise AssertionError("Requested rendering-class prewarm differs from the fixture")
+    if args.render_prewarm and len(result.get("prewarmed_render_classes", [])) != 5:
+        raise AssertionError("Measured rendering classes were not all preloaded")
     if production_cloud_batch and (not frames.get("dh_cloud_batch_enabled") or frames.get("dh_cloud_batch_draws_recorded", 0) < 100):
         raise AssertionError("Production cloud batching was not active in the recording")
     if args.scene == "flyover" and math.hypot(result["player_x"] + 41.5, result["player_z"] - 72.5) < args.seconds:
@@ -180,10 +200,21 @@ def main():
             raise AssertionError("Requested JFR diagnostics were not captured")
     elif "jfr_profile" in result:
         raise AssertionError("Unexpected JFR profiling in a timing-only run")
+    if args.vbo_profile:
+        if result.get("vbo_allocation_profile", {}).get("instrumented_calls_total", 0) < 1:
+            raise AssertionError("Requested terrain allocation profiling was not exercised")
+        timings = result["vbo_allocation_profile"]
+        if any(key not in timings for key in ["whole_upload", "staging_copy_and_barrier"]):
+            raise AssertionError("This fixture does not capture the complete terrain upload path")
+        if any(timing["dropped_samples"] or timing["dropped_slow_events"] for timing in
+                [timings, timings["whole_upload"], timings["staging_copy_and_barrier"]]):
+            raise AssertionError("Terrain allocation profiling lost samples")
+    elif "vbo_allocation_profile" in result:
+        raise AssertionError("Unexpected allocation profiling in a timing-only run")
     result["requested_backend"] = args.backend
     result["backend_fallback"] = result["graphics_backend"].lower() != args.backend
     result.update(hashes)
-    result["profiling_enabled"] = args.gpu_profile or args.pass_profile or args.jfr_profile
+    result["profiling_enabled"] = args.gpu_profile or args.pass_profile or args.jfr_profile or args.vbo_profile
     result_file.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"label": args.label, "gpu": result["gpu"], "backend": result["graphics_backend"],
         "fallback": result["backend_fallback"], "frames": frames["stats"],

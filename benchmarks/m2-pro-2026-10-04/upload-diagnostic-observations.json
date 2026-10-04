@@ -1,0 +1,144 @@
+{
+  "label": "m2-metal-upload-jfr01",
+  "diagnostic_only": true,
+  "device": "Apple M2 Pro",
+  "backend": "Vulkan",
+  "scene": "flyover",
+  "warmup_seconds": 120,
+  "recording_seconds": 120.010957,
+  "resolution": [
+    3456,
+    2234
+  ],
+  "original_mod_sha256": "804fd1777770e15d8d39911a708e828a028da36d3cb43d1bc2e1c7cddc318e64",
+  "fixture_sha256": "f39f6bbe2d88d9d2a8daec42e6d235610c1af0e6fb3d36b3a0ec5b8706e08a47",
+  "profiling_enabled": true,
+  "allocation_and_upload": {
+    "instrumented_calls_total": 6836,
+    "bytes_allocated_during_recording": 849158016,
+    "capacity_reuse_candidates": 0,
+    "dropped_samples": 0,
+    "dropped_slow_events": 0,
+    "allocation_duration": {
+      "count": 2336,
+      "meanMs": 0.00452784375,
+      "p50Ms": 0.003125,
+      "p95Ms": 0.010416,
+      "p99Ms": 0.014209,
+      "maxMs": 0.097875,
+      "meanRate": 220855.67771635228,
+      "lowOnePercentRate": 48281.383905400675,
+      "over16Ms": 0,
+      "over33Ms": 0,
+      "over50Ms": 0,
+      "over100Ms": 0
+    },
+    "slow_allocations": [],
+    "whole_upload": {
+      "bytes": 849158016,
+      "dropped_samples": 0,
+      "dropped_slow_events": 0,
+      "duration": {
+        "count": 2336,
+        "meanMs": 0.0395248642979452,
+        "p50Ms": 0.0145,
+        "p95Ms": 0.052208,
+        "p99Ms": 0.074666,
+        "maxMs": 46.492708,
+        "meanRate": 25300.529622614984,
+        "lowOnePercentRate": 494.69449430380934,
+        "over16Ms": 1,
+        "over33Ms": 1,
+        "over50Ms": 0,
+        "over100Ms": 0
+      },
+      "slow_events": [
+        {
+          "recording_offset_ns": 10745292,
+          "duration_ns": 46492708,
+          "bytes": 542720
+        }
+      ]
+    },
+    "staging_copy_and_barrier": {
+      "bytes": 849158016,
+      "dropped_samples": 0,
+      "dropped_slow_events": 0,
+      "duration": {
+        "count": 2336,
+        "meanMs": 0.013740746575342466,
+        "p50Ms": 0.007583,
+        "p95Ms": 0.042125,
+        "p99Ms": 0.059959,
+        "maxMs": 0.116333,
+        "meanRate": 72776.24942115466,
+        "lowOnePercentRate": 14014.271199504828,
+        "over16Ms": 0,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "over100Ms": 0
+      },
+      "slow_events": []
+    },
+    "note": "Original DH vertex allocations only. Durations include Java and driver work; profiling is separate from ordinary FPS measurements."
+  },
+  "frame_events": 13345,
+  "slow_frame_threshold_ms": 25,
+  "slow_frames": [
+    {
+      "interval_ms": 51.230167,
+      "gc_pause_overlap_ms": 0.0,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 40.096958,
+      "gc_pause_overlap_ms": 0.0,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 27.714625,
+      "gc_pause_overlap_ms": 24.492167,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 26.068541,
+      "gc_pause_overlap_ms": 22.856917,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 31.879791,
+      "gc_pause_overlap_ms": 29.20725,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 28.467666,
+      "gc_pause_overlap_ms": 23.655583,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 29.939875,
+      "gc_pause_overlap_ms": 20.903792,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 28.263583,
+      "gc_pause_overlap_ms": 20.792166,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    }
+  ],
+  "limits": [
+    "Profiling is excluded from ordinary FPS comparisons.",
+    "Six of eight captured intervals over 25 ms overlap GC pauses; this does not explain every hitch.",
+    "The first whole-upload interval includes private event setup outside its JFR duration and is unattributed. Destination allocation and staging timers do not explain it.",
+    "Zero in-place capacity-reuse candidates were observed; this does not evaluate a cross-wrapper pool.",
+    "GC and upload overlap are not exclusive and do not prove causation."
+  ]
+}

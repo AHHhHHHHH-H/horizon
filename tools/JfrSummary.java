@@ -169,7 +169,8 @@ public final class JfrSummary {
     static final class Stall {
         final Instant start, end;
         final long intervalNs;
-        final List<Span> pauses = new ArrayList<>(), waits = new ArrayList<>();
+        final List<Span> pauses = new ArrayList<>(), waits = new ArrayList<>(), uploads = new ArrayList<>(), classLoads = new ArrayList<>();
+        final List<Map<String, Object>> loadedClasses = new ArrayList<>();
         final Map<String, Long> samples = new HashMap<>();
         final Map<String, Long> inclusiveSamples = new HashMap<>();
 
@@ -190,6 +191,9 @@ public final class JfrSummary {
             return Map.of("start", start.toString(), "interval_ms", intervalNs / 1e6,
                 "gc_pause_overlap_ms", coveredNs(pauses) / 1e6,
                 "render_thread_wait_overlap_ms", coveredNs(waits) / 1e6,
+                "terrain_upload_overlap_ms", coveredNs(uploads) / 1e6,
+                "render_thread_class_load_overlap_ms", coveredNs(classLoads) / 1e6,
+                "render_thread_class_loads", loadedClasses,
                 "render_thread_sample_leaf_methods", top(samples),
                 "render_thread_sample_inclusive_methods", top(inclusiveSamples));
         }
@@ -220,7 +224,9 @@ public final class JfrSummary {
                 boolean wait = type.equals("jdk.ThreadPark") || type.equals("jdk.JavaMonitorEnter")
                     || type.equals("jdk.JavaMonitorWait");
                 boolean sample = type.equals("jdk.ExecutionSample") || type.equals("jdk.NativeMethodSample");
-                if (!pause && !wait && !sample) continue;
+                boolean upload = type.equals("dev.horizonlab.TerrainUpload");
+                boolean classLoad = type.equals("jdk.ClassLoad");
+                if (!pause && !wait && !sample && !upload && !classLoad) continue;
                 if (!pause) {
                     var thread = event.getThread(sample ? "sampledThread" : "eventThread");
                     if (thread == null || !threadName(thread).equals("Render thread")) continue;
@@ -228,6 +234,18 @@ public final class JfrSummary {
                 for (Stall stall : stalls) {
                     if (pause) stall.overlap(event, stall.pauses);
                     else if (wait) stall.overlap(event, stall.waits);
+                    else if (upload) stall.overlap(event, stall.uploads);
+                    else if (classLoad) {
+                        int previous = stall.classLoads.size();
+                        stall.overlap(event, stall.classLoads);
+                        if (stall.classLoads.size() == previous) continue;
+                        if (stall.loadedClasses.size() >= 128)
+                            throw new IllegalArgumentException("Too many overlapping class loads");
+                        var span = stall.classLoads.getLast();
+                        stall.loadedClasses.add(Map.of("class_name", event.getClass("loadedClass").getName(),
+                            "duration_ms", event.getDuration().toNanos() / 1e6,
+                            "overlap_ms", (span.end - span.start) / 1e6));
+                    }
                     else if (!event.getStartTime().isBefore(stall.start) && event.getStartTime().isBefore(stall.end)) {
                         var stack = event.getStackTrace();
                         if (stack != null && !stack.getFrames().isEmpty()) {

@@ -15,6 +15,13 @@ matched flyover pairs. Isolated stalls and broader gameplay testing remain.
 The published 0.21.0 starter
 predates these local 0.22.0 profiles.
 
+Local Prism imports also carry the tested heap and collector settings:
+`python3 tools/build_mac_candidate.py --gc zgc` produces a separate ZGC candidate;
+use `--gc g1` for its control. Two route pairs improve 1% lows by 6.5–12.8%
+with ZGC and reduce frames over 16 ms, while average FPS stays within 0.7%.
+Worst frames remain worse than G1 in these pairs, so this is an optional
+smoother-play configuration. [Collector measurements and import instructions](docs/m2-pro-performance.md).
+
 ## Play on your Mac
 
 Download **horizon-mac-starter-0.21.0.zip** from [Releases](https://github.com/ludovic111/minecraft-optimization-lab/releases), extract it and open `Mac-Start.command`. It verifies and installs official universal Prism Launcher in `~/Applications` if needed, then opens the balanced pack import. Sign into Microsoft **inside Prism yourself**. This project needs no credentials.

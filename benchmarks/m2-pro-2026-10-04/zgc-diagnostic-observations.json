@@ -1,0 +1,123 @@
+{
+  "label": "m2-metal-zgc-upload-jfr01",
+  "diagnostic_only": true,
+  "device": "Apple M2 Pro",
+  "backend": "Vulkan",
+  "scene": "flyover",
+  "warmup_seconds": 120,
+  "recording_seconds": 120.01719675,
+  "original_mod_sha256": "804fd1777770e15d8d39911a708e828a028da36d3cb43d1bc2e1c7cddc318e64",
+  "fixture_sha256": "70c35d7804c87a834a9aede18c774749adf4283f07f5ed973c78f5cb97893f00",
+  "profiling_enabled": true,
+  "garbage_collectors": [
+    "ZGC Major Cycles",
+    "ZGC Major Pauses",
+    "ZGC Minor Cycles",
+    "ZGC Minor Pauses"
+  ],
+  "allocation_and_upload": {
+    "instrumented_calls_total": 6963,
+    "bytes_allocated_during_recording": 787634112,
+    "capacity_reuse_candidates": 0,
+    "dropped_samples": 0,
+    "dropped_slow_events": 0,
+    "allocation_duration": {
+      "count": 2269,
+      "meanMs": 0.0044483962097840455,
+      "p50Ms": 0.002542,
+      "p95Ms": 0.010292,
+      "p99Ms": 0.016208,
+      "maxMs": 0.048875,
+      "meanRate": 224800.1196027785,
+      "lowOnePercentRate": 45552.221661071664,
+      "over16Ms": 0,
+      "over33Ms": 0,
+      "over50Ms": 0,
+      "over100Ms": 0
+    },
+    "slow_allocations": [],
+    "whole_upload": {
+      "bytes": 787634112,
+      "dropped_samples": 0,
+      "dropped_slow_events": 0,
+      "duration": {
+        "count": 2269,
+        "meanMs": 0.021492267078007932,
+        "p50Ms": 0.014875,
+        "p95Ms": 0.060458,
+        "p99Ms": 0.101667,
+        "maxMs": 0.291,
+        "meanRate": 46528.36279999772,
+        "lowOnePercentRate": 7846.821849509556,
+        "over16Ms": 0,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "over100Ms": 0
+      },
+      "slow_events": []
+    },
+    "staging_copy_and_barrier": {
+      "bytes": 787634112,
+      "dropped_samples": 0,
+      "dropped_slow_events": 0,
+      "duration": {
+        "count": 2269,
+        "meanMs": 0.015113673865138828,
+        "p50Ms": 0.007125,
+        "p95Ms": 0.049916,
+        "p99Ms": 0.074375,
+        "maxMs": 0.282083,
+        "meanRate": 66165.24935784133,
+        "lowOnePercentRate": 9546.218431589516,
+        "over16Ms": 0,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "over100Ms": 0
+      },
+      "slow_events": []
+    },
+    "note": "Original DH destination allocation, complete upload, and staging/copy/barrier timings. Nested durations are not additive. Profiling is separate from ordinary FPS measurements."
+  },
+  "jfr_summary": {
+    "gc_cycles": 61,
+    "gc_pause_events": 193,
+    "gc_pause_total_ms": 2.163793,
+    "gc_pause_longest_ms": 0.030584,
+    "heap_used_peak_at_gc_bytes": 6092226560
+  },
+  "frame_events": 13295,
+  "slow_frame_threshold_ms": 25,
+  "slow_frames": [
+    {
+      "interval_ms": 89.86475,
+      "gc_pause_overlap_ms": 0.0,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 25.813,
+      "gc_pause_overlap_ms": 0.0,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 39.459208,
+      "gc_pause_overlap_ms": 0.012042,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    },
+    {
+      "interval_ms": 25.424875,
+      "gc_pause_overlap_ms": 0.0,
+      "render_thread_wait_overlap_ms": 0.0,
+      "terrain_upload_overlap_ms": 0.0
+    }
+  ],
+  "limits": [
+    "JFR covers 15 seconds of late warmup plus the timed route. Pause totals include both.",
+    "Profiling results are excluded from ordinary FPS comparisons.",
+    "The first 89.86 ms diagnostic interval has no samples or recorded overlaps and remains unattributed.",
+    "One later 39.46 ms interval samples class-loader/mixin processing; event-level class loading was not yet enabled.",
+    "Native allocation and complete uploads were fast in this capture; that does not explain all previous stalls."
+  ]
+}
