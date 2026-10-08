@@ -2041,10 +2041,10 @@ impl Game<'_> {
             if d.length_squared() > 128.0 * 128.0 {
                 continue;
             }
-            let Some(r) = self.res.atlas.sprites.get(&mob.kind.texture).copied() else { continue };
             let light = self.world.light(mob.position.x.floor() as i32, (mob.position.y + mob.kind.eye_height).floor() as i32, mob.position.z.floor() as i32);
             let packed = u32::from(light >> 4) * 16 | (u32::from(light & 15) * 16) << 8;
-            horizon_client::mobs::render(mob, alpha as f32, camera, [r.u0, r.v0, r.u1, r.v1], packed, &mut out);
+            let sprites = |name: &str| self.res.atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+            horizon_client::mobs::render(mob, alpha as f32, camera, &sprites, packed, &mut out);
         }
         // Arrows: two crossed quads along the flight direction.
         if let Some(r) = self.res.atlas.sprites.get("entity/projectiles/arrow").copied() {
