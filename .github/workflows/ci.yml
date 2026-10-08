@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   verify:
     strategy:
@@ -13,20 +16,41 @@ jobs:
       matrix:
         # Linux only. macOS only when started by hand: gh workflow run checks --ref <branch>.
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest", "macos-26"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (matrix.os == 'ubuntu-latest' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && (vars.LINUX_RUNNER || 'ludodesktop') || matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
+      - name: Python 3.12 on ludodesktop
+        # actions/setup-python has no builds for this Ubuntu; uv installs a standalone Python 3.12.
+        if: runner.environment == 'self-hosted'
+        run: |
+          command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.12
+          mkdir -p "$RUNNER_TEMP/py"
+          ln -sf "$(uv python find 3.12)" "$RUNNER_TEMP/py/python"
+          ln -sf "$(uv python find 3.12)" "$RUNNER_TEMP/py/python3"
+          echo "$RUNNER_TEMP/py" >> "$GITHUB_PATH"
       - name: Keep game artifacts out of Git
         run: |
           python tools/check_public_tree.py
           python tools/check_public_tree.py --history
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
+      - name: Own Rust install per repo on ludodesktop
+        if: runner.environment == 'self-hosted'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.rustup-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo-${GITHUB_REPOSITORY#*/}/bin" >> "$GITHUB_PATH"
+      - name: rustup on ludodesktop
+        if: runner.environment == 'self-hosted'
+        run: command -v rustup >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Check formatting and lint
@@ -379,12 +403,24 @@ jobs:
       matrix:
         # Linux only. macOS only when started by hand: gh workflow run checks --ref <branch>.
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest", "macos-26"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (matrix.os == 'ubuntu-latest' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && (vars.LINUX_RUNNER || 'ludodesktop') || matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
+      - name: Python 3.12 on ludodesktop
+        # actions/setup-python has no builds for this Ubuntu; uv installs a standalone Python 3.12.
+        if: runner.environment == 'self-hosted'
+        run: |
+          command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.12
+          mkdir -p "$RUNNER_TEMP/py"
+          ln -sf "$(uv python find 3.12)" "$RUNNER_TEMP/py/python"
+          ln -sf "$(uv python find 3.12)" "$RUNNER_TEMP/py/python3"
+          echo "$RUNNER_TEMP/py" >> "$GITHUB_PATH"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
