@@ -197,6 +197,7 @@ impl World {
         }
         let previous = Arc::make_mut(chunk).set(x & 15, y, z & 15, state.0 as u16);
         if u32::from(previous) != state.0 {
+            crate::remesh_probe::set(previous, state.0 as u16);
             let watches = |id: u16| self.watched.get(usize::from(id)).copied().unwrap_or(false);
             if watches(previous) || watches(state.0 as u16) {
                 self.watched_writes
@@ -216,7 +217,7 @@ impl World {
                         if !(0..SECTIONS as i32).contains(&s) {
                             continue;
                         }
-                        self.dirty_sections.insert((bx >> 4, s, bz >> 4));
+                        if self.dirty_sections.insert((bx >> 4, s, bz >> 4)) { crate::remesh_probe::src(0, 1); }
                     }
                 }
             }

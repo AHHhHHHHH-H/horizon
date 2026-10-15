@@ -607,6 +607,13 @@ impl Streaming {
         world: &mut World,
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
         let mut uploads = Vec::new();
+        {
+            static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            static LAST: Mutex<f64> = Mutex::new(0.0);
+            let t = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
+            let mut l = LAST.lock().unwrap();
+            if t - *l >= 1.0 { *l = t; crate::remesh_probe::dump(t, self.meshed_total as u64); }
+        }
         if self.paused {
             return (uploads, Vec::new());
         }
@@ -643,7 +650,7 @@ impl Streaming {
                         for dz in -1..=1 {
                             for dx in -1..=1 {
                                 for sy in 0..SECTIONS as i32 {
-                                    world.dirty_sections.insert((x + dx, sy, z + dz));
+                                    if world.dirty_sections.insert((x + dx, sy, z + dz)) { crate::remesh_probe::src(2, 1); }
                                 }
                             }
                         }
@@ -1008,6 +1015,7 @@ impl Streaming {
             &positions,
             false,
         );
+        crate::remesh_probe::src(4, changed.len() as u64);
         Self::mark_light_changes(world, &changed);
         if !self.light_snapshots.is_empty() {
             for p in positions {
@@ -1060,7 +1068,7 @@ impl Streaming {
                             continue;
                         }
                         last = Some(s);
-                        world.dirty_sections.insert((s.1, s.0, s.2));
+                        if world.dirty_sections.insert((s.1, s.0, s.2)) { crate::remesh_probe::src(1, 1); }
                     }
                 }
             }
