@@ -113,6 +113,21 @@ The [native client](docs/native-client.md) opens on a vanilla-style title screen
 - shields, maps, books, fireworks, beacons, advancements and statistics;
 - Anvil saves, joining vanilla servers, and opening a world to LAN.
 
+## Performance
+
+Horizon against vanilla 26.3 and vanilla with Sodium, Lithium, FerriteCore and ImmediatelyFast: same seed (1234), same scenes (a village and a mountain), the same 1280×720 view, three games each, all driven and measured by `tools/perf_bench.py` ([method](docs/benchmark.md)). Each cell is the mean of the three games, with the range in brackets.
+
+| Mac mini M4 Pro, render distance 16 | Horizon | Vanilla | Vanilla + mods |
+| --- | --- | --- | --- |
+| Launch to title screen | 5.3 s (3.7–7.9) | 12.4 s (10.1–14.5) | 19.3 s (16.0–21.1) |
+| Launch to playing in a new world | 19.4 s (11.1–31.6) | 37.1 s (30.9–42.0) | 50.4 s (41.1–56.0) |
+| Teleport to the village, chunks loaded | 4.2 s (3.2–5.4) | 12.5 s (11.9–13.7) | 13.4 s (10.3–17.7) |
+| Teleport to the mountain, chunks loaded | 22.1 s (12.8–32.7) | 24.6 s (22.4–27.8) | 25.5 s (21.5–32.6) |
+| Memory while flying | 1.66 GB | 2.23 GB | 2.37 GB |
+| Average FPS flying over the village | 393 (122–598) | 61 (47–68) | 53 (50–59) |
+
+Measured on 2026-10-15 on main with #267, #269 and #280, macOS 27, in a locked screen session shared with CI runners (1-minute load average 36–47, reported in each run): treat the spread as part of the result. Horizon drew offscreen there and vanilla in a window, so its FPS has no presentation cost; loading, start-up and memory don't depend on it. At render distance 8 the order is the same. Every run's full report (frame-time histogram, 1% and 0.1% lows, conditions, hardware) is in [benchmarks/perf/2026-10-15-mac-mini-m4pro](benchmarks/perf/2026-10-15-mac-mini-m4pro); runs on an RTX 4080, an integrated GPU and a laptop on battery come next.
+
 ## Agent control
 
 AI agents and scripts can play Horizon. `horizon-ctl`, shipped beside the game in every release folder, is a command line that reads the game as JSON and acts like a player; `horizon-ctl mcp` serves the same commands as an MCP server (one tool per command, screenshots returned as images).

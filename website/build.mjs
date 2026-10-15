@@ -106,6 +106,29 @@ const parityCells = body
 const matching = body.filter(([, score]) => Number(score) === 1).length;
 const parityHeadline = matching === body.length ? "Every subsystem matches vanilla." : `${matching} of ${body.length} subsystems match vanilla.`;
 
+// --- The performance table (optional: without one the section stays hidden) -------------
+const perf = section(readme, "Performance") ?? "";
+const perfCells = (l) => l.replace(/^\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+const [perfHead, ...perfRows] = perf
+  .split("\n")
+  .filter((l) => /^\|/.test(l) && !/^\|\s*-/.test(l))
+  .map(perfCells);
+const [perfIntro = "", ...perfNotes] = perf
+  .split("\n")
+  .filter((l) => !/^\|/.test(l))
+  .join("\n")
+  .split(/\n\s*\n/)
+  .filter((p) => p.trim());
+const perfTable = perfHead
+  ? `<div class="perf-scroll reveal"><table class="perf-table">
+            <caption>${inline(perfHead[0])}</caption>
+            <thead><tr><td></td>${perfHead.slice(1).map((h) => `<th scope="col">${inline(h)}</th>`).join("")}</tr></thead>
+            <tbody>
+${perfRows.map(([name, ...values]) => `              <tr><th scope="row">${inline(name)}</th>${values.map((v) => `<td>${inline(v)}</td>`).join("")}</tr>`).join("\n")}
+            </tbody>
+          </table></div>`
+  : "";
+
 // --- The latest notes -------------------------------------------------
 
 const isGame = (tag) => /^v\d{4}\.\d{1,2}\.\d{1,2}/.test(tag);
@@ -190,6 +213,10 @@ const values = {
   PARITY_CELLS: parityCells,
   PARITY_HEADLINE: parityHeadline,
   SUBSYSTEMS: String(body.length),
+  PERF_INTRO: markdown(perfIntro),
+  PERF_TABLE: perfTable,
+  PERF_NOTES: markdown(perfNotes.join("\n\n")),
+  PERF_HIDDEN: perfTable ? "" : " hidden",
   NOTES: notesHtml,
   LAUNCHER_META: `${launcher ? `Launcher ${escape(launcher.tag_name.replace("launcher-v", ""))} for` : "For"} Linux x86-64, macOS on Apple Silicon and Windows x64.`,
   DISCORD: escape(links.discord || DEFAULT_LINKS.discord),

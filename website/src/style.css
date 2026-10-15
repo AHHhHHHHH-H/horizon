@@ -250,6 +250,18 @@ code {
 figcaption { display: flex; gap: 12px; margin-top: 10px; font-size: var(--text-caption); color: var(--muted); }
 figcaption span { font-family: var(--mono); font-size: var(--text-micro); letter-spacing: var(--text-micro-tracking); padding-top: 1px; }
 
+/* Performance: the README's comparison table, one row per measure. */
+.performance .title { margin-bottom: 16px; }
+.perf-scroll { overflow-x: auto; margin-top: 40px; border-top: 1px solid var(--rule); }
+.perf-table { width: 100%; border-collapse: collapse; font-size: var(--text-caption); line-height: var(--text-caption-line); }
+.perf-table caption { caption-side: top; text-align: left; padding: 14px 0; font: var(--text-micro) / var(--text-micro-line) var(--mono); letter-spacing: var(--text-micro-tracking); color: var(--muted); }
+.perf-table th, .perf-table td { padding: 14px 24px 14px 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.perf-table thead th { font-weight: 500; color: var(--muted); white-space: nowrap; }
+.perf-table tbody th { font-weight: 400; color: var(--ink-soft); min-width: 22ch; }
+.perf-table td { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+.perf-table td:first-of-type { color: var(--ink); }
+.perf-notes { margin-top: 24px; font-size: var(--text-caption); color: var(--muted); }
+
 /* Parity: the count, then every subsystem as an index row. */
 .parity-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: end; margin-bottom: 64px; }
 .count { font-size: clamp(96px, 16vw, 220px); line-height: 0.85; letter-spacing: -0.05em; font-weight: 500; }
