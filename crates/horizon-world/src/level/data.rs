@@ -591,6 +591,20 @@ fn interned(cache: &mut HashMap<String, Arc<str>>, text: &str) -> Arc<str> {
         .clone()
 }
 
+/// Retain first-seen shape order, indexing the *identity* rather than its grid.
+/// The source registry and the cloned shapes keep each key alive for the map's lifetime.
+fn intern_cached_shape(
+    shapes: &mut Vec<VoxelShape>,
+    indices: &mut HashMap<usize, usize>,
+    shape: &VoxelShape,
+) -> usize {
+    *indices.entry(shape.identity_key()).or_insert_with(|| {
+        let index = shapes.len();
+        shapes.push(shape.clone());
+        index
+    })
+}
+
 fn set_type(value: &Value, cache: &mut HashMap<String, Arc<str>>) -> Option<SetType> {
     let text = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or("");
     Some(SetType {
@@ -734,19 +748,14 @@ pub(super) fn load(registry: &BlockRegistry, root: &Path) -> io::Result<Behaviou
     .tag;
     let cached = CachedCollisionRegistry::from_nbt(&collision_tag, registry)?;
     let mut shapes: Vec<VoxelShape> = Vec::new();
+    let mut shape_indices = HashMap::with_capacity(cached.shape_count());
     let mut shape_ids = Vec::with_capacity(table.state_count());
     for id in 0..table.state_count() {
         let Some(shape) = cached.cached_shape(BlockStateId(id as u32))? else {
             shape_ids.push(-1);
             continue;
         };
-        let index = match shapes.iter().position(|s| s.same_identity(shape)) {
-            Some(index) => index,
-            None => {
-                shapes.push(shape.clone());
-                shapes.len() - 1
-            }
-        };
+        let index = intern_cached_shape(&mut shapes, &mut shape_indices, shape);
         shape_ids.push(index as i32);
     }
 
@@ -1144,4 +1153,66 @@ fn instrument_index(name: &str) -> u8 {
         .iter()
         .position(|n| n.eq_ignore_ascii_case(name))
         .map_or(0, |i| i as u8)
+}
+
+#[cfg(test)]
+mod shape_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn aliases_share_indices_but_equal_grids_with_distinct_identities_do_not() {
+        let empty = VoxelShape::empty();
+        let block = VoxelShape::block();
+        let separate_block = block.fresh_identity();
+        let rebuilt_block = VoxelShape::from_cube([1, 1, 1], &[true]).unwrap();
+        assert_eq!(block.boxes(), separate_block.boxes());
+        assert_eq!(block.boxes(), rebuilt_block.boxes());
+        assert!(!block.same_identity(&separate_block));
+
+        let sequence = [
+            &empty,
+            &block,
+            &separate_block,
+            &block,
+            &rebuilt_block,
+            &empty,
+            &separate_block,
+        ];
+        let mut shapes = Vec::new();
+        let mut indices = HashMap::new();
+        let ids: Vec<usize> = sequence
+            .iter()
+            .map(|shape| intern_cached_shape(&mut shapes, &mut indices, shape))
+            .collect();
+        assert_eq!(ids, [0, 1, 2, 1, 3, 0, 2]);
+        assert_eq!(shapes.len(), 4);
+        for (id, shape) in ids.iter().zip(sequence) {
+            assert!(shapes[*id].same_identity(shape));
+        }
+    }
+
+    #[test]
+    fn indexed_lookup_matches_linear_first_identity_for_mixed_aliases() {
+        let base: Vec<VoxelShape> = (0..64)
+            .map(|i| {
+                let shape = VoxelShape::from_cube([1, 1, 1], &[true]).unwrap();
+                if i % 3 == 0 {
+                    shape.fresh_identity()
+                } else {
+                    shape
+                }
+            })
+            .collect();
+        let mut shapes = Vec::new();
+        let mut indices = HashMap::new();
+        for i in (0..8192).map(|i| (i * 73) % base.len()) {
+            let shape = &base[i];
+            let expected = shapes
+                .iter()
+                .position(|s: &VoxelShape| s.same_identity(shape));
+            let index = intern_cached_shape(&mut shapes, &mut indices, shape);
+            assert_eq!(index, expected.unwrap_or(shapes.len() - 1));
+        }
+        assert_eq!(shapes.len(), base.len());
+    }
 }
