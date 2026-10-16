@@ -19,6 +19,9 @@ struct Globals {
     crumbling_sprite: vec4<f32>,
     // Selection outline parameters (read by terrain.wgsl).
     outline_params: vec4<f32>,
+    // CloudRenderer CloudInfo: xyz the cloud mesh offset; the cloud colour per face shade.
+    cloud_offset: vec4<f32>,
+    cloud_colors: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -58,9 +61,15 @@ fn overlay_texel(overlay: u32) -> vec4<f32> {
     if overlay >= 16u && overlay < 32u { return vec4(1.0, 1.0, 1.0, WHITE_OVERLAY_ALPHA[overlay - 16u]); }
     return vec4(1.0);
 }
-@vertex fn vs_entity(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
-    @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
+@vertex fn vs_entity(@location(0) vertex_position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) overlay: u32, @location(3) vertex_color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
     var out: Out;
+    // Clouds: the cached cell corners moved into place, then the cell size on
+    // the far sides (light.yzw), coloured per face shade (light.x).
+    let cloud = overlay == 4u;
+    let far = vec3<f32>(light.yzw) * vec3(12.0, 4.0, 12.0);
+    let position = select(vertex_position, vertex_position + globals.cloud_offset.xyz + far, cloud);
+    let color = select(vertex_color, unpack4x8unorm(globals.cloud_colors[min(light.x, 3u)]), cloud);
     out.clip = globals.view_proj * vec4(position, 1.0);
     out.proj = vec4(out.clip.xy * 0.5 + out.clip.w * 0.5, out.clip.zw);
     out.uv = uv;

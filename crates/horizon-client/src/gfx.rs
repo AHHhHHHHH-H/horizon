@@ -86,6 +86,10 @@ struct Globals {
     crumbling_sprite: [f32; 4],
     /// Framebuffer size, selection stroke width, perspective layering scale.
     outline_params: [f32; 4],
+    /// `CloudInfo`: xyz the cloud mesh offset (-xInCell, relativeBottomY, -zInCell), w unused.
+    cloud_offset: [f32; 4],
+    /// The cloud colour per face shade (`clouds::SHADES`), packed RGBA8.
+    cloud_colors: [u32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -148,6 +152,8 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// The clouds, when drawn.
+    pub clouds: Option<CloudDraw<'a>>,
     /// Camera-relative sun, moon and stars (drawn behind everything, additive).
     pub celestial: &'a [Vertex],
     /// First-person hand and held item, drawn after clearing depth.
@@ -199,6 +205,15 @@ pub struct ShaderInputs {
     /// The time of day as a fraction (0 sunrise, 0.25 noon) and the partial tick.
     pub day_fraction: f32,
     pub partial_tick: f32,
+}
+/// One frame of the clouds (`CloudRenderer.prepare`).
+#[derive(Clone, Copy, Debug)]
+pub struct CloudDraw<'a> {
+    /// The cached cell mesh; uploaded only when its generation changes.
+    pub mesh: &'a [Vertex],
+    pub prepared: crate::clouds::Prepared,
+    /// `clouds::shaded_colors` of the cloud colour.
+    pub colors: [u32; 4],
 }
 /// One frame of the world border wall (`WorldBorderRenderer.render`).
 #[derive(Clone, Debug)]
@@ -257,6 +272,11 @@ pub struct Renderer {
     entity_pipeline: wgpu::RenderPipeline,
     crumbling_pipeline: wgpu::RenderPipeline,
     cloud_pipeline: wgpu::RenderPipeline,
+    /// The cloud mesh, its capacity in vertices, its generation and quads.
+    cloud_buffer: Option<wgpu::Buffer>,
+    cloud_capacity: u64,
+    cloud_generation: Option<u64>,
+    cloud_quads: u32,
     additive_pipeline: wgpu::RenderPipeline,
     see_through_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
@@ -1471,6 +1491,10 @@ impl Renderer {
             entity_pipeline,
             crumbling_pipeline,
             cloud_pipeline,
+            cloud_buffer: None,
+            cloud_capacity: 0,
+            cloud_generation: None,
+            cloud_quads: 0,
             additive_pipeline,
             see_through_pipeline,
             celestial_pipeline,
@@ -1534,6 +1558,31 @@ impl Renderer {
             animated_textures: true,
             present_modes,
         })
+    }
+    /// `CloudRenderer`: upload the cloud mesh only when it was rebuilt.
+    fn upload_clouds(&mut self, clouds: CloudDraw) {
+        if self.cloud_generation == Some(clouds.prepared.generation) {
+            return;
+        }
+        self.cloud_generation = Some(clouds.prepared.generation);
+        self.cloud_quads = (clouds.mesh.len() / 4) as u32;
+        let vertices = clouds.mesh.len() as u64;
+        if vertices == 0 {
+            return;
+        }
+        if vertices > self.cloud_capacity {
+            self.cloud_capacity = vertices.next_power_of_two();
+            self.cloud_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Cloud vertices"),
+                size: self.cloud_capacity * std::mem::size_of::<Vertex>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        if let Some(buffer) = &self.cloud_buffer {
+            self.queue
+                .write_buffer(buffer, 0, bytemuck::cast_slice(clouds.mesh));
+        }
     }
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
         let indices: Vec<u32> = (0..quads)
@@ -2069,6 +2118,11 @@ impl Renderer {
                 0.0,
             ],
             outline_params: outline_params(self.config.width, self.config.height),
+            cloud_offset: frame.clouds.map_or([0.0; 4], |c| {
+                let [x, y, z] = c.prepared.offset;
+                [x, y, z, 0.0]
+            }),
+            cloud_colors: frame.clouds.map_or([0; 4], |c| c.colors),
         };
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
@@ -2242,19 +2296,21 @@ impl Renderer {
             self.queue
                 .write_buffer(&self.outline, 0, bytemuck::cast_slice(&lines));
         }
-        let [
-            entity_quads,
-            crumbling_quads,
-            translucent_crumbling_quads,
-            cloud_quads,
-        ] = self.entity_batch.update(
-            frame.entities,
-            frame.additive,
-            frame.hand,
-            frame.see_through,
-        );
-        let world_quads =
-            entity_quads + crumbling_quads + translucent_crumbling_quads + cloud_quads;
+        let [entity_quads, crumbling_quads, translucent_crumbling_quads] =
+            self.entity_batch.update(
+                frame.entities,
+                frame.additive,
+                frame.hand,
+                frame.see_through,
+            );
+        let world_quads = entity_quads + crumbling_quads + translucent_crumbling_quads;
+        let cloud_quads = match frame.clouds {
+            Some(clouds) => {
+                self.upload_clouds(clouds);
+                self.cloud_quads
+            }
+            None => 0,
+        };
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32;
@@ -2281,8 +2337,9 @@ impl Renderer {
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
             );
         }
-        if world_quads + additive_quads + hand_quads > self.index_quads {
-            self.index_quads = (world_quads + additive_quads + hand_quads).next_power_of_two();
+        let quads = (world_quads + additive_quads + hand_quads).max(cloud_quads);
+        if quads > self.index_quads {
+            self.index_quads = quads.next_power_of_two();
             self.indices = Self::quad_indices(&self.device, self.index_quads);
         }
         if let Some(b) = &frame.border {
@@ -2459,15 +2516,11 @@ impl Renderer {
                     0..1,
                 );
             }
-            if cloud_quads > 0 {
+            if let (true, Some(buffer)) = (cloud_quads > 0, &self.cloud_buffer) {
                 pass.set_pipeline(&self.cloud_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
-                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..cloud_quads * 6,
-                    ((entity_quads + crumbling_quads + translucent_crumbling_quads) * 4) as i32,
-                    0..1,
-                );
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw_indexed(0..cloud_quads * 6, 0, 0..1);
             }
             // LevelRenderer.executeSeeThrough, after the rest of the world.
             if see_through_quads > 0 {
@@ -2900,14 +2953,14 @@ mod tests {
                 normal: [0; 4],
             }; 4]
         };
-        let entities: Vec<_> = [(0, 0), (4, 1), (11, 2), (7, 3), (4, 4), (12, 7)]
+        let entities: Vec<_> = [(0, 0), (2, 1), (11, 2), (7, 3), (6, 4), (12, 7)]
             .into_iter()
             .flat_map(|(layer, id)| quad(layer, id))
             .collect();
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8));
         let vertices = &batch.combined;
-        assert_eq!(counts, [2, 1, 1, 2]);
+        assert_eq!(counts, [4, 1, 1]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
@@ -2915,7 +2968,7 @@ mod tests {
                 .iter()
                 .map(|q| q[0].light)
                 .collect::<Vec<_>>(),
-            [0, 3, 2, 7, 1, 4, 5, 6, 8]
+            [0, 1, 3, 4, 2, 7, 5, 6, 8]
         );
     }
     #[test]

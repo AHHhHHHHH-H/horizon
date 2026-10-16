@@ -661,8 +661,8 @@ pub struct Resources {
     end_environment: Environment,
     behaviours: Behaviours,
     names: Names,
-    /// clouds.png: (width, height, filled cells).
-    clouds: (u32, u32, Vec<bool>),
+    /// clouds.png and the cloud mesh built from it.
+    clouds: horizon_client::clouds::Clouds,
     /// misc/forcefield.png: (width, height, RGBA) for the world border wall.
     forcefield: (u32, u32, Vec<u8>),
     context: Arc<WorkerContext>,
@@ -6052,111 +6052,25 @@ impl Game<'_> {
         }
         out
     }
-    /// CloudRenderer: flat or 12x4x12 extruded cells drifting east.
-    fn cloud_geometry(
-        &self,
-        sky: &horizon_client::environment::Sky,
+    /// CloudRenderer.prepare: flat or 12x4x12 extruded cells drifting east,
+    /// rebuilt only when the camera changes cell or side of the cloud layer.
+    fn prepare_clouds(
+        &mut self,
         camera: glam::DVec3,
         alpha: f64,
-        out: &mut Vec<Vertex>,
-    ) {
-        let (w, h, cells) = &self.res.clouds;
-        let (w, h) = (i64::from(*w), i64::from(*h));
-        let Some(white) = self.res.atlas.sprites.get("horizon/white").copied() else {
-            return;
-        };
+    ) -> Option<horizon_client::clouds::Prepared> {
+        let white = self.res.atlas.sprites.get("horizon/white").copied()?;
         let uv = [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0];
-        let cloud_height = 192.33;
-        let offset = (self.world.game_time.rem_euclid(w * 400)) as f64 + alpha;
-        let mut cloud_x = camera.x + offset * 0.030_000_001;
-        let mut cloud_z = camera.z + 3.96;
-        let (tw, th) = (w as f64 * 12.0, h as f64 * 12.0);
-        cloud_x -= (cloud_x / tw).floor() * tw;
-        cloud_z -= (cloud_z / th).floor() * th;
-        let cell_x = (cloud_x / 12.0).floor() as i64;
-        let cell_z = (cloud_z / 12.0).floor() as i64;
-        let x_in = (cloud_x - cell_x as f64 * 12.0) as f32;
-        let z_in = (cloud_z - cell_z as f64 * 12.0) as f32;
-        let bottom = (cloud_height - camera.y) as f32;
-        let filled = |cx: i64, cz: i64| cells[(cz.rem_euclid(h) * w + cx.rem_euclid(w)) as usize];
         // The Cloud Distance option, not the render distance.
         let radius = horizon_client::clouds::radius_cells(self.settings.cloud_range);
-        let c = sky.cloud_color;
-        let color = |shade: f32| {
-            let ch = |v: f32| ((v * shade).clamp(0.0, 1.0) * 255.0) as u32;
-            ch(c[3].clamp(0.0, 1.0)) << 24 | ch(c[2]) << 16 | ch(c[1]) << 8 | ch(c[0])
-        };
-        let light = 240 | 240 << 8;
-        for (dx, dz) in horizon_client::clouds::cells(radius) {
-            let (dx, dz) = (i64::from(dx), i64::from(dz));
-            let (cx, cz) = (cell_x + dx, cell_z + dz);
-            if !filled(cx, cz) {
-                continue;
-            }
-            let x0 = dx as f32 * 12.0 - x_in;
-            let z0 = dz as f32 * 12.0 - z_in;
-            let (x1, z1, y0, y1) = (x0 + 12.0, z0 + 12.0, bottom, bottom + 4.0);
-            let mut quad = |p: [[f32; 3]; 4], shade: f32| {
-                for v in p {
-                    // Overlay 4: clouds (unlit, faded by the cloud fog end).
-                    out.push(Vertex {
-                        normal: [0; 4],
-                        pos: v,
-                        uv,
-                        layer: 4,
-                        color: color(shade),
-                        light,
-                    });
-                }
-            };
-            if self.settings.clouds == "fast" {
-                for p in horizon_client::clouds::flat_cell(x0, z0, bottom) {
-                    quad(p, 1.0);
-                }
-                continue;
-            }
-            let faces = [
-                (
-                    [[x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y0, z0]],
-                    0.7,
-                ),
-                (
-                    [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
-                    1.0,
-                ),
-                (
-                    [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]],
-                    0.8,
-                ),
-                (
-                    [[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]],
-                    0.8,
-                ),
-                (
-                    [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]],
-                    0.9,
-                ),
-                (
-                    [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
-                    0.9,
-                ),
-            ];
-            let mask = horizon_client::clouds::face_mask(
-                dx as i32,
-                dz as i32,
-                bottom,
-                [
-                    !filled(cx, cz - 1),
-                    !filled(cx, cz + 1),
-                    !filled(cx - 1, cz),
-                    !filled(cx + 1, cz),
-                ],
-            );
-            for (direction, inside) in horizon_client::clouds::faces(mask) {
-                let (p, shade) = faces[usize::from(direction)];
-                quad(if inside { [p[3], p[2], p[1], p[0]] } else { p }, shade);
-            }
-        }
+        Some(self.res.clouds.prepare(
+            camera,
+            self.world.game_time,
+            alpha,
+            self.settings.clouds != "fast",
+            radius,
+            uv,
+        ))
     }
     /// Load (or create) a world folder under saves/ and start streaming it.
     fn open_world(
@@ -8575,11 +8489,12 @@ impl Game<'_> {
         if !title {
             self.end_geometry(camera, &mut entities);
         }
+        let mut clouds = None;
         if (!title || live) && self.dim == Dim::Overworld {
             if horizon_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]) {
-                horizon_client::spans::time("clouds", || {
-                    self.cloud_geometry(&sky, camera, alpha, &mut entities)
-                });
+                clouds =
+                    horizon_client::spans::time("clouds", || self.prepare_clouds(camera, alpha))
+                        .map(|p| (p, horizon_client::clouds::shaded_colors(sky.cloud_color)));
             }
             if self.settings.horizon.weather {
                 horizon_client::spans::time("weather", || {
@@ -8641,6 +8556,11 @@ impl Game<'_> {
             entities: &entities,
             additive: &additive,
             see_through: &see_through,
+            clouds: clouds.map(|(prepared, colors)| horizon_client::gfx::CloudDraw {
+                mesh: &self.res.clouds.mesh,
+                prepared,
+                colors,
+            }),
             celestial: if self.settings.horizon.sky || title {
                 &celestial
             } else {
@@ -9797,18 +9717,6 @@ impl ApplicationHandler for Game<'_> {
         self.finish_perf();
     }
 }
-/// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
-fn load_clouds(root: &std::path::Path) -> (u32, u32, Vec<bool>) {
-    horizon_client::hud::decode(&root.join("assets/minecraft/textures/environment/clouds.png"))
-        .map(|(w, h, px)| {
-            (
-                w,
-                h,
-                px.as_chunks::<4>().0.iter().map(|p| p[3] >= 10).collect(),
-            )
-        })
-        .unwrap_or((1, 1, vec![false]))
-}
 /// misc/forcefield.png for the world border wall (square, power of two).
 fn load_forcefield(root: &std::path::Path) -> (u32, u32, Vec<u8>) {
     horizon_client::hud::decode(&root.join("assets/minecraft/textures/misc/forcefield.png"))
@@ -9955,7 +9863,7 @@ pub fn run() -> Result<()> {
         end_environment: Environment::load_dimension(&root, "the_end", false)?,
         behaviours: Behaviours::load(registry_owner.registry, &root)?,
         names: Names::load(&root),
-        clouds: load_clouds(&root),
+        clouds: horizon_client::clouds::Clouds::load(&root),
         forcefield: load_forcefield(&root),
         mob_types: MobTypes::load(&root)?
             .types

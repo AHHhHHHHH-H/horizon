@@ -144,7 +144,7 @@ impl Game<'_> {
         self.res.atlas = atlas;
         self.res.panorama = panorama;
         self.res.item_renderer = std::sync::Arc::new(item_renderer);
-        self.res.clouds = super::load_clouds(root);
+        self.res.clouds = horizon_client::clouds::Clouds::load(root);
         self.res.forcefield = super::load_forcefield(root);
         self.res.names = super::Names::load(root);
         horizon_client::ui::load_metadata(root);
