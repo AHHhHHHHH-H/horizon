@@ -47,14 +47,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .expect("resource directory argument");
     let root = Path::new(&root);
+    let started = Instant::now();
     let registry = load_registry(root)?;
+    let registry_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let started = Instant::now();
     let collision_tag = nbt::read_named(
         &fs::read(root.join("cached-collision.nbt"))?,
         Limits::default(),
     )?
     .0
     .tag;
+    let nbt_read_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let started = Instant::now();
     let cached = CachedCollisionRegistry::from_nbt(&collision_tag, &registry)?;
+    let collision_decode_ms = started.elapsed().as_secs_f64() * 1000.0;
     let shapes = (0..registry.len())
         .map(|i| cached.cached_shape(BlockStateId(i as u32)))
         .collect::<Result<Vec<_>, _>>()?;
@@ -88,6 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "linear_median_ms": (linear_ms[5] + linear_ms[6]) / 2.0,
             "indexed_median_ms": (indexed_ms[5] + indexed_ms[6]) / 2.0,
             "samples_per_algorithm": 12,
+            "registry_load_ms": registry_ms,
+            "collision_nbt_read_ms": nbt_read_ms,
+            "collision_decode_ms": collision_decode_ms,
             "scope": "isolated shape identity deduplication over real cached shapes (warm process)"
         })
     );

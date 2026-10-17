@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import resource
 import statistics
 import subprocess
 import time
@@ -53,11 +54,34 @@ def summary(samples):
     }
 
 
-def measure(binary, resources):
+def cpu_pressure():
+    """Linux CPU pressure counters; None where PSI is unavailable."""
+    path = Path("/proc/pressure/cpu")
+    if not path.exists():
+        return None
+    line = next((row for row in path.read_text().splitlines()
+                 if row.startswith("some ")), None)
+    return ({key: float(value) for key, value in
+             (field.split("=", 1) for field in line.split()[1:])}
+            if line else None)
+
+
+def measure(binary, resources, affinity):
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.perf_counter_ns()
     subprocess.run([str(binary), str(resources), os.devnull, os.devnull],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    return (time.perf_counter_ns() - start) / 1_000_000
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                   preexec_fn=(lambda: os.sched_setaffinity(0, affinity)) if affinity else None)
+    wall_ms = (time.perf_counter_ns() - start) / 1_000_000
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return {
+        "wall_ms": wall_ms,
+        "cpu_ms": 1000 * (after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime),
+        "minor_faults": after.ru_minflt - before.ru_minflt,
+        "major_faults": after.ru_majflt - before.ru_majflt,
+        "voluntary_switches": after.ru_nvcsw - before.ru_nvcsw,
+        "involuntary_switches": after.ru_nivcsw - before.ru_nivcsw,
+    }
 
 
 def main():
@@ -69,10 +93,23 @@ def main():
     parser.add_argument("--baseline-binary", type=Path)
     parser.add_argument("--optimized-binary", type=Path)
     parser.add_argument("--binary", type=Path, help="profile a previously built single binary")
+    parser.add_argument("--affinity", help="Linux CPUs for each child, e.g. 2,3")
+    parser.add_argument("--pause-ms", type=int, default=0,
+                        help="sleep between measured pairs (outside timings)")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if args.runs < 1 or args.warmups < 0:
+    if args.runs < 1 or args.warmups < 0 or args.pause_ms < 0:
         parser.error("runs must be positive and warmups nonnegative")
+    affinity = None
+    if args.affinity:
+        if not hasattr(os, "sched_setaffinity"):
+            parser.error("CPU affinity requires Linux")
+        try:
+            affinity = {int(cpu) for cpu in args.affinity.split(",")}
+        except ValueError:
+            parser.error("affinity must be a comma-separated list of CPU IDs")
+        if not affinity or not affinity.issubset(os.sched_getaffinity(0)):
+            parser.error("affinity CPUs must be in the available CPU set")
     paired = args.baseline_binary is not None or args.optimized_binary is not None
     if paired and (not args.baseline_binary or not args.optimized_binary or args.binary):
         parser.error("paired mode requires both --baseline-binary and --optimized-binary")
@@ -120,25 +157,46 @@ def main():
         "samples_per_binary": args.runs,
         "comparison_order": "alternating baseline/optimized then optimized/baseline" if paired
                             else "single binary",
+        "child_affinity": sorted(affinity) if affinity else None,
+        "pause_between_pairs_ms": args.pause_ms,
+        "measurement": "fresh process; wall clock and child user+system CPU; resource usage per child",
     }
     samples = {name: [] for name in binaries}
     load_averages = []
+    cpu_samples = {name: [] for name in binaries}
+    run_details = []
+    pressure_samples = []
     labels = list(binaries)
     for i in range(args.warmups + args.runs):
         # First round baseline-first, second optimized-first; also interleave warmups.
         order = labels if i % 2 == 0 else labels[::-1]
+        run = {}
         for name in order:
-            elapsed = measure(binaries[name], resources)
+            data = measure(binaries[name], resources, affinity)
             if i >= args.warmups:
-                samples[name].append(elapsed)
+                samples[name].append(data["wall_ms"])
+                cpu_samples[name].append(data["cpu_ms"])
+                run[name] = {k: round(value, 3) for k, value in data.items()}
         if i >= args.warmups and hasattr(os, "getloadavg"):
             load_averages.append(round(os.getloadavg()[0], 2))
+        if i >= args.warmups:
+            run_details.append({"order": order, "measurements": run})
+            pressure_samples.append(cpu_pressure())
+        if args.pause_ms:
+            time.sleep(args.pause_ms / 1000)
     result["results"] = {name: summary(values) for name, values in samples.items()}
+    result["child_cpu_results"] = {name: summary(values) for name, values in cpu_samples.items()}
+    result["per_pair_details"] = run_details
     result["system_load_1m_after_each_pair"] = load_averages
+    result["cpu_pressure_after_each_pair"] = pressure_samples
     if paired:
         deltas = [after - before for before, after in
                   zip(samples["baseline"], samples["optimized"])]
         result["paired_after_minus_before_ms"] = summary(deltas)
+        result["paired_cpu_after_minus_before_ms"] = summary([
+            after - before for before, after in
+            zip(cpu_samples["baseline"], cpu_samples["optimized"])
+        ])
     result["utc_end"] = datetime.now(timezone.utc).isoformat()
     print(json.dumps(result, indent=2))
     if args.output:

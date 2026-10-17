@@ -106,3 +106,49 @@ loader ran successfully against the pinned export on both revisions. Canonical
 and legacy collision identity cases, repeated alias lookups, equal grids with
 separate identities, and first-seen ID ordering were checked. Dynamic/modded
 resources outside the pinned export have not been run through a live client.
+
+## Follow-up: affinity-controlled loader measurements
+
+The same independently compiled binaries and identical 26.3 resources were
+benchmarked using `tools/profile_client_startup.py`. Compilation, hashing and
+file validation occurred outside the timing loop. Five warmups per binary were
+followed by **32 alternating pairs**, each child pinned to logical CPUs 2,3,
+with a 40 ms gap between pairs. In addition to process wall-clock time, the
+profiler now records child user+system CPU time, page faults, context switches,
+CPU pressure and system load. The full samples, hashes, environment and paired
+orders appear in [`paired-affinity-32.json`](paired-affinity-32.json).
+
+```sh
+python3 tools/profile_client_startup.py --resources /path/to/26.3 \
+  --baseline-binary /path/to/baseline-target/fast/examples/level_shape_fixture \
+  --optimized-binary /path/to/optimized-target/fast/examples/level_shape_fixture \
+  --affinity 2,3 --warmups 5 --runs 32 --pause-ms 40 \
+  --output benchmarks/shape-dedup-2026-10-17/paired-affinity-32.json
+```
+
+| Measurement | Original | Indexed |
+| --- | ---: | ---: |
+| Median wall time | 1,827.94 ms | 1,766.32 ms |
+| Median child CPU time | 1,775.68 ms | 1,714.25 ms |
+
+The median paired wall difference was **-34.056 ms**; the median paired CPU
+difference was **-30.235 ms**. Host load ranged from **12.23 to 18.76**.
+Wall samples ranged from **1,373.906 to 3,545.977 ms** for the original and
+**1,344.107 to 2,899.203 ms** for indexed. The magnitude of the difference
+is small relative to environmental variation. The two loader sessions show a
+directionally similar result but do not establish a reliable full-loader gain.
+
+The focused benchmark was also extended to time upstream phases. In one
+diagnostic run, registry loading took **351.76 ms**, collision-NBT reading
+**32.13 ms**, and collision decoding **76.77 ms**; the deduplication medians
+were **88.64 ms** linear and **1.01 ms** indexed. These phase values are
+single-run diagnostics and are not additive whole-loader estimates.
+
+The full native client exposes a title-ready control socket status used by
+`tools/perf_bench.py`, but the revision-specific precompiled comparators here
+are world-loader fixture binaries, not full clients. The shared native-client
+binary is a different build and is not a valid baseline for this comparison.
+Building and launching matched GPU clients under heavy concurrent compilation
+and graphical desktop activity would introduce further uncontrolled variance.
+**Full-client time-to-ready remains unmeasured.** The established 93.326 ms
+versus 0.992 ms inner-loop result remains a separate measurement.
