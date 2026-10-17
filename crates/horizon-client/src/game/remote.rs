@@ -107,6 +107,8 @@ pub(super) struct Remote {
     health: (f32, i32, f32),
     game_mode: i32,
     pub chat: Vec<(String, Instant)>,
+    /// Lines added since the start, for the control socket's events.
+    pub chat_received: u64,
     /// The server's command tree (ClientboundCommandsPacket).
     pub commands: Option<horizon_client::command::Dispatcher>,
     action_bar: Option<(String, Instant)>,
@@ -293,6 +295,7 @@ impl Game<'_> {
             health: (20.0, 20, 5.0),
             game_mode: 0,
             chat: Vec::new(),
+            chat_received: 0,
             commands: None,
             action_bar: None,
             players: HashMap::new(),
@@ -465,6 +468,7 @@ impl Game<'_> {
         log::info!("[chat] {text}");
         if let Some(r) = self.remote.as_mut() {
             r.chat.push((text, Instant::now()));
+            r.chat_received += 1;
             if r.chat.len() > 100 {
                 r.chat.remove(0);
             }
@@ -1283,6 +1287,20 @@ impl Game<'_> {
                             (17, Value::Bool(powered)) => m.extra.charged = *powered,
                             (18, Value::Bool(ignited)) => m.extra.flag = *ignited,
                             _ => {}
+                        }
+                    }
+                }
+                // Entity.DATA_SHARED_FLAGS_ID's crouching bit: another
+                // player's crouch (their model and Entity.isDiscrete's name tag).
+                if self
+                    .remote
+                    .as_ref()
+                    .is_some_and(|r| r.level_players.contains_key(&p.id))
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32)
+                {
+                    for (index, _, value) in &p.values {
+                        if let (0, Value::Byte(flags)) = (index, value) {
+                            m.extra.crouching = flags & 2 != 0;
                         }
                     }
                 }
@@ -2477,6 +2495,7 @@ impl Game<'_> {
         if self.remote.as_ref().is_some_and(|r| r.destroy_delay > 0) {
             return;
         }
+        self.remote_ensure_carried();
         self.swing_arm();
         self.send(S::Punch(Empty));
         if self.creative {
@@ -2628,7 +2647,22 @@ impl Game<'_> {
         self.mining = None;
     }
     /// Minecraft.startUseItem: use on the targeted block, then the item itself.
+    /// MultiPlayerGameMode.ensureHasSentCarriedItem: the server hears of a
+    /// hotbar change before an action that uses the held item.
+    fn remote_ensure_carried(&mut self) {
+        let selected = self.selected;
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if r.carried != Some(selected) {
+            r.carried = Some(selected);
+            self.send(S::SetCarriedItem(play::SetCarriedItem {
+                slot: selected as i16,
+            }));
+        }
+    }
     fn remote_use(&mut self) {
+        self.remote_ensure_carried();
         let held_block = self
             .held()
             .and_then(|h| self.res.items.get(&h.item))
@@ -2696,6 +2730,7 @@ impl Game<'_> {
             MouseButton::Left => {
                 if pressed && let Some((i, _)) = self.mob_hit() {
                     let id = self.mobs[i].id as i32;
+                    self.remote_ensure_carried();
                     self.send(S::Attack(play::Attack { id }));
                     self.send(S::Punch(Empty));
                     self.swing_arm();

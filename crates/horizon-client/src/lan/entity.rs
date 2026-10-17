@@ -6,7 +6,7 @@
 use super::tracking;
 use horizon_protocol::{
     buf::pack_degrees,
-    entity_data::Value,
+    entity_data::{Value, serializer},
     item::Stack,
     packets::play::{
         self, AddEntity, EntityPositionSync, MoveEntity, MoveEntityPos, MoveEntityPosRot,
@@ -229,12 +229,25 @@ impl Tracker {
             }
             // ServerEntity.sendDirtyEntityData.
             if dirty {
-                let changed: Vec<_> = e
+                let mut changed: Vec<_> = e
                     .meta
                     .iter()
                     .filter(|m| !s.meta.contains(m))
                     .cloned()
                     .collect();
+                // A value back at its default is left out of the state, but
+                // the client still holds the old one: Entity's shared flags
+                // and pose go back to 0 (a player standing up again).
+                for (index, serializer, _) in &s.meta {
+                    let default = match (*index, *serializer) {
+                        (0, serializer::BYTE) => Value::Byte(0),
+                        (6, serializer::POSE) => Value::Id(0),
+                        _ => continue,
+                    };
+                    if !e.meta.iter().any(|m| m.0 == *index) {
+                        changed.push((*index, *serializer, default));
+                    }
+                }
                 if !changed.is_empty() {
                     out.push(play::Clientbound::SetEntityData(SetEntityData {
                         id: e.id,
@@ -363,5 +376,36 @@ mod tests {
             panic!("expected equipment");
         };
         assert_eq!(eq.slots, vec![(0, None)]);
+    }
+
+    #[test]
+    fn cleared_flags_and_pose_go_back_to_their_default() {
+        let mut t = Tracker::default();
+        let mut e = state(0.0);
+        t.spawn(&e, 100);
+        t.update(&e);
+        // A crouching player: the crouch flag and the crouching pose.
+        e.meta = vec![
+            (0, serializer::BYTE, Value::Byte(2)),
+            (6, serializer::POSE, Value::Id(5)),
+        ];
+        t.update(&e);
+        e.meta.clear();
+        let data = t
+            .update(&e)
+            .into_iter()
+            .find_map(|p| match p {
+                play::Clientbound::SetEntityData(d) => Some(d),
+                _ => None,
+            })
+            .expect("standing up is sent");
+        assert_eq!(
+            data.values,
+            vec![
+                (0, serializer::BYTE, Value::Byte(0)),
+                (6, serializer::POSE, Value::Id(0)),
+            ]
+        );
+        assert!(t.update(&e).is_empty());
     }
 }

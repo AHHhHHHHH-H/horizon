@@ -101,6 +101,65 @@ impl Drop for Integrated {
     }
 }
 
+impl Game<'_> {
+    /// On the server thread, the window's agent runs a command as single
+    /// player's console does (`as_console`): as the world's owner, at the
+    /// owner permission level. The feedback goes to the owner's chat and is
+    /// returned.
+    pub(super) fn owner_console_command(&mut self, command: &str) -> Vec<String> {
+        let Some(owner) = self.serving.as_ref().map(|s| s.owner) else {
+            return Vec::new();
+        };
+        let Some(mut host) = self.lan.take() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(conn) = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.uuid == owner)
+            .map(|g| g.conn)
+        {
+            // The owner's level in place: between two ticks it is the one
+            // ticked last (Commands.performCommand runs in the player's level).
+            let dim = host.hub.guest(conn).and_then(|g| {
+                [super::Dim::Overworld, super::Dim::Nether, super::Dim::End]
+                    .into_iter()
+                    .find(|d| g.dimension == d.id())
+            });
+            if let Some(dim) = dim
+                && let Err(e) = self.enter_level(Some(&mut host), dim)
+            {
+                log::error!("could not enter {}: {e}", dim.id());
+            }
+            let command = command.trim_start_matches('/').to_owned();
+            let lines = self.as_guest(&mut host, conn, |g| {
+                g.as_console(|g| {
+                    g.chat_capture = Some(Vec::new());
+                    g.run_command(&command);
+                    g.chat_capture.take().unwrap_or_default()
+                })
+            });
+            self.sync_hub_settings(&mut host);
+            for line in lines.unwrap_or_default() {
+                out.push(line.plain());
+                host.hub.send_to(
+                    conn,
+                    &horizon_protocol::packets::play::Clientbound::SystemChat(
+                        horizon_protocol::packets::play::SystemChat {
+                            content: horizon_client::lan::data::component_nbt(&line.component()),
+                            overlay: false,
+                        },
+                    ),
+                );
+            }
+        }
+        self.lan = Some(host);
+        out
+    }
+}
+
 /// The server thread's side of the window's handle (`Game::serving`).
 pub(super) struct Serving {
     flags: Arc<Flags>,

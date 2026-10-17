@@ -768,6 +768,10 @@ impl Hub {
             g.position = p;
             g.previous_position = p;
         }
+        // The moves the guest sent before it (handled at the next tick) are
+        // from where it was: vanilla handles them on arrival, before the
+        // teleport, so a fall in them does not hurt it where it lands.
+        g.moves.clear();
         g.teleport_counter = (g.teleport_counter + 1) & 0x7FFF_FFFF;
         let id = g.teleport_counter;
         g.awaiting_teleport = Some((id, g.position));
@@ -1869,6 +1873,17 @@ impl Hub {
         g.tracker.clear();
         g.sent_chunks.clear();
         g.chunk_queue.clear();
+        // The other players lose the dead player's entity too, and are sent
+        // the respawned one as a new entity (ServerLevel.addRespawnedPlayer):
+        // their clients drop a dead body and would not show it alive again.
+        let id = g.entity_id;
+        for (j, other) in self.guests.iter_mut().enumerate() {
+            if j != i && other.tracker.is_tracking(id) {
+                other.send(&C::RemoveEntities(play::RemoveEntities { ids: vec![id] }));
+                other.tracker.forget(id);
+            }
+        }
+        let g = &mut self.guests[i];
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
         g.send(&C::PlayerAbilities(play::PlayerAbilities {
             flags: g.ability_flags(),

@@ -115,6 +115,17 @@ def remote(guest):
     return guest('status')['server']
 
 
+def lan_guest(host):
+    """The guest's entry in the host's `lan status` (on the server thread the owner is listed too)."""
+    guests = host.raw('lan', 'status')['guests']
+    return next(g for g in guests if g['name'] == GUEST_NAME)
+
+
+def dead(guest):
+    """Whether the guest is dead: its death screen (the last health it was sent can stay above 0)."""
+    return guest('state').get('screen') == 'dead' or remote(guest)['health'] <= 0
+
+
 def back_to_game(game):
     """Close whatever screen a failed check left open, without opening the pause menu."""
     try:
@@ -174,9 +185,15 @@ def check_armour(host, guest, out):
     face_each_other(host, guest)
     host.shot(out, 'armour')
     guest.shot(out, 'armour')
-    seen = host.raw('lan', 'status')['guests'][0].get('model_armor')
-    assert seen == [None, 'minecraft:diamond_chestplate', 'minecraft:diamond_leggings', None], \
-        f'the host draws the guest in {seen}'
+    if SERVER_THREAD:
+        # The host's window is a client of its server thread: what it draws is what it was sent.
+        seen = [e for e in remote(host).get('player_equipment', [])]
+        assert all(any(item in json.dumps(e) for e in seen) for item in
+                   ('diamond_chestplate', 'diamond_leggings')), f'the host draws the guest in {seen}'
+    else:
+        seen = lan_guest(host).get('model_armor')
+        assert seen == [None, 'minecraft:diamond_chestplate', 'minecraft:diamond_leggings', None], \
+            f'the host draws the guest in {seen}'
     host_gear = [e for e in remote(guest).get('player_equipment', [])]
     assert any('golden_chestplate' in json.dumps(e) for e in host_gear), f'the guest sees the host in {host_gear}'
     return 'each in their own'
@@ -449,21 +466,21 @@ def check_hazards(host, guest, out):
     guest.wait(10)
     x, y, z = pos_of(guest)
     guest.raw('look-at', f'{x + 60:.2f}', f'{y + 1.6:.2f}', f'{z:.2f}')
-    food = host.raw('lan', 'status')['guests'][0]['food']
+    food = lan_guest(host)['food']
     for k in ('w', 'ctrl', 'space'):
         guest.raw('key', k, 'down')
     guest.wait(160)
     for k in ('space', 'ctrl', 'w'):
         guest.raw('key', k, 'up')
     guest.wait(10)
-    fed = host.raw('lan', 'status')['guests'][0]['food']
+    fed = lan_guest(host)['food']
     hunger = {'before': food, 'after': fed}
     hurt = {}
     hx, hy, hz = (int(v // 1) for v in pos_of(host))
     x, y, z = hx + 3, hy, hz
     for name, fill, ticks in (('lava', 'minecraft:lava', 60), ('wall', 'minecraft:stone', 60),
                               ('drowning', 'minecraft:water', 500), ('void', None, 60)):
-        if remote(guest)['health'] <= 0:
+        if dead(guest):
             guest.raw('respawn')
             guest.wait(40)
         # A stone box around the guest holds the lava and the water in.
@@ -478,13 +495,20 @@ def check_hazards(host, guest, out):
             guest('command', command=f'tp @s {x + 0.5} -140 {z + 0.5}')
         hurt[name] = (before, first_hurt(guest, before, ticks))
         guest.shot(out, f'hazards-{name}')
+        # A dead player's commands are not run: respawn before clearing the box,
+        # and come out of the void before it kills.
+        if dead(guest):
+            guest.raw('respawn')
+            guest.wait(40)
+        elif not fill:
+            guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
         # Water puts the lava's fire out.
         guest('command', command=f'fill {x} {y} {z} {x} {y + 1} {z} minecraft:water')
         guest.wait(5)
         guest('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 1} {y + 2} {z + 1} minecraft:air')
         guest('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 1} {y - 1} {z + 1} minecraft:stone')
     guest.wait(20)
-    if remote(guest)['health'] <= 0:
+    if dead(guest):
         guest.raw('respawn')
         guest.wait(40)
     # [food, saturation, exhaustion]: 8 s of sprint-jumping is about 2 of exhaustion; every 4
@@ -497,6 +521,9 @@ def check_hazards(host, guest, out):
 
 
 def check_pvp(host, guest, out):
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
     for g in (host, guest):
         g('command', command='gamemode survival')
         g('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
@@ -518,7 +545,8 @@ def check_pvp(host, guest, out):
         host('command', command='gamerule pvp true')
     assert hits['guest hits host'][1] < hits['guest hits host'][0], f'the guest did not hurt the host: {hits}'
     assert hits['host hits guest'][1] < hits['host hits guest'][0], f'the host did not hurt the guest: {hits}'
-    assert hits['pvp off'][1] == hits['pvp off'][0], f'pvp off still hurts: {hits}'
+    # Natural regeneration may heal the victim meanwhile; only a hit lowers its health.
+    assert hits['pvp off'][1] >= hits['pvp off'][0], f'pvp off still hurts: {hits}'
     return hits
 
 
@@ -721,7 +749,7 @@ def changed_pixels(a, b):
 def sneaking_on_host(host, want, ticks=40):
     """Whether the host sees the guest crouching, once it matches `want` or after `ticks`."""
     for _ in range(ticks // 5):
-        sneaking = host.raw('lan', 'status')['guests'][0]['sneaking']
+        sneaking = lan_guest(host)['sneaking']
         if sneaking == want:
             return sneaking
         host.wait(5)
@@ -734,7 +762,7 @@ def check_walls(host, guest, out):
     for g in (host, guest):
         back_to_game(g)
     # The trial spawner's zombies may have killed the guest.
-    if guest('state').get('screen') == 'dead' or remote(guest)['health'] <= 0:
+    if dead(guest):
         guest.raw('respawn')
         guest.wait(40)
     face_each_other(host, guest)

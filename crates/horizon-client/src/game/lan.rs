@@ -656,6 +656,12 @@ impl Game<'_> {
         }
     }
 
+    /// What a command changed while the hub was out (`as_guest`), back on
+    /// the hub: `defaultgamemode` run by a guest or the integrated server's owner.
+    pub(super) fn sync_hub_settings(&self, host: &mut LanHost) {
+        host.hub.config.default_game_mode = self.level.mode();
+    }
+
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {

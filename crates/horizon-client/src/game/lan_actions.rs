@@ -847,6 +847,7 @@ impl Game<'_> {
                 g.ui.registries.permission = console;
                 g.chat_capture.take().unwrap_or_default()
             });
+            self.sync_hub_settings(host);
             for line in lines.unwrap_or_default() {
                 host.hub.send_to(
                     conn,
@@ -887,6 +888,7 @@ impl Game<'_> {
                 .map(|t| horizon_client::lan::data::component_nbt(&t.component()))
                 .collect::<Vec<_>>()
         });
+        self.sync_hub_settings(host);
         for content in lines.unwrap_or_default() {
             host.hub.send_to(
                 conn,
