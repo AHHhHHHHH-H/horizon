@@ -88,6 +88,10 @@ pub(super) struct Remote {
     was_sprinting: bool,
     carried: Option<usize>,
     loaded_sent: bool,
+    /// Single player's integrated server, joined through memory.
+    pub local: bool,
+    /// The packets per second F3 shows.
+    pub packet_rates: horizon_client::debug_chart::PacketRates,
     /// Open container: (window id, menu name).
     menu: Option<(i32, String)>,
     /// The open menu's title as the server named it.
@@ -198,6 +202,7 @@ impl Game<'_> {
         // A signed-in account always plays under its own name.
         let auth = horizon_client::auth::current();
         let name = auth.as_ref().map_or(name, |a| a.name.as_str());
+        let is_local = local.is_some();
         let session = match local {
             Some(pipe) => Session::connect_local(pipe, name, view, lang.clone()),
             None => {
@@ -271,6 +276,8 @@ impl Game<'_> {
             was_sprinting: false,
             carried: None,
             loaded_sent: false,
+            local: is_local,
+            packet_rates: Default::default(),
             menu: None,
             menu_title: None,
             state_id: 0,

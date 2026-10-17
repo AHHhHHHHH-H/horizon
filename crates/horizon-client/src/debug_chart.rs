@@ -77,6 +77,37 @@ pub struct DebugCharts {
     previous_tick: Option<Instant>,
     bytes_seen: Option<i64>,
 }
+/// `Connection.getAverageSentPackets` / `getAverageReceivedPackets`: once a second
+/// (`Connection.tick`, every 20 ticks from the first) each average moves a quarter of
+/// the way to the packets counted since the last time.
+#[derive(Debug, Default, Clone)]
+pub struct PacketRates {
+    /// The connection's totals at the last update.
+    seen: Option<(i64, i64)>,
+    ticks: u32,
+    pub sent: f32,
+    pub received: f32,
+}
+impl PacketRates {
+    /// One client tick, with the connection's sent and received packet totals.
+    pub fn tick(&mut self, sent: i64, received: i64) {
+        let tick = self.ticks;
+        self.ticks = self.ticks.wrapping_add(1);
+        if !tick.is_multiple_of(20) {
+            return;
+        }
+        let (last_sent, last_received) = self.seen.unwrap_or((0, 0));
+        // Mth.lerp(0.75, count, average).
+        let lerp = |count: i64, average: f32| {
+            let count = (count.max(0)) as f32;
+            count + 0.75 * (average - count)
+        };
+        self.sent = lerp(sent - last_sent, self.sent);
+        self.received = lerp(received - last_received, self.received);
+        self.seen = Some((sent, received));
+    }
+}
+
 impl DebugCharts {
     /// `toggleFpsCharts`; `overlay` is the debug overlay's visibility.
     pub fn toggle_fps(&mut self, overlay: &mut bool) {
@@ -480,6 +511,19 @@ fn shaded(out: &mut Vec<GuiDraw>, font: &Font, s: &str, x: i32, y: i32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packet_rates_move_a_quarter_of_the_way_each_second() {
+        let mut rates = super::PacketRates::default();
+        // The first tick already counts (Connection.tick's tickCount++ % 20 == 0).
+        rates.tick(40, 400);
+        assert_eq!((rates.sent, rates.received), (10.0, 100.0));
+        for _ in 1..20 {
+            rates.tick(1000, 1000);
+            assert_eq!((rates.sent, rates.received), (10.0, 100.0));
+        }
+        rates.tick(80, 400);
+        assert_eq!((rates.sent, rates.received), (17.5, 75.0));
+    }
     use super::*;
 
     #[test]

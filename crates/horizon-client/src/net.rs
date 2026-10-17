@@ -56,6 +56,8 @@ pub struct Session {
     pub address: String,
     pub name: String,
     pub counters: Arc<Mutex<Option<Arc<Counters>>>>,
+    /// The server's minecraft:brand payload (ClientCommonPacketListenerImpl.serverBrand).
+    pub brand: Arc<Mutex<Option<String>>>,
     /// HORIZON_NET_DEBUG=1 logs every packet sent from the game thread.
     debug: bool,
 }
@@ -90,7 +92,9 @@ impl Session {
         let (send, events) = channel();
         let writer = Arc::new(Mutex::new(None));
         let counters = Arc::new(Mutex::new(None));
-        let (thread_writer, thread_counters) = (writer.clone(), counters.clone());
+        let brand = Arc::new(Mutex::new(None));
+        let (thread_writer, thread_counters, thread_brand) =
+            (writer.clone(), counters.clone(), brand.clone());
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
@@ -105,6 +109,7 @@ impl Session {
                     &send,
                     &thread_writer,
                     &thread_counters,
+                    &thread_brand,
                 );
                 let from_server = result.is_ok();
                 let reason = result.unwrap_or_else(|e| e);
@@ -125,6 +130,7 @@ impl Session {
             address: address.to_owned(),
             name: name.to_owned(),
             counters,
+            brand,
             debug,
         }
     }
@@ -251,6 +257,7 @@ fn run(
     send: &Sender<Event>,
     shared_writer: &Mutex<Option<ConnWriter>>,
     shared_counters: &Mutex<Option<Arc<Counters>>>,
+    server_brand: &Mutex<Option<String>>,
 ) -> Result<String, String> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -374,7 +381,7 @@ fn run(
     .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
-    let registries = configure(&mut reader, shared_writer, lang)?;
+    let registries = configure(&mut reader, shared_writer, lang, server_brand)?;
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
         uuid: profile.uuid,
@@ -413,10 +420,13 @@ fn run(
             }
             play::Clientbound::StartConfiguration(_) => {
                 reply(play::Serverbound::ConfigurationAcknowledged(Empty));
-                let registries = configure(&mut reader, shared_writer, lang)?;
+                let registries = configure(&mut reader, shared_writer, lang, server_brand)?;
                 let _ = send.send(Event::Reconfigured(Arc::new(registries)));
             }
             play::Clientbound::Disconnect(d) => return Ok(plain(&d.reason, lang)),
+            play::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
+                set_brand(server_brand, &p.data);
+            }
             other => {
                 if send.send(Event::Packet(Box::new(other))).is_err() {
                     return Ok("Disconnected".into());
@@ -432,6 +442,7 @@ fn configure(
     reader: &mut ConnReader,
     writer: &Mutex<Option<ConnWriter>>,
     lang: &Language,
+    server_brand: &Mutex<Option<String>>,
 ) -> Result<Dynamic, String> {
     let mut registries = Dynamic::default();
     let reply = |p: cfg::Serverbound| -> Result<(), String> {
@@ -452,6 +463,9 @@ fn configure(
                 }))?
             }
             cfg::Clientbound::RegistryData(r) => registries.add(r),
+            cfg::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
+                set_brand(server_brand, &p.data);
+            }
             cfg::Clientbound::CodeOfConduct(_) => {
                 reply(cfg::Serverbound::AcceptCodeOfConduct(Empty))?
             }
@@ -474,6 +488,13 @@ fn configure(
             }
             _ => {}
         }
+    }
+}
+
+/// BrandPayload: the name the server gives itself, shown on F3.
+fn set_brand(shared: &Mutex<Option<String>>, data: &[u8]) {
+    if let Ok(brand) = horizon_protocol::buf::Reader::new(data).string(32767) {
+        *shared.lock().unwrap() = Some(brand);
     }
 }
 

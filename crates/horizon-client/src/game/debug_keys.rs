@@ -187,20 +187,25 @@ impl Game<'_> {
     /// they show, `BandwidthDebugMonitor.tick` always.
     pub(super) fn tick_debug_charts(&mut self) {
         let shown = self.debug && self.debug_charts.network;
-        let Some(r) = &self.remote else {
+        let Some(r) = &mut self.remote else {
             // The integrated server answers within the tick.
             if shown {
                 self.debug_charts.ping.log(0);
             }
             return;
         };
-        let received = r
-            .session
-            .counters
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|c| c.bytes_in.load(std::sync::atomic::Ordering::Relaxed));
+        let totals = r.session.counters.lock().unwrap().as_ref().map(|c| {
+            use std::sync::atomic::Ordering::Relaxed;
+            (
+                c.bytes_in.load(Relaxed),
+                c.sent.load(Relaxed),
+                c.received.load(Relaxed),
+            )
+        });
+        let received = totals.map(|(bytes, sent, packets)| {
+            r.packet_rates.tick(sent, packets);
+            bytes
+        });
         if let Some(total) = received {
             self.debug_charts.log_bandwidth(total);
         }
@@ -403,8 +408,27 @@ impl Game<'_> {
                 ],
             );
         }
-        // tps: DebugEntryTps for the integrated server (it counts no packets).
-        if self.player.is_some() && self.remote.is_none() {
+        // tps: DebugEntryTps. Single player without its server thread has no connection, so
+        // it counts no packets.
+        let rates = self.remote.as_ref().map_or((0.0, 0.0), |r| {
+            (r.packet_rates.sent, r.packet_rates.received)
+        });
+        if let Some(r) = self.remote.as_ref().filter(|r| !r.local) {
+            let status = if self.clock.stepping() {
+                " (frozen - stepping)"
+            } else if self.clock.frozen() {
+                " (frozen)"
+            } else {
+                ""
+            };
+            let brand = r.session.brand.lock().unwrap().clone();
+            d.line(format!(
+                "\"{}\" server{status}, {:.0} tx, {:.0} rx",
+                brand.as_deref().unwrap_or("null"),
+                rates.0,
+                rates.1
+            ));
+        } else if self.player.is_some() || self.remote.is_some() {
             let (target, status) = if self.clock.sprinting() {
                 ("-".to_owned(), " (sprinting)")
             } else if self.clock.stepping() {
@@ -418,8 +442,8 @@ impl Game<'_> {
                 (format!("{:.1}", 1000.0 / self.clock.rate()), "")
             };
             d.line(format!(
-                "Integrated server @ {:.1}/{target} ms{status}, 0 tx, 0 rx",
-                self.debug_charts.smoothed_tick_ms
+                "Integrated server @ {:.1}/{target} ms{status}, {:.0} tx, {:.0} rx",
+                self.debug_charts.smoothed_tick_ms, rates.0, rates.1
             ));
         }
         let (left, right) = d.columns(&self.debug_chart_lines());
