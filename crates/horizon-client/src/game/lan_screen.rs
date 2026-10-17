@@ -483,7 +483,30 @@ impl Game<'_> {
         let Exit::Apply(changes) = exit else {
             return;
         };
-        if !self.allow_commands() || changes.is_empty() {
+        if changes.is_empty() {
+            return;
+        }
+        // The world (and whether it allows commands) is the server
+        // thread's when there is one.
+        let applied = match &self.integrated {
+            Some(server) => {
+                let sent = changes.clone();
+                server
+                    .call(move |g| {
+                        if !g.allow_commands() {
+                            return false;
+                        }
+                        for (name, value) in sent {
+                            g.ui.rules.set(name, value);
+                        }
+                        g.sync_rules();
+                        true
+                    })
+                    .unwrap_or(false)
+            }
+            None => self.allow_commands(),
+        };
+        if !applied {
             return;
         }
         for (name, value) in changes {
@@ -789,7 +812,13 @@ impl Game<'_> {
             Some(Button::Lock) => o.locked = !o.locked,
             Some(Button::Restrictions) => o.view = View::Restrictions,
             Some(Button::GameRules) => {
-                o.rules = Some(RulesScreen::new(&self.ui.rules));
+                // The world's rules are the server thread's when there is one.
+                let rules = self
+                    .integrated
+                    .as_ref()
+                    .and_then(|s| s.call(|g| g.ui.rules.clone()))
+                    .unwrap_or_else(|| self.ui.rules.clone());
+                o.rules = Some(RulesScreen::new(&rules));
                 o.view = View::GameRules;
             }
             Some(Button::Lan) => {
