@@ -97,11 +97,31 @@ pub struct ChunkEncoder {
     cache: std::sync::Mutex<FxHashMap<usize, Encoded>>,
     /// Each column's heightmaps, with the sections they were made from.
     heights: std::sync::Mutex<HashMap<(i32, i32), Heights>>,
+    /// Each column's non-air sections, with the sections they were found in.
+    occupied: std::sync::Mutex<FxHashMap<(i32, i32), Occupied>>,
     /// The level's sections among a column's: all of them in the Overworld,
     /// y 0 to 255 in the Nether and the End (`DimensionType` min_y and height).
     sections: std::ops::Range<usize>,
     /// Whether the level has sky light (`DimensionType.hasSkyLight`).
     sky: bool,
+}
+
+/// A column's non-air sections as bits (bit i for the level's section i),
+/// valid while it holds the same sections: what nine columns' worth of
+/// section lookups would give, for each column sent.
+struct Occupied {
+    sections: Vec<std::sync::Weak<Section>>,
+    bits: u64,
+}
+
+/// Whether a column still holds the sections `weak` was made from (the
+/// `Weak`s keep their addresses from being reused).
+fn same_sections(weak: &[std::sync::Weak<Section>], sections: &[Arc<Section>]) -> bool {
+    weak.len() == sections.len()
+        && weak
+            .iter()
+            .zip(sections)
+            .all(|(w, s)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(s)))
 }
 
 /// A column's client heightmaps, valid while it holds the same sections.
@@ -226,6 +246,7 @@ impl ChunkEncoder {
             tables: None,
             cache: Default::default(),
             heights: Default::default(),
+            occupied: Default::default(),
             sections: 0..SECTIONS,
             sky: true,
         }
@@ -234,16 +255,9 @@ impl ChunkEncoder {
     /// The client heightmaps (Heightmap.prime over the column), from the
     /// cache while the column's sections are unchanged.
     fn heightmaps(&self, chunk: &Chunk, tables: &crate::save::SaveTables) -> ColumnHeightmaps {
-        let same = |h: &Heights| {
-            h.sections.len() == chunk.sections.len()
-                && h.sections
-                    .iter()
-                    .zip(&chunk.sections)
-                    .all(|(w, s)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(s)))
-        };
         let mut heights = self.heights.lock().unwrap();
         if let Some(h) = heights.get(&(chunk.x, chunk.z))
-            && same(h)
+            && same_sections(&h.sections, &chunk.sections)
         {
             return h.maps.clone();
         }
@@ -330,8 +344,9 @@ impl ChunkEncoder {
         let n = usize::try_from(height >> 4).unwrap_or(SECTIONS);
         self.sections = lo..(lo + n).min(SECTIONS);
         self.sky = sky;
-        // The heightmaps depend on the level's height.
+        // The heightmaps and the section bits depend on the level's height.
         self.heights.get_mut().unwrap().clear();
+        self.occupied.get_mut().unwrap().clear();
     }
     pub fn entity_type(&self, state: u16) -> Option<i32> {
         self.entity_types
@@ -401,27 +416,52 @@ impl ChunkEncoder {
         )
     }
 
-    /// The chunk column with its light and block entities.
     /// The non-air sections of a column as bits (LevelChunkSection.hasOnlyAir).
+    #[cfg(test)]
     fn occupied(&self, chunk: &Chunk) -> u64 {
+        self.occupied_in(&mut self.occupied.lock().unwrap(), chunk)
+    }
+
+    /// The column's bits from `columns` while it holds the same sections,
+    /// or from its sections' entries.
+    fn occupied_in(&self, columns: &mut FxHashMap<(i32, i32), Occupied>, chunk: &Chunk) -> u64 {
+        let sections = &chunk.sections[self.sections.clone()];
+        if let Some(o) = columns.get(&(chunk.x, chunk.z))
+            && same_sections(&o.sections, sections)
+        {
+            return o.bits;
+        }
+        if columns.len() >= CACHE_SWEEP {
+            columns.retain(|_, o| o.sections.iter().all(|w| w.strong_count() > 0));
+            if columns.len() >= CACHE_SWEEP / 2 {
+                columns.clear();
+            }
+        }
         let mut bits = 0u64;
-        // One lock for the column: body_in asks for nine columns' sections.
         let mut cache = self.cache.lock().unwrap();
-        for (i, s) in chunk.sections[self.sections.clone()].iter().enumerate() {
+        for (i, s) in sections.iter().enumerate() {
             if self.entry(&mut cache, s).non_air {
                 bits |= 1 << i;
             }
         }
+        columns.insert(
+            (chunk.x, chunk.z),
+            Occupied {
+                sections: sections.iter().map(Arc::downgrade).collect(),
+                bits,
+            },
+        );
         bits
     }
 
     /// The non-air sections of the column and its neighbours, as bits.
     fn around(&self, chunk: &Chunk, world: &crate::world::World) -> u64 {
+        let mut columns = self.occupied.lock().unwrap();
         let mut around = 0u64;
         for dz in -1..=1 {
             for dx in -1..=1 {
                 if let Some(c) = world.chunks.get(&(chunk.x + dx, chunk.z + dz)) {
-                    around |= self.occupied(c);
+                    around |= self.occupied_in(&mut columns, c);
                 }
             }
         }
