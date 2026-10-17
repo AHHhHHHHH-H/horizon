@@ -149,6 +149,8 @@ fn equal_grids_share_storage_without_collapsing_shape_identities() {
     let first = collision.cached_shape(BlockStateId(1)).unwrap().unwrap();
     let second = collision.cached_shape(BlockStateId(2)).unwrap().unwrap();
     assert!(!first.same_identity(second));
+    assert_ne!(first.identity_key(), second.identity_key());
+    assert_eq!(first.identity_key(), first.clone().identity_key());
     assert!(std::ptr::eq(
         first.boxes().as_ptr(),
         second.boxes().as_ptr()
@@ -191,6 +193,8 @@ fn canonical_shapes_restore_global_identity_without_normalizing_equal_grids() {
     assert!(empty.same_identity(&VoxelShape::empty()));
     assert!(block.same_identity(&VoxelShape::block()));
     assert!(!separate.same_identity(&VoxelShape::block()));
+    assert_ne!(block.identity_key(), separate.identity_key());
+    assert_eq!(block.identity_key(), VoxelShape::block().identity_key());
     assert_eq!(block.boxes(), separate.boxes());
     assert!(std::ptr::eq(
         block.boxes().as_ptr(),

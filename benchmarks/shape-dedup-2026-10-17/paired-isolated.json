@@ -1,0 +1,141 @@
+{
+  "scope": "registry plus world Behaviours::load, ending before fixture cases; not full client startup",
+  "utc_start": "2026-10-17T00:05:49.411837+00:00",
+  "platform": "Linux-7.2.8-zen1-2-zen-x86_64-with-glibc2.44",
+  "python": "3.14.7",
+  "cpu_model": "AMD Ryzen 5 5600X 6-Core Processor",
+  "available_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "resources": "/srv/bob-data/horizon/.local/horizon-client/26.3",
+  "resource_sha256": {
+    "facts.json": "1d24883ee807b0b71473f0bbf8ed548ddaf712148caeb3fcc7aa13ab973a97b0",
+    "block-behaviours.json": "485a4542ac64ef6b1e61111c77f4e11ae4906225319f1ccbdcaf1a3ea5682a7d",
+    "gameplay-facts.json": "dc5b038007a46acbed8d93dbb8578a67d67a9bad56376af997d5d315076285cd",
+    "block-tags.json": "5e1301e5a9abf7e4de93af5dae3a157e852dbdb4ea345c2eb626305a605d4f98",
+    "cached-collision.nbt": "4a274cd720a1bda585b02f50f16e90246576679e1e173c214548c5cbf607ab2d"
+  },
+  "profile": "fast",
+  "binaries": {
+    "baseline": {
+      "path": "/srv/bob-data/horizon/.local/shape-identity-baseline-target/fast/examples/level_shape_fixture",
+      "sha256": "7b67c7669266f6fb35ae2f73720815b2f59d6140e7d5b9c78cebd7a754337f4f"
+    },
+    "optimized": {
+      "path": "/srv/bob-data/horizon/.local/shape-identity-optimized-target/fast/examples/level_shape_fixture",
+      "sha256": "7fbe483b5198413a4fe86619514d7826333ec6bbbd7098c668fc4cbad836fb0a"
+    }
+  },
+  "warmups_per_binary": 3,
+  "samples_per_binary": 15,
+  "comparison_order": "alternating baseline/optimized then optimized/baseline",
+  "results": {
+    "baseline": {
+      "samples_ms": [
+        1608.751,
+        1491.864,
+        1435.741,
+        1353.072,
+        1381.58,
+        1386.77,
+        1359.812,
+        1318.51,
+        2728.992,
+        2586.944,
+        2956.85,
+        2735.172,
+        3152.716,
+        3001.481,
+        2993.135
+      ],
+      "min_ms": 1318.51,
+      "p10_ms": 1353.072,
+      "median_ms": 1608.751,
+      "p90_ms": 2993.135,
+      "max_ms": 3152.716,
+      "mean_ms": 2099.426,
+      "stdev_ms": 769.168
+    },
+    "optimized": {
+      "samples_ms": [
+        1639.422,
+        1444.424,
+        1334.693,
+        1294.388,
+        1291.048,
+        1350.791,
+        1339.356,
+        1265.935,
+        1560.048,
+        2971.867,
+        2446.653,
+        2532.461,
+        2665.564,
+        2907.129,
+        3045.165
+      ],
+      "min_ms": 1265.935,
+      "p10_ms": 1291.048,
+      "median_ms": 1560.048,
+      "p90_ms": 2907.129,
+      "max_ms": 3045.165,
+      "mean_ms": 1939.263,
+      "stdev_ms": 717.266
+    }
+  },
+  "system_load_1m_after_each_pair": [
+    7.8,
+    7.57,
+    7.57,
+    7.37,
+    7.26,
+    7.26,
+    6.92,
+    6.92,
+    8.12,
+    9.64,
+    10.31,
+    11.32,
+    11.7,
+    12.97,
+    14.33
+  ],
+  "paired_after_minus_before_ms": {
+    "samples_ms": [
+      30.671,
+      -47.441,
+      -101.049,
+      -58.685,
+      -90.532,
+      -35.979,
+      -20.456,
+      -52.575,
+      -1168.944,
+      384.923,
+      -510.197,
+      -202.711,
+      -487.152,
+      -94.351,
+      52.03
+    ],
+    "min_ms": -1168.944,
+    "p10_ms": -510.197,
+    "median_ms": -58.685,
+    "p90_ms": 30.671,
+    "max_ms": 384.923,
+    "mean_ms": -160.163,
+    "stdev_ms": 349.454
+  },
+  "utc_end": "2026-10-17T00:06:58.965860+00:00"
+}

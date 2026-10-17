@@ -1,0 +1,21 @@
+{
+  "scope": "world behaviour-loader process startup to completed Behaviours::load",
+  "commit": "f535d1b48ce344dad1c729b844b503824386627d",
+  "platform": "Linux-7.2.8-zen1-2-zen-x86_64-with-glibc2.44",
+  "resources": "/srv/bob-data/horizon/.local/horizon-client/26.3",
+  "profile": "fast",
+  "warmups": 2,
+  "runs": 7,
+  "samples_ms": [
+    1442.683,
+    1387.391,
+    1459.384,
+    1525.302,
+    1719.678,
+    1583.252,
+    1517.992
+  ],
+  "median_ms": 1517.992,
+  "min_ms": 1387.391,
+  "max_ms": 1719.678
+}

@@ -153,6 +153,12 @@ impl VoxelShape {
     pub fn same_identity(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.identity, &other.identity)
     }
+    /// Lookup key for the same identity relation as [`Self::same_identity`].
+    /// Only keep this key while the shape (or one of its clones) is alive;
+    /// a new allocation can reuse the pointer after the last clone is dropped.
+    pub fn identity_key(&self) -> usize {
+        Arc::as_ptr(&self.identity) as usize
+    }
     /// A separately constructed shape with the same immutable grid. Storage is
     /// shared, while identity-sensitive vanilla join shortcuts remain distinct.
     pub fn fresh_identity(&self) -> Self {
