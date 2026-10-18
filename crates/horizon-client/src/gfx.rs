@@ -58,6 +58,7 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
 }
 
 mod arena;
+mod cull;
 mod flat;
 mod java_stages;
 mod occlusion;
@@ -270,6 +271,9 @@ pub struct Renderer {
     flat: Option<flat::Flat>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
+    /// Occlusion culling of solid section draws, where multi-draw is native.
+    cull: Option<cull::Cull>,
+    cull_on: bool,
     sky: wgpu::RenderPipeline,
     dark_disc: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
@@ -1100,7 +1104,9 @@ impl Renderer {
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Section origins"),
             size: instance_capacity * 16,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let outline = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1739,12 +1745,23 @@ impl Renderer {
         let indirect = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Section draws"),
             size: 1024 * 20,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+        // HORIZON_GPU_CULL=0 turns occlusion culling off, 1 on where it is
+        // not by default (Metal replays multi-draws on the CPU).
+        let cull = match std::env::var("HORIZON_GPU_CULL").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => cull::Cull::supported(info.backend),
+        }
+        .then(|| cull::Cull::new(&device))
+        .filter(|_| multi_draw);
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
@@ -1772,6 +1789,8 @@ impl Renderer {
             solid,
             translucent,
             flat_on: flat.is_some(),
+            cull_on: cull.is_some(),
+            cull,
             flat,
             sky,
             dark_disc,
@@ -1933,7 +1952,9 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                // Occlusion culling reads the world's depth.
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -1996,6 +2017,18 @@ impl Renderer {
             return Err("flat section draws are off on this device".into());
         }
         self.flat_on = on;
+        Ok(())
+    }
+    /// Whether solid sections are occlusion culled (`cull`).
+    pub fn section_cull(&self) -> bool {
+        self.cull_on
+    }
+    /// Switches occlusion culling, for A/B checks.
+    pub fn set_section_cull(&mut self, on: bool) -> Result<()> {
+        if on && self.cull.is_none() {
+            return Err("occlusion culling is off on this device".into());
+        }
+        self.cull_on = on;
         Ok(())
     }
     pub fn section_count(&self) -> usize {
@@ -2117,7 +2150,13 @@ impl Renderer {
     /// origins bound: one indirect multi-draw, or a loop without it.
     /// Consecutive draws in one arena page share a vertex buffer binding,
     /// keeping the list's order (translucent sections go back to front).
-    fn draw_sections(&self, pass: &mut wgpu::RenderPass<'_>, first: u32, count: u32) {
+    fn draw_sections(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        first: u32,
+        count: u32,
+    ) {
         let (mut i, end) = (first as usize, (first + count) as usize);
         while i < end {
             let (page, index_page) = self.draw_pages[i];
@@ -2129,7 +2168,7 @@ impl Renderer {
             let indices = index_page.map_or(&self.indices, |p| self.sorted_indices.buffer(p));
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             if self.multi_draw {
-                pass.multi_draw_indexed_indirect(&self.indirect, i as u64 * 20, run as u32);
+                pass.multi_draw_indexed_indirect(indirect, i as u64 * 20, run as u32);
             } else {
                 for d in &self.draws[i..i + run] {
                     pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
@@ -2574,7 +2613,9 @@ impl Renderer {
             self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Section origins"),
                 size: self.instance_capacity * 16,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::VERTEX
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
         }
@@ -2833,6 +2874,8 @@ impl Renderer {
             frame.hud,
             [self.config.width, self.config.height],
         );
+        let cull_wanted = self.cull_on && !frame.title && solid_draws > 0;
+        let mut cull_staged = false;
         let flat_frame = match &mut self.flat {
             Some(flat)
                 if self.flat_on && !self.draws.is_empty() && self.draws.len() >= flat.min_draws =>
@@ -2864,7 +2907,9 @@ impl Renderer {
                 self.indirect = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("Section draws"),
                     size: self.indirect_capacity * 20,
-                    usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+                    usage: wgpu::BufferUsages::INDIRECT
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::STORAGE,
                     mapped_at_creation: false,
                 });
             }
@@ -2874,6 +2919,17 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&self.draws),
             );
+            if cull_wanted && let Some(cull) = &mut self.cull {
+                cull.upload(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    visible.iter().map(|v| v.slot),
+                    u64::from(solid_draws),
+                    [self.config.width, self.config.height],
+                );
+                cull_staged = true;
+            }
         }
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
@@ -2890,6 +2946,17 @@ impl Renderer {
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
+        };
+        let cull_group = match &self.cull {
+            Some(cull) if cull_staged && scaled.is_none() => Some(cull.prepare(
+                &self.device,
+                &mut encoder,
+                &self.indirect,
+                &self.instances,
+                &self.globals,
+                solid_draws,
+            )),
+            _ => None,
         };
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -2919,8 +2986,9 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        // A shader pack reads the world's depth.
-                        store: if pack {
+                        // A shader pack reads the world's depth, and
+                        // so does occlusion culling after phase 1.
+                        store: if pack || cull_group.is_some() {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -2970,7 +3038,52 @@ impl Renderer {
                     pass.set_pipeline(&self.solid);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
-                    self.draw_sections(&mut pass, 0, solid_draws);
+                    match (&self.cull, &cull_group) {
+                        (Some(cull), Some(group)) => {
+                            // Phase 1, then what the Hi-Z test of its depth
+                            // finds in sight, in a pass that loads both.
+                            self.draw_sections(&mut pass, &cull.phase1, 0, solid_draws);
+                            drop(pass);
+                            cull.test(&self.device, &mut encoder, group, world_depth, solid_draws);
+                            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                                view: world_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })];
+                            pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Horizon world, after culling"),
+                                color_attachments: &attachments,
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: world_depth,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: if pack {
+                                                wgpu::StoreOp::Store
+                                            } else {
+                                                wgpu::StoreOp::Discard
+                                            },
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                ..Default::default()
+                            });
+                            pass.set_bind_group(0, &self.group, &[]);
+                            pass.set_pipeline(&self.solid);
+                            pass.set_index_buffer(
+                                self.indices.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            pass.set_vertex_buffer(1, self.instances.slice(..));
+                            self.draw_sections(&mut pass, &cull.phase2, 0, solid_draws);
+                        }
+                        _ => self.draw_sections(&mut pass, &self.indirect, 0, solid_draws),
+                    }
                 }
             }
             if entity_quads > 0 {
@@ -3022,7 +3135,7 @@ impl Renderer {
                     pass.set_pipeline(&self.translucent);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
-                    self.draw_sections(&mut pass, solid_draws, translucent_draws);
+                    self.draw_sections(&mut pass, &self.indirect, solid_draws, translucent_draws);
                 }
             }
             // LevelRenderer.executeClassicTransparency: translucent targets'
