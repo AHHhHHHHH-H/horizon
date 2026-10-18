@@ -101,15 +101,16 @@ fn axis(g: usize) -> (usize, bool) {
 /// The group of one quad, and its plane: an axis group only when all four
 /// corners lie exactly in one axis plane.
 fn facing(quad: &[TerrainVertex]) -> (usize, f32) {
-    let p = |i: usize| Vec3::from(quad[i].pos);
+    let pos: [[f32; 3]; 4] = std::array::from_fn(|i| quad[i].pos());
+    let p = |i: usize| Vec3::from(pos[i]);
     let normal = (p(1) - p(0)).cross(p(2) - p(0));
     for axis in 0..3 {
         let [a, b] = [(axis + 1) % 3, (axis + 2) % 3];
-        let plane = quad[0].pos[axis];
+        let plane = pos[0][axis];
         if normal[axis] != 0.0
             && normal[a] == 0.0
             && normal[b] == 0.0
-            && quad.iter().all(|v| v.pos[axis] == plane)
+            && pos.iter().all(|v| v[axis] == plane)
         {
             let negative = NEGATIVE[axis];
             let g = if normal[axis] > 0.0 {
@@ -175,13 +176,7 @@ mod tests {
     use super::*;
 
     fn vertex(pos: [f32; 3], layer: u16) -> TerrainVertex {
-        TerrainVertex {
-            pos,
-            uv: [0.0; 2],
-            layer,
-            light: 0,
-            color: 0,
-        }
+        TerrainVertex::new(pos, [0.0; 2], layer, 0, 0)
     }
     /// A unit quad in the plane `axis = plane`, wound to face `sign`, tagged
     /// with `layer` so tests can follow it.
@@ -213,8 +208,8 @@ mod tests {
                 let (g, plane) = facing(&q);
                 assert_eq!(axis(g), (a, sign > 0.0), "axis {a} sign {sign}");
                 assert_eq!(plane, 4.0);
-                let normal = (Vec3::from(q[1].pos) - Vec3::from(q[0].pos))
-                    .cross(Vec3::from(q[2].pos) - Vec3::from(q[0].pos));
+                let normal = (Vec3::from(q[1].pos()) - Vec3::from(q[0].pos()))
+                    .cross(Vec3::from(q[2].pos()) - Vec3::from(q[0].pos()));
                 assert_eq!(normal[a].signum(), sign);
             }
         }

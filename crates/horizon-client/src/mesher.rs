@@ -39,22 +39,96 @@ pub struct Vertex {
     /// RGBA8_SNORM face normal; w = -127 for two-sided lighting, 0 to keep baked/unlit colour.
     pub normal: [i8; 4],
 }
-/// A section vertex, 28 bytes like vanilla's `DefaultVertexFormat.BLOCK`
-/// (position, colour, UV0, UV2) with the sprite's array layer beside the
-/// light. Terrain has no normal: `ModelBlockRenderer` bakes the face shade
-/// into the colour and `terrain.vsh` only multiplies it by the lightmap.
+/// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
+/// UV0, UV2) with the sprite's array layer beside the light, packed into 20
+/// bytes (vanilla's float layout is 28) because integrated GPUs spend most of
+/// a terrain frame fetching vertices. Terrain has no normal:
+/// `ModelBlockRenderer` bakes the face shade into the colour and
+/// `terrain.vsh` only multiplies it by the lightmap.
+///
+/// The fixed-point position and UV hold model coordinates (multiples of 1/16
+/// and their halves) exactly; `terrain.wgsl`'s `terrain_position` and
+/// `terrain_uv` decode them.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainVertex {
-    /// Section-relative position.
-    pub pos: [f32; 3],
-    pub uv: [f32; 2],
+    /// Section-relative x, y, z as 21-bit fixed point (`POSITION_STEPS` per
+    /// block, from `-POSITION_OFFSET`): x in bits 0..21, y in 21..42, z in 42..63.
+    pos: [u32; 2],
+    /// RGBA8: tint multiplied by directional shade and ambient occlusion.
+    pub color: u32,
+    /// UV within the sprite, `UV_STEPS` per unit.
+    uv: [u16; 2],
     /// Sprite array layer, with `OPAQUE_LAYER` for opaque leaves.
     pub layer: u16,
     /// Smooth light, 16x fixed point: sky in the low byte, block in the high one.
     pub light: u16,
-    /// RGBA8: tint multiplied by directional shade and ambient occlusion.
-    pub color: u32,
+}
+/// Fixed-point steps per block of `TerrainVertex` positions, and the offset
+/// that keeps model elements reaching outside the section (`[-1, 2]` blocks
+/// around each block, plus block offsets) positive: positions span `[-8, 24)`.
+pub const POSITION_STEPS: f32 = 65536.0;
+pub const POSITION_OFFSET: f32 = 8.0;
+const POSITION_MASK: u64 = (1 << 21) - 1;
+/// Fixed-point steps per unit of `TerrainVertex` UVs: `[0, 2)`.
+pub const UV_STEPS: f32 = 32768.0;
+impl TerrainVertex {
+    pub fn new(pos: [f32; 3], uv: [f32; 2], layer: u16, color: u32, light: u16) -> Self {
+        let fixed = |v: f32, offset: f32, steps: f32, max: u64| {
+            ((f64::from(v) + f64::from(offset)) * f64::from(steps))
+                .round()
+                .clamp(0.0, max as f64) as u64
+        };
+        let [x, y, z] = pos.map(|v| fixed(v, POSITION_OFFSET, POSITION_STEPS, POSITION_MASK));
+        let packed = x | y << 21 | z << 42;
+        Self {
+            pos: [packed as u32, (packed >> 32) as u32],
+            color,
+            uv: uv.map(|v| fixed(v, 0.0, UV_STEPS, u64::from(u16::MAX)) as u16),
+            layer,
+            light,
+        }
+    }
+    /// The section-relative position the GPU draws.
+    pub fn pos(&self) -> [f32; 3] {
+        let packed = u64::from(self.pos[0]) | u64::from(self.pos[1]) << 32;
+        [0, 21, 42].map(|shift| {
+            (packed >> shift & POSITION_MASK) as f32 / POSITION_STEPS - POSITION_OFFSET
+        })
+    }
+    /// The UV the GPU samples.
+    pub fn uv(&self) -> [f32; 2] {
+        self.uv.map(|v| f32::from(v) / UV_STEPS)
+    }
+}
+#[cfg(test)]
+mod vertex_tests {
+    use super::TerrainVertex;
+    #[test]
+    fn model_coordinates_pack_exactly() {
+        // Every 1/32 block over the range model elements can reach, and
+        // every 1/32 of a sprite.
+        for i in -48..=18 * 32 {
+            let p = i as f32 / 32.0;
+            let v = TerrainVertex::new([p, 15.0 - p, p * 0.5], [0.0, 1.0], 0, 0, 0);
+            assert_eq!(v.pos(), [p, 15.0 - p, p * 0.5]);
+        }
+        for i in 0..=32 {
+            let u = i as f32 / 32.0;
+            let v = TerrainVertex::new([0.0; 3], [u, 1.0 - u], 0, 0, 0);
+            assert_eq!(v.uv(), [u, 1.0 - u]);
+        }
+    }
+    #[test]
+    fn other_coordinates_round_within_a_fixed_point_step() {
+        // A block offset (vanilla's (seed & 15) / 15 * 0.5 - 0.25) and a
+        // rotated element's corner.
+        let p = [7.0 + 4.0 / 15.0 * 0.5 - 0.25, 22.5f32.to_radians().sin(), -0.3];
+        let v = TerrainVertex::new(p, [0.0; 2], 0, 0, 0);
+        for (a, b) in v.pos().iter().zip(p) {
+            assert!((a - b).abs() <= 0.5 / 65536.0, "{a} {b}");
+        }
+    }
 }
 pub struct SectionMesh {
     pub solid: Vec<TerrainVertex>,
@@ -786,18 +860,18 @@ impl Mesher<'_> {
                 None => [g; 3],
             };
             let p = q.positions[i];
-            target.push(TerrainVertex {
-                pos: [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
-                uv: q.uv[i],
+            target.push(TerrainVertex::new(
+                [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                q.uv[i],
                 // Opaque leaves (forceOpaque) draw in the solid layer: no alpha cutout.
-                layer: if !self.cutout_leaves && state.leaves {
+                if !self.cutout_leaves && state.leaves {
                     face.layer as u16 | OPAQUE_LAYER
                 } else {
                     face.layer as u16
                 },
-                color: pack_rgb(rgb),
-                light: pack_coords(lighting::with_emission(coords[i], q.light_emission)),
-            });
+                pack_rgb(rgb),
+                pack_coords(lighting::with_emission(coords[i], q.light_emission)),
+            ));
         }
     }
 }

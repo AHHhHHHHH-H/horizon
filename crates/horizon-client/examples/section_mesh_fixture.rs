@@ -159,12 +159,13 @@ fn scene(
             let vertices: Vec<Value> = quad
                 .iter()
                 .map(|v| {
+                    let ([x, y, z], [u, w]) = (v.pos(), v.uv());
                     json!([
-                        v.pos[0],
-                        v.pos[1],
-                        v.pos[2],
-                        v.uv[0],
-                        v.uv[1],
+                        x,
+                        y,
+                        z,
+                        u,
+                        w,
                         argb(v.color),
                         light_coords(v.light)
                     ])

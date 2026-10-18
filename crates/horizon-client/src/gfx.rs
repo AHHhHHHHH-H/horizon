@@ -22,9 +22,9 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
     alpha: wgpu::BlendComponent::REPLACE,
 };
-/// `TerrainVertex` for `vs_terrain`: position, UV, layer, light, colour.
+/// `TerrainVertex` for `vs_terrain`: packed position, colour, UV, layer, light.
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
+    wgpu::vertex_attr_array![0=>Uint32x2,3=>Unorm8x4,1=>Uint16x2,2=>Uint16,4=>Uint8x2];
 
 /// entity.wgsl after the OverlayTexture constants it reads.
 fn entity_shader() -> String {
@@ -2098,7 +2098,7 @@ impl Renderer {
                         .as_chunks::<4>()
                         .0
                         .iter()
-                        .map(|q| translucency::quad_center(q[0].pos, q[2].pos))
+                        .map(|q| translucency::quad_center(q[0].pos(), q[2].pos()))
                         .collect(),
                 ),
                 sorted_indices,
@@ -3511,17 +3511,19 @@ mod tests {
         use super::TerrainVertex;
         use std::mem::offset_of;
         let offsets = super::TERRAIN_ATTRIBUTES.map(|a| (a.shader_location, a.offset as usize));
+        // The packed position and UV are private to the mesher: they come
+        // before the colour and after it.
         assert_eq!(
             offsets,
             [
-                (0, offset_of!(TerrainVertex, pos)),
-                (1, offset_of!(TerrainVertex, uv)),
+                (0, 0),
+                (3, offset_of!(TerrainVertex, color)),
+                (1, offset_of!(TerrainVertex, color) + 4),
                 (2, offset_of!(TerrainVertex, layer)),
                 (4, offset_of!(TerrainVertex, light)),
-                (3, offset_of!(TerrainVertex, color)),
             ]
         );
-        assert_eq!(std::mem::size_of::<TerrainVertex>(), 28);
+        assert_eq!(std::mem::size_of::<TerrainVertex>(), 20);
     }
     #[test]
     fn cracks_multiply_instead_of_covering_the_block() {
