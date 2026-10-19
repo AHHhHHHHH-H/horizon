@@ -230,11 +230,21 @@ struct Rect {
     v0: f32,
     u1: f32,
     v1: f32,
+    /// How far down a side may reach: between `lo` and `v0` it lies against
+    /// an opaque neighbour, where no eye outside the terrain can see it
+    /// (`merge` lowers `v0` to join steps with the same top).
+    lo: f32,
 }
 type Faces = BTreeMap<FaceKey, Vec<Rect>>;
 fn add_face(faces: &mut Faces, direction: Direction, plane: f32, rect: Rect, material: Material) {
     for (overlay, paint) in material.faces.into_iter().enumerate() {
         let Some(paint) = paint else { continue };
+        // Water behind water would show through: only opaque sides reach down.
+        let rect = if paint.translucent {
+            Rect { lo: rect.v0, ..rect }
+        } else {
+            rect
+        };
         faces
             .entry(FaceKey {
                 direction,
@@ -410,6 +420,7 @@ fn mesh_columns_with_edges(
                                     v0: z0,
                                     u1: x1,
                                     v1: z1,
+                                    lo: z0,
                                 },
                                 segment.material,
                             );
@@ -424,6 +435,7 @@ fn mesh_columns_with_edges(
                                     v0: z0,
                                     u1: x1,
                                     v1: z1,
+                                    lo: z0,
                                 },
                                 material(segment.span, Direction::Down),
                             );
@@ -762,19 +774,36 @@ fn add_side(
     let (open, sky) = neighbor.last().map_or((f32::NEG_INFINITY, own_sky), |top| {
         (f32::from(top.span.max), top.span.light & 0xff)
     });
-    let mut add = |v0: f32, v1: f32| {
+    let mut add = |v0: f32, v1: f32, lo: f32| {
         let mut lit = side;
         for paint in lit.faces.iter_mut().flatten() {
             paint.light = (paint.light & 0xff00) | (paint.light & 0xff).max(sky);
         }
-        let split = open.clamp(v0, v1);
-        for (v0, v1, material) in [(v0, split, side), (split, v1, lit)] {
+        // Nothing to split when the sky light over the neighbour adds none.
+        let brighter = side
+            .faces
+            .iter()
+            .zip(&lit.faces)
+            .any(|(a, b)| a.map(|a| a.light) != b.map(|b| b.light));
+        let split = if brighter { open.clamp(v0, v1) } else { v0 };
+        // The lit part reaches down only when it starts the piece.
+        let lit_lo = if split == v0 { lo } else { split };
+        for (v0, v1, lo, material) in [(v0, split, lo, side), (split, v1, lit_lo, lit)] {
             if v0 < v1 {
-                add_face(faces, direction, plane, Rect { u0, v0, u1, v1 }, material);
+                let rect = Rect {
+                    u0,
+                    v0,
+                    u1,
+                    v1,
+                    lo,
+                };
+                add_face(faces, direction, plane, rect, material);
             }
         }
     };
     let mut floor = segment.min;
+    // [low, floor) of this segment lies against opaque neighbour spans.
+    let mut low = floor;
     for next in neighbor {
         if next.max <= floor
             || next.min >= segment.max
@@ -782,20 +811,51 @@ fn add_side(
         {
             continue;
         }
+        let start = next.min.max(segment.min);
         if floor < next.min {
-            add(floor, next.min.min(segment.max));
+            add(floor, next.min.min(segment.max), low);
+            low = start;
+        } else {
+            low = low.min(start);
         }
         floor = floor.max(next.max);
+        if !next.material.opaque {
+            low = floor;
+        }
         if floor >= segment.max {
             break;
         }
     }
     if floor < segment.max {
-        add(floor, segment.max);
+        add(floor, segment.max, low);
     }
 }
 
 fn merge(rects: &mut Vec<Rect>) {
+    // Steps with the same top side by side: one face, reaching as far down
+    // as the lowest of them, where each of the others is hidden.
+    if rects.iter().any(|rect| rect.lo < rect.v0) {
+        rects.sort_unstable_by(|a, b| a.v1.total_cmp(&b.v1).then(a.u0.total_cmp(&b.u0)));
+        let mut end = 0;
+        for i in 0..rects.len() {
+            let rect = rects[i];
+            if end > 0 {
+                let last = &mut rects[end - 1];
+                if last.v1 == rect.v1
+                    && last.u1 == rect.u0
+                    && last.lo.max(rect.lo) <= last.v0.min(rect.v0)
+                {
+                    last.u1 = rect.u1;
+                    last.v0 = last.v0.min(rect.v0);
+                    last.lo = last.lo.max(rect.lo);
+                    continue;
+                }
+            }
+            rects[end] = rect;
+            end += 1;
+        }
+        rects.truncate(end);
+    }
     rects.sort_unstable_by(|a, b| {
         a.v0.total_cmp(&b.v0)
             .then(a.v1.total_cmp(&b.v1))
@@ -849,14 +909,14 @@ fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
         let mut v0 = rect.v0;
         while v0 < rect.v1 {
             let v1 = rect.v1.min(v0 + MAX_FACE);
-            emit_quad(mesh, key, Rect { u0, v0, u1, v1 });
+            emit_quad(mesh, key, Rect { u0, v0, u1, v1, lo: v0 });
             v0 = v1;
         }
         u0 = u1;
     }
 }
 fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
-    let Rect { u0, v0, u1, v1 } = rect;
+    let Rect { u0, v0, u1, v1, .. } = rect;
     let p = f32::from_bits(key.plane);
     let mut points = match key.direction {
         Direction::Up | Direction::Down => [[u0, p, v1], [u1, p, v1], [u1, p, v0], [u0, p, v0]],
@@ -972,6 +1032,7 @@ mod tests {
                 v0: 0.5,
                 u1: 2500.0,
                 v1: 16.0,
+                lo: 0.5,
             },
         );
         // 2500 blocks: 1024 + 1024 + 452.
@@ -1078,6 +1139,60 @@ mod tests {
                 .map(|v| v.pos[1])
                 .fold(f32::NEG_INFINITY, f32::max),
             7.0
+        );
+    }
+    #[test]
+    fn steps_with_one_top_share_a_side_reaching_behind_the_lower_neighbors() {
+        let mut columns = columns();
+        // Two cells side by side at height 10, in front of cells at 4 and 6.
+        columns[0].spans = vec![span(0, 10, 1)];
+        columns[CELLS].spans = vec![span(0, 10, 1)];
+        columns[1].spans = vec![span(0, 4, 1)];
+        columns[CELLS + 1].spans = vec![span(0, 6, 1)];
+        let merged = mesh(&columns);
+        let east: Vec<_> = merged
+            .solid
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|q| q.iter().all(|v| v.pos[0] == 1.0) && normal(q).x > 0.0)
+            .collect();
+        // One face, down to the lower step: the part of it in front of the
+        // cell at 6 lies against that cell's solid side.
+        assert_eq!(east.len(), 1);
+        let ys = east[0].iter().map(|v| v.pos[1]);
+        let zs = east[0].iter().map(|v| v.pos[2]);
+        assert_eq!(
+            (
+                ys.clone().fold(f32::INFINITY, f32::min),
+                ys.fold(0.0, f32::max)
+            ),
+            (4.0, 10.0)
+        );
+        assert_eq!(
+            (zs.clone().fold(f32::INFINITY, f32::min), zs.fold(0.0, f32::max)),
+            (0.0, 2.0)
+        );
+        // Water in front hides nothing opaque: the faces keep their extent.
+        columns[CELLS + 1].spans = vec![span(0, 4, 1), span(4, 6, 2)];
+        let stone = mesh(&columns);
+        let east = stone
+            .solid
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|q| q.iter().all(|v| v.pos[0] == 1.0) && normal(q).x > 0.0)
+            .count();
+        assert_eq!(east, 1, "both steps meet stone at 4");
+        columns[CELLS + 1].spans = vec![span(0, 6, 2)];
+        columns[CELLS].spans = vec![span(0, 10, 1)];
+        let water = mesh(&columns);
+        assert!(
+            water
+                .translucent
+                .iter()
+                .all(|v| v.pos[1] <= 6.0),
+            "water sides never reach behind water"
         );
     }
     #[test]
