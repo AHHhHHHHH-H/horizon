@@ -1076,7 +1076,8 @@ impl OptionsUi {
                                     Control::TextBox(v, false) => v,
                                     Control::None => String::new(),
                                 };
-                                let label = Text::literal(format!("{caption}: {value}"));
+                                let label =
+                                    Text::literal(if caption.is_empty() { value } else { format!("{caption}: {value}") });
                                 Row::Buttons(button(0.0, 0.0, 310.0, label, Act::Companion(row)), None)
                             }
                         }

@@ -17,8 +17,14 @@ pub struct CompanionFile {
     /// The personality preset (docs/companions.md: veteran, coach, expert,
     /// joker, quiet, custom).
     pub personality: String,
-    /// helper, super_strong or partner.
-    pub level: String,
+    /// Its role (`prompt::Role::id`: assistant, teammate, speedrunner, bodyguard, coach), empty for
+    /// the Companion settings' role; files from before roles say `level` (helper, super_strong,
+    /// partner), read the same way.
+    #[serde(alias = "level")]
+    pub role: String,
+    /// How much of the world it may know (`prompt::Perception::id`: fair, sharp, scout,
+    /// all_knowing), empty for the settings'.
+    pub perception: String,
     /// The owner's profile UUID.
     pub owner: String,
     /// The brain's rolling memory (slice 3 fills it; "forget everything" clears it).
@@ -39,7 +45,8 @@ impl Default for CompanionFile {
             uuid: String::new(),
             name: String::new(),
             personality: "coach".into(),
-            level: "helper".into(),
+            role: String::new(),
+            perception: String::new(),
             owner: String::new(),
             notes: Vec::new(),
             active: true,
@@ -122,7 +129,9 @@ mod tests {
         std::fs::write(file.path(&world), r#"{"uuid":"00000000-0000-4000-8000-000000000001","name":"Zed","mood":1}"#).unwrap();
         let all = CompanionFile::load_all(&world);
         assert_eq!(all[0].name, "Zed");
-        assert_eq!(all[0].level, "helper");
+        assert_eq!(all[0].role, "");
+        std::fs::write(file.path(&world), r#"{"uuid":"00000000-0000-4000-8000-000000000001","name":"Zed","level":"super_strong"}"#).unwrap();
+        assert_eq!(CompanionFile::load_all(&world)[0].role, "super_strong");
         assert!(all[0].active);
         let _ = std::fs::remove_dir_all(&world);
     }

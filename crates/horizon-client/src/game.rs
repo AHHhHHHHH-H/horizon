@@ -6785,6 +6785,7 @@ impl Game<'_> {
         }
         // "Start with a companion": it joins once the player stands in the new world.
         self.companion_ai.spawn_on_arrival = create.is_some_and(|o| o.companion == Some(true));
+        self.companion_ai.spawn_role = create.filter(|o| o.companion == Some(true)).map(|o| o.companion_role);
         self.perf.world_opening();
         horizon_client::save::upgrade_older_world(&save_root)?;
         horizon_client::save::migrate_legacy(&save_root)?;

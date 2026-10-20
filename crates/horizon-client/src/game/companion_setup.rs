@@ -9,9 +9,12 @@ use horizon_client::{
     text::{self, Text},
 };
 use horizon_companion::{
+    catalogue::Tier,
     plan::{Device, Part, Plan, Runs},
+    prompt::{Perception, Role},
+    senses::{self, SenseModel},
     settings::{CompanionSettings, sync_extras},
-    setup::{self, Event, Job, Machine, Setup},
+    setup::{self, Component, Event, Job, Machine, Setup},
 };
 use std::sync::mpsc::{self, Receiver};
 
@@ -22,6 +25,8 @@ pub(super) struct SetupState {
     job: Option<Job>,
     /// The machine was checked for this view.
     checked: bool,
+    /// The voice model the settings would run, for the voice picker.
+    tts: Option<&'static SenseModel>,
 }
 
 struct Checked {
@@ -29,6 +34,8 @@ struct Checked {
     plan: Plan,
     choices: Vec<(Part, Vec<(String, String)>)>,
     disk: u64,
+    tts: Option<&'static SenseModel>,
+    salty_brain: Option<(String, String)>,
 }
 
 fn part_name(part: Part) -> &'static str {
@@ -71,14 +78,44 @@ impl Game<'_> {
             view.download = checked.plan.download;
             view.choices = checked.choices;
             view.disk = checked.disk;
+            view.salty_brain = checked.salty_brain;
+            self.companion_setup.tts = checked.tts;
         }
+        let view = &mut self.settings.companion;
+        let tts = self.companion_setup.tts;
+        view.tts_model = tts.map(|m| m.id.to_owned());
+        view.voices = tts.map_or_else(Vec::new, |m| {
+            m.voices
+                .iter()
+                .map(|v| {
+                    (
+                        v.id.to_owned(),
+                        v.label.to_owned(),
+                        v.description.to_owned(),
+                    )
+                })
+                .collect()
+        });
+        view.default_voice = tts
+            .and_then(|m| senses::default_voice(m, view.settings.persona.personality))
+            .map(|v| v.id.to_owned());
         self.tick_companion_setup();
-        let here = self
+        let here_file = self
             .lan
             .as_ref()
             .and_then(|h| h.companions.first())
-            .map(|b| b.file.name.clone());
-        let in_world = self.player.is_some() && self.remote.is_none() && self.integrated.is_none() && !self.serving();
+            .map(|b| b.file.clone());
+        let here = here_file.as_ref().map(|f| f.name.clone());
+        // The companion in the world shows its own role and perception.
+        if let Some(f) = &here_file {
+            let p = &mut self.settings.companion.settings.persona;
+            p.role = Role::parse(&f.role).unwrap_or(p.role);
+            p.perception = Perception::parse(&f.perception).unwrap_or(p.perception);
+        }
+        let in_world = self.player.is_some()
+            && self.remote.is_none()
+            && self.integrated.is_none()
+            && !self.serving();
         let status = self.companion_ai.status.clone();
         let view = &mut self.settings.companion;
         view.here = here;
@@ -88,6 +125,7 @@ impl Game<'_> {
 
     fn companion_check_machine(&mut self) {
         let setup = self.companion_setup();
+        let settings = self.settings.companion.settings.clone();
         let (tx, rx) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("companion check".into())
@@ -106,7 +144,34 @@ impl Game<'_> {
                     }
                 }
                 let disk = setup.disk_usage();
-                let _ = tx.send(Checked { machine, plan, choices, disk });
+                let options = setup.options();
+                let chosen = settings.selection(&plan, &options);
+                let component = |part: Part| {
+                    chosen
+                        .iter()
+                        .find(|o| o.part == part)
+                        .and_then(|o| Component::of(&o.id))
+                };
+                let tts = match component(Part::TextToSpeech) {
+                    Some(Component::Sense(m)) => Some(m),
+                    _ => None,
+                };
+                let salty_brain = match component(Part::Brain) {
+                    Some(Component::Brain(model)) => Tier::ALL
+                        .into_iter()
+                        .find(|t| t.model().id == model.id)
+                        .and_then(Tier::uncensored)
+                        .map(|m| (m.name.to_owned(), m.license.to_owned())),
+                    _ => None,
+                };
+                let _ = tx.send(Checked {
+                    machine,
+                    plan,
+                    choices,
+                    disk,
+                    tts,
+                    salty_brain,
+                });
             });
         if spawned.is_ok() {
             self.companion_setup.machine = Some(rx);
@@ -194,8 +259,11 @@ impl Game<'_> {
                 self.settings.companion.settings = settings.clone();
                 self.companion_settings_changed(settings);
                 self.companion_setup.checked = false;
-                self.companion_result(result.map(|freed| format!("Deleted {}", setup::gigabytes(freed))));
+                self.companion_result(
+                    result.map(|freed| format!("Deleted {}", setup::gigabytes(freed))),
+                );
             }
+            Action::PlaySample => self.companion_voice_sample(),
             Action::BindTalk | Action::EditName => {}
         }
     }
@@ -246,6 +314,10 @@ fn plan_lines(plan: &Plan) -> Vec<String> {
             )
         })
         .collect();
-    lines.extend(plan.missing.iter().map(|m| format!("{}: {}", part_name(m.part), m.reason)));
+    lines.extend(
+        plan.missing
+            .iter()
+            .map(|m| format!("{}: {}", part_name(m.part), m.reason)),
+    );
     lines
 }

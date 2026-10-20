@@ -4,7 +4,7 @@
 //! themselves are the launcher's `<home>/companion/settings.json`, so the two stay in sync.
 use horizon_companion::{
     plan::Part,
-    prompt::{Level, Personality},
+    prompt::{Perception, Personality, Role},
     settings::{BrainChoice, Chattiness, CompanionSettings, PartChoice},
 };
 
@@ -34,6 +34,16 @@ pub struct CompanionView {
     pub choices: Vec<(Part, Vec<(String, String)>)>,
     /// Models and runtimes on disk, in bytes.
     pub disk: u64,
+    /// Salty was picked and waits for the 18+ confirmation.
+    pub confirm_salty: bool,
+    /// The text-to-speech model that would speak, and its voices: (id, label, description).
+    pub tts_model: Option<String>,
+    pub voices: Vec<(String, String, String)>,
+    /// The personality's default voice on that model.
+    pub default_voice: Option<String>,
+    /// Advanced: the brain tier's uncensored variant for Salty mode: (name, licence), or `None`
+    /// while none is chosen.
+    pub salty_brain: Option<(String, String)>,
 }
 
 /// One row of the section.
@@ -46,14 +56,22 @@ pub enum Row {
     Status(usize),
     Name,
     Personality,
-    Level,
+    Role,
+    Perception,
     Language,
+    /// The 18+ confirmation Salty needs.
+    SaltyConfirm,
     Chattiness,
     Voice,
+    /// Which voice it speaks with, and a sample of it.
+    VoiceCharacter,
+    VoiceSample,
     TalkKey,
     Spawn,
     Advanced,
     Part(Part),
+    /// Salty mode's uncensored brain.
+    SaltyBrain,
     Delete,
 }
 
@@ -72,6 +90,8 @@ pub enum Action {
     BindTalk,
     /// The name box took the focus.
     EditName,
+    /// Say a short line with the chosen voice.
+    PlaySample,
 }
 
 pub fn rows(view: &CompanionView) -> Vec<Row> {
@@ -83,12 +103,18 @@ pub fn rows(view: &CompanionView) -> Vec<Row> {
         Row::Header("Companion"),
         Row::Name,
         Row::Personality,
-        Row::Level,
+        Row::Role,
+        Row::Perception,
         Row::Language,
-        Row::Chattiness,
-        Row::Voice,
     ]);
+    if view.confirm_salty {
+        rows.push(Row::SaltyConfirm);
+    }
+    rows.extend([Row::Chattiness, Row::Voice]);
     if view.settings.voice {
+        if !view.voices.is_empty() {
+            rows.extend([Row::VoiceCharacter, Row::VoiceSample]);
+        }
         rows.push(Row::TalkKey);
     }
     rows.extend([Row::Spawn, Row::Advanced]);
@@ -97,6 +123,9 @@ pub fn rows(view: &CompanionView) -> Vec<Row> {
         rows.extend([Part::Brain, Part::Classifier].map(Row::Part));
         if view.settings.voice {
             rows.extend([Part::SpeechToText, Part::TextToSpeech].map(Row::Part));
+        }
+        if view.settings.persona.salty_on() {
+            rows.push(Row::SaltyBrain);
         }
         rows.push(Row::Delete);
     }
@@ -116,7 +145,12 @@ pub enum Control {
 
 /// The caption, the description and the control of a row.
 /// `editing`: the name being typed while the name box has the focus.
-pub fn row_parts(row: Row, view: &CompanionView, talk_key: &str, editing: Option<&str>) -> (String, String, Control) {
+pub fn row_parts(
+    row: Row,
+    view: &CompanionView,
+    talk_key: &str,
+    editing: Option<&str>,
+) -> (String, String, Control) {
     let s = &view.settings;
     let p = &s.persona;
     match row {
@@ -161,20 +195,28 @@ pub fn row_parts(row: Row, view: &CompanionView, talk_key: &str, editing: Option
             },
             Control::Button(p.personality.label().into()),
         ),
-        Row::Level => (
-            "Level".into(),
-            match p.level {
-                Level::Helper => "Does what you ask and defends you.",
-                Level::SuperStrong => "Boosted: Strength II, Resistance II, Regeneration.",
-                Level::Partner => "Plans the run to the dragon with you.",
-            }
-            .into(),
-            Control::Button(p.level.label().into()),
+        Row::Role => ("Role".into(), p.role.blurb().into(), Control::Button(p.role.label().into())),
+        Row::Perception => (
+            "Perception".into(),
+            p.perception.blurb().into(),
+            Control::Button(p.perception.label().into()),
         ),
         Row::Language => (
             "Language".into(),
-            "Clean is the default. Salty allows mild swearing.".into(),
+            if p.kid_friendly {
+                "Gentle humour, no swearing, nothing scary."
+            } else if p.salty_on() {
+                "Real swearing and attitude. Still refuses anything harmful."
+            } else {
+                "No swearing. Salty (18+) swears for real; Kid-friendly is gentler."
+            }
+            .into(),
             Control::Button(language_label(s).into()),
+        ),
+        Row::SaltyConfirm => (
+            "Salty is for adults".into(),
+            "Real swearing and attitude. Confirm that you are 18 or older.".into(),
+            Control::Button("I'm 18 or older".into()),
         ),
         Row::Chattiness => (
             "Chattiness".into(),
@@ -190,6 +232,23 @@ pub fn row_parts(row: Row, view: &CompanionView, talk_key: &str, editing: Option
             "Voice".into(),
             "Hear it speak, and talk to it with push-to-talk. The microphone opens only while the key is held.".into(),
             Control::Switch(s.voice),
+        ),
+        Row::VoiceCharacter => {
+            let chosen = voice_choice(view);
+            let shown = chosen.clone().or_else(|| view.default_voice.clone());
+            let (label, description) = view
+                .voices
+                .iter()
+                .find(|(id, ..)| Some(id) == shown.as_ref())
+                .map(|(_, l, d)| (l.clone(), d.clone()))
+                .unwrap_or_default();
+            let label = if chosen.is_none() { format!("{label} (default)") } else { label };
+            ("Sounds like".into(), description, Control::Button(label))
+        }
+        Row::VoiceSample => (
+            String::new(),
+            "A short line in this voice.".into(),
+            Control::Button("Play sample".into()),
         ),
         Row::TalkKey => ("Push-to-talk key".into(), String::new(), Control::Button(talk_key.into())),
         Row::Spawn => {
@@ -219,6 +278,14 @@ pub fn row_parts(row: Row, view: &CompanionView, talk_key: &str, editing: Option
             };
             (caption.into(), String::new(), Control::Button(part_label(view, part)))
         }
+        Row::SaltyBrain => (
+            "Salty brain".into(),
+            match &view.salty_brain {
+                Some((name, licence)) => format!("Uncensored: {name} ({licence})."),
+                None => "No uncensored model is chosen yet: the normal brain runs with the Salty prompt.".into(),
+            },
+            Control::Switch(s.salty_uncensored),
+        ),
         Row::Delete => (
             "Downloaded models".into(),
             format!("{} on disk.", gigabytes(view.disk)),
@@ -238,14 +305,37 @@ pub fn click(row: Row, view: &mut CompanionView, back: bool) -> Option<Action> {
             s.persona.personality = cycle(&Personality::ALL, s.persona.personality, back);
             Some(Action::Changed)
         }
-        Row::Level => {
-            s.persona.level = cycle(&Level::ALL, s.persona.level, back);
+        Row::Role => {
+            s.persona.role = cycle(&Role::ALL, s.persona.role, back);
+            Some(Action::Changed)
+        }
+        Row::Perception => {
+            s.persona.perception = cycle(&Perception::ALL, s.persona.perception, back);
             Some(Action::Changed)
         }
         Row::Language => {
-            let next = cycle(&[0, 1, 2], language_index(s), back);
-            s.persona.salty = next == 1;
-            s.persona.kid_friendly = next == 2;
+            let next = cycle(&[0, 1, 2], language_index(view), back);
+            let s = &mut view.settings;
+            view.confirm_salty = false;
+            match next {
+                // Salty waits for the 18+ confirmation the first time.
+                1 if !s.persona.adult_confirmed => {
+                    view.confirm_salty = true;
+                    s.persona.kid_friendly = false;
+                    s.persona.salty = false;
+                }
+                _ => {
+                    s.persona.salty = next == 1;
+                    s.persona.kid_friendly = next == 2;
+                }
+            }
+            Some(Action::Changed)
+        }
+        Row::SaltyConfirm => {
+            view.confirm_salty = false;
+            s.persona.adult_confirmed = true;
+            s.persona.salty = true;
+            s.persona.kid_friendly = false;
             Some(Action::Changed)
         }
         Row::Chattiness => {
@@ -254,6 +344,25 @@ pub fn click(row: Row, view: &mut CompanionView, back: bool) -> Option<Action> {
         }
         Row::Voice => {
             s.voice = !s.voice;
+            Some(Action::Changed)
+        }
+        Row::VoiceCharacter => {
+            let ids: Vec<Option<String>> = std::iter::once(None)
+                .chain(view.voices.iter().map(|(id, ..)| Some(id.clone())))
+                .collect();
+            let next = cycle(&ids, voice_choice(view), back);
+            if let Some(model) = view.tts_model.clone() {
+                let s = &mut view.settings;
+                match next {
+                    Some(id) => s.voices.insert(model, id),
+                    None => s.voices.remove(&model),
+                };
+            }
+            Some(Action::Changed)
+        }
+        Row::VoiceSample => Some(Action::PlaySample),
+        Row::SaltyBrain => {
+            s.salty_uncensored = !s.salty_uncensored;
             Some(Action::Changed)
         }
         Row::TalkKey => Some(Action::BindTalk),
@@ -337,10 +446,12 @@ fn part_label(view: &CompanionView, part: Part) -> String {
     }
 }
 
-fn language_index(s: &CompanionSettings) -> usize {
-    if s.persona.kid_friendly {
+/// Clean, Salty (also while it waits for the confirmation) or Kid-friendly.
+fn language_index(view: &CompanionView) -> usize {
+    let p = &view.settings.persona;
+    if p.kid_friendly {
         2
-    } else if s.persona.salty {
+    } else if p.salty_on() || view.confirm_salty {
         1
     } else {
         0
@@ -348,7 +459,23 @@ fn language_index(s: &CompanionSettings) -> usize {
 }
 
 fn language_label(s: &CompanionSettings) -> &'static str {
-    ["Clean", "Salty", "Kid-friendly"][language_index(s)]
+    if s.persona.kid_friendly {
+        "Kid-friendly"
+    } else if s.persona.salty_on() {
+        "Salty (18+)"
+    } else {
+        "Clean"
+    }
+}
+
+/// The voice the settings name for the speaking model, if they name one it has.
+fn voice_choice(view: &CompanionView) -> Option<String> {
+    let model = view.tts_model.as_ref()?;
+    view.settings
+        .voices
+        .get(model)
+        .filter(|id| view.voices.iter().any(|(v, ..)| v == *id))
+        .cloned()
 }
 
 fn cycle<T: Clone + PartialEq>(all: &[T], now: T, back: bool) -> T {
@@ -388,15 +515,34 @@ mod tests {
     #[test]
     fn clicks_cycle_and_report() {
         let mut view = CompanionView::default();
-        assert_eq!(click(Row::Level, &mut view, false), Some(Action::Changed));
-        assert_eq!(view.settings.persona.level, Level::SuperStrong);
+        assert_eq!(click(Row::Role, &mut view, false), Some(Action::Changed));
+        assert_eq!(view.settings.persona.role, Role::Teammate);
+        click(Row::Perception, &mut view, true);
+        assert_eq!(view.settings.persona.perception, Perception::AllKnowing);
+        // Salty asks for 18+ first, and stays off until it is confirmed.
         click(Row::Language, &mut view, false);
-        assert!(view.settings.persona.salty);
+        assert!(view.confirm_salty && !view.settings.persona.salty_on());
+        assert!(rows(&view).contains(&Row::SaltyConfirm));
+        click(Row::SaltyConfirm, &mut view, false);
+        assert!(view.settings.persona.salty_on() && !rows(&view).contains(&Row::SaltyConfirm));
+        assert_eq!(
+            row_parts(Row::Language, &view, "", None).2,
+            Control::Button("Salty (18+)".into())
+        );
+        // Kid-friendly turns it off; coming back needs no second confirmation.
         click(Row::Language, &mut view, false);
-        assert!(view.settings.persona.kid_friendly && !view.settings.persona.salty);
+        assert!(view.settings.persona.kid_friendly && !view.settings.persona.salty_on());
+        click(Row::Language, &mut view, false);
+        click(Row::Language, &mut view, false);
+        assert!(view.settings.persona.salty_on() && !view.confirm_salty);
         view.choices = vec![(Part::Classifier, vec![("e5@cpu".into(), "Accurate".into())])];
         click(Row::Part(Part::Classifier), &mut view, false);
-        assert_eq!(view.settings.classifier, PartChoice::Option { id: "e5@cpu".into() });
+        assert_eq!(
+            view.settings.classifier,
+            PartChoice::Option {
+                id: "e5@cpu".into()
+            }
+        );
         click(Row::Part(Part::Classifier), &mut view, false);
         assert_eq!(view.settings.classifier, PartChoice::Off);
         click(Row::Part(Part::Classifier), &mut view, false);
@@ -405,5 +551,36 @@ mod tests {
         view.in_world = true;
         assert_eq!(click(Row::Spawn, &mut view, false), Some(Action::Spawn));
         assert_eq!(name_chars("Kev the 2nd!"), "Kevthe2nd");
+    }
+
+    #[test]
+    fn voices_default_to_the_personality_and_can_be_picked() {
+        let mut view = CompanionView::default();
+        view.settings.voice = true;
+        assert!(!rows(&view).contains(&Row::VoiceCharacter));
+        view.tts_model = Some("tts".into());
+        view.voices = vec![
+            ("ryan".into(), "Energetic, bright".into(), "Man".into()),
+            ("uncle_fu".into(), "Gruff, deep".into(), "Man, deep".into()),
+        ];
+        view.default_voice = Some("uncle_fu".into());
+        assert!(rows(&view).contains(&Row::VoiceSample));
+        let label = |v: &CompanionView| row_parts(Row::VoiceCharacter, v, "", None).2;
+        assert_eq!(
+            label(&view),
+            Control::Button("Gruff, deep (default)".into())
+        );
+        click(Row::VoiceCharacter, &mut view, false);
+        assert_eq!(
+            view.settings.voices.get("tts").map(String::as_str),
+            Some("ryan")
+        );
+        assert_eq!(label(&view), Control::Button("Energetic, bright".into()));
+        click(Row::VoiceCharacter, &mut view, true);
+        assert!(view.settings.voices.is_empty());
+        assert_eq!(
+            click(Row::VoiceSample, &mut view, false),
+            Some(Action::PlaySample)
+        );
     }
 }

@@ -14,13 +14,15 @@ use horizon_client::{
     lang,
     text::{self, Text},
 };
+use horizon_companion::senses::{SenseKind, SenseModel};
 use horizon_companion::{
     catalogue::Tier,
     client::{Brain, ChatRequest, Endpoint, Event as BrainEvent, Message, Stats},
+    guard::{self, Trip},
     partner,
     phrases::{self, Ack, Cooldowns, Range},
     plan::Part,
-    prompt::{self, Budget, Exchange, Input, Level, Persona},
+    prompt::{self, Budget, Exchange, Input, Perception, Persona, Role},
     reflex::{self, Intent, NameIndex, Parse, Route, Stage, Target},
     reply::{Action, Skill as BrainSkill, Tone},
     runtime::{Runtime, State},
@@ -88,8 +90,13 @@ pub(super) struct AiState {
     pub timings: Vec<Value>,
     /// What the companions said lately (`companion ai`), newest last.
     pub said: Vec<Value>,
-    /// The world was created with "Start with a companion".
+    /// The world was created with "Start with a companion", and the role picked there.
     pub spawn_on_arrival: bool,
+    pub spawn_role: Option<Role>,
+    /// Replies the guard stopped this session (`companion ai`).
+    pub guarded: u32,
+    /// The text-to-speech model the voice runs, for the voice the settings pick on it.
+    tts: Option<&'static SenseModel>,
 }
 
 /// One companion's side of the conversation.
@@ -109,6 +116,8 @@ struct Mind {
     /// What the body couldn't do last turn, told to the brain with the next state.
     feedback: Vec<String>,
     step: Option<partner::Step>,
+    /// The guard stopped this turn's reply: the rest of it is dropped.
+    guarded: bool,
 }
 
 /// The worker thread: started with the world, stopped (and its processes with it) when the world
@@ -119,7 +128,11 @@ struct Worker {
 }
 
 enum ToWorker {
-    Classify { id: u64, line: String, language: String },
+    Classify {
+        id: u64,
+        line: String,
+        language: String,
+    },
 }
 
 enum FromWorker {
@@ -132,7 +145,10 @@ enum FromWorker {
     },
     Classifier(Result<(), String>),
     Brain(Result<Endpoint, String>),
-    Routed { id: u64, route: Route },
+    Routed {
+        id: u64,
+        route: Route,
+    },
 }
 
 impl Drop for Worker {
@@ -172,7 +188,9 @@ impl Game<'_> {
 
     /// The companion settings, read once per world.
     pub(super) fn companion_settings(&mut self) -> &CompanionSettings {
-        self.companion_ai.settings.get_or_insert_with(|| CompanionSettings::load(&home()))
+        self.companion_ai
+            .settings
+            .get_or_insert_with(|| CompanionSettings::load(&home()))
     }
 
     /// The Companion section saved: new settings take effect (the processes restart if a part
@@ -189,17 +207,29 @@ impl Game<'_> {
                 || o.set_up != settings.set_up
                 || o.tuning != settings.tuning
                 || o.no_ai != settings.no_ai
+                // Salty may swap the brain for its uncensored variant.
+                || (o.persona.salty_on() && o.salty_uncensored) != (settings.persona.salty_on() && settings.salty_uncensored)
         });
         if parts_changed && self.companion_ai.worker.is_some() {
             self.companion_ai_stop();
         }
-        let persona = self.persona();
+        self.companion_apply_persona(settings.persona.role, settings.persona.perception);
         let owner = self.owner_name();
         let language = self.settings.language.clone();
-        for mind in &mut self.companion_ai.minds {
-            mind.system = prompt::system_prompt(&Persona { name: mind.name.clone(), ..persona.clone() }, &owner, &language);
-            // A new character starts a new conversation (the cached prefix changed anyway).
-            mind.history.clear();
+        let uuids: Vec<String> = self
+            .companion_ai
+            .minds
+            .iter()
+            .map(|m| m.uuid.clone())
+            .collect();
+        for (i, uuid) in uuids.iter().enumerate() {
+            let system = prompt::system_prompt(&self.companion_persona(uuid), &owner, &language);
+            let mind = &mut self.companion_ai.minds[i];
+            if mind.system != system {
+                mind.system = system;
+                // A new character starts a new conversation (the cached prefix changed anyway).
+                mind.history.clear();
+            }
         }
         if settings.no_ai {
             self.companions_hide_for_no_ai();
@@ -227,10 +257,55 @@ impl Game<'_> {
         self.companion_settings().persona.clone()
     }
 
-    fn owner_name(&self) -> String {
+    /// A companion's persona: the settings', with its name, and the role and perception its save
+    /// file keeps (each companion has its own, picked at world creation or in the Companion screen).
+    fn companion_persona(&mut self, uuid: &str) -> Persona {
+        let mut persona = self.persona();
+        if let Some(b) = self
+            .lan
+            .as_ref()
+            .and_then(|h| h.companions.iter().find(|b| b.file.uuid == uuid))
+        {
+            persona.name = b.file.name.clone();
+            persona.role = Role::parse(&b.file.role).unwrap_or(persona.role);
+            persona.perception =
+                Perception::parse(&b.file.perception).unwrap_or(persona.perception);
+        }
+        persona
+    }
+
+    /// The role of the companion with this name.
+    fn role_of(&mut self, name: &str) -> Role {
+        let fallback = self.companion_settings().persona.role;
         self.lan
             .as_ref()
-            .map_or_else(|| self.options.player_name().to_string(), |h| h.host_name.clone())
+            .and_then(|h| h.companions.iter().find(|b| b.file.name == name))
+            .and_then(|b| Role::parse(&b.file.role))
+            .unwrap_or(fallback)
+    }
+
+    /// The Companion screen changed the role or perception: the companions in the world take them.
+    pub(super) fn companion_apply_persona(&mut self, role: Role, perception: Perception) {
+        let world = self.world_root.clone();
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        for b in &mut host.companions {
+            if b.file.role != role.id() || b.file.perception != perception.id() {
+                b.file.role = role.id().into();
+                b.file.perception = perception.id().into();
+                if let Err(e) = b.file.save(&world) {
+                    log::warn!("[companion] could not save {}: {e}", b.file.name);
+                }
+            }
+        }
+    }
+
+    fn owner_name(&self) -> String {
+        self.lan.as_ref().map_or_else(
+            || self.options.player_name().to_string(),
+            |h| h.host_name.clone(),
+        )
     }
 
     /// The world closes: the processes stop, the conversation is forgotten (its notes are in the
@@ -261,7 +336,11 @@ impl Game<'_> {
     pub(super) fn tick_companion_ai(&mut self) {
         let have = self.lan.as_ref().is_some_and(|h| !h.companions.is_empty());
         let coming = !self.companions.pending.is_empty() || !self.companions.parked.is_empty();
-        if !have && !coming && self.companion_ai.worker.is_none() && !self.companion_ai.spawn_on_arrival {
+        if !have
+            && !coming
+            && self.companion_ai.worker.is_none()
+            && !self.companion_ai.spawn_on_arrival
+        {
             // The common case: one check a tick.
             self.companion_ai.heard.clear();
             self.companion_ai.reports.clear();
@@ -282,11 +361,30 @@ impl Game<'_> {
             }
             return;
         }
-        if self.companion_ai.spawn_on_arrival && self.player.is_some() && self.companions_ready_to_spawn() {
+        if self.companion_ai.spawn_on_arrival
+            && self.player.is_some()
+            && self.companions_ready_to_spawn()
+        {
             self.companion_ai.spawn_on_arrival = false;
             let name = self.persona().name;
             match self.companion_spawn(c::valid_name(&name).as_deref()) {
-                Ok(name) => self.system_message(Text::literal(format!("{name} joined you"))),
+                Ok(name) => {
+                    // The role picked at world creation goes into its save file.
+                    if let Some(role) = self.companion_ai.spawn_role.take() {
+                        let world = self.world_root.clone();
+                        if let Some(b) = self
+                            .lan
+                            .as_mut()
+                            .and_then(|h| h.companions.iter_mut().find(|b| b.file.name == name))
+                        {
+                            b.file.role = role.id().into();
+                            if let Err(e) = b.file.save(&world) {
+                                log::warn!("[companion] could not save {name}: {e}");
+                            }
+                        }
+                    }
+                    self.system_message(Text::literal(format!("{name} joined you")));
+                }
                 Err(e) => log::warn!("[companion] could not start with a companion: {e}"),
             }
         }
@@ -332,7 +430,16 @@ impl Game<'_> {
         let (worker_tx, from) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("companion mind".into())
-            .spawn(move || worker(settings, language, names, classifier_names, worker_rx, worker_tx));
+            .spawn(move || {
+                worker(
+                    settings,
+                    language,
+                    names,
+                    classifier_names,
+                    worker_rx,
+                    worker_tx,
+                )
+            });
         match spawned {
             Ok(_) => {
                 log::info!("[companion] starting the brain and the classifier");
@@ -351,7 +458,10 @@ impl Game<'_> {
             }
             if let Some(language) = lang::current() {
                 for (key, name) in language.entries() {
-                    if let Some(id) = key.strip_prefix("entity.minecraft.").filter(|id| !id.contains('.')) {
+                    if let Some(id) = key
+                        .strip_prefix("entity.minecraft.")
+                        .filter(|id| !id.contains('.'))
+                    {
                         index.add_mob(id, name);
                         index.add_mob(id, &id.replace('_', " "));
                     }
@@ -371,7 +481,13 @@ impl Game<'_> {
         }
         for message in got {
             match message {
-                FromWorker::Planned { tier, first_word_ms, voice, missing, brain } => {
+                FromWorker::Planned {
+                    tier,
+                    first_word_ms,
+                    voice,
+                    missing,
+                    brain,
+                } => {
                     let ai = &mut self.companion_ai;
                     ai.tier = tier;
                     ai.first_word_ms = first_word_ms;
@@ -383,13 +499,23 @@ impl Game<'_> {
                         log::warn!("[companion] {m}");
                         ai.status.push(format!("Missing: {m}"));
                     }
+                    ai.tts = voice.as_ref().and_then(|v| {
+                        v.models
+                            .iter()
+                            .map(|(m, _)| *m)
+                            .find(|m| m.kind == SenseKind::TextToSpeech)
+                    });
                     if let Some(voice) = voice {
                         let setup = VoiceSetup {
                             runtime: voice.runtime,
                             exe: voice.exe,
                             backend: voice.backend,
                             threads: voice.threads,
-                            models: voice.models.into_iter().map(|(model, dir)| Installed { model, dir }).collect(),
+                            models: voice
+                                .models
+                                .into_iter()
+                                .map(|(model, dir)| Installed { model, dir })
+                                .collect(),
                             work: home().join("companion").join("logs"),
                         };
                         self.companion_voice_start(setup, false);
@@ -402,17 +528,22 @@ impl Game<'_> {
                     }
                     Err(e) => {
                         log::warn!("[companion] the classifier did not start: {e}");
-                        self.companion_ai.status.push(format!("Classifier failed: {e}"));
+                        self.companion_ai
+                            .status
+                            .push(format!("Classifier failed: {e}"));
                     }
                 },
                 FromWorker::Brain(result) => match result {
                     Ok(endpoint) => {
                         let mut brain = Brain::new(endpoint);
                         // The system prompt is processed now, so the first turn starts as fast as the others.
-                        if let Some(first) = self.companion_ai.minds.first().map(|m| m.uuid.clone()) {
-                            let messages = self.turn_messages(&first, &Input::Event("Loading.".into()));
+                        if let Some(first) = self.companion_ai.minds.first().map(|m| m.uuid.clone())
+                        {
+                            let messages =
+                                self.turn_messages(&first, &Input::Event("Loading.".into()));
                             if let Some(system) = messages.into_iter().next() {
-                                self.companion_ai.warm_up = Some(brain.ask(ChatRequest::warm_up(system)));
+                                self.companion_ai.warm_up =
+                                    Some(brain.ask(ChatRequest::warm_up(system)));
                             }
                         }
                         log::info!("[companion] brain ready");
@@ -429,7 +560,8 @@ impl Game<'_> {
                         let ai = &mut self.companion_ai;
                         ai.brain_failed = true;
                         ai.status.retain(|s| !s.starts_with("Brain"));
-                        ai.status.push(format!("Brain failed: {}", e.lines().next().unwrap_or("")));
+                        ai.status
+                            .push(format!("Brain failed: {}", e.lines().next().unwrap_or("")));
                         let queued = std::mem::take(&mut ai.queued);
                         for (uuid, _) in queued {
                             self.companion_ack(&uuid, Ack::Huh, "");
@@ -437,7 +569,8 @@ impl Game<'_> {
                     }
                 },
                 FromWorker::Routed { id, route } => {
-                    let Some(i) = self.companion_ai.classifying.iter().position(|w| w.0 == id) else {
+                    let Some(i) = self.companion_ai.classifying.iter().position(|w| w.0 == id)
+                    else {
                         continue;
                     };
                     let (_, uuid, who, line) = self.companion_ai.classifying.remove(i);
@@ -455,22 +588,35 @@ impl Game<'_> {
         let bodies: Vec<(String, String)> = self
             .lan
             .as_ref()
-            .map(|h| h.companions.iter().map(|b| (b.file.uuid.clone(), b.file.name.clone())).collect())
+            .map(|h| {
+                h.companions
+                    .iter()
+                    .map(|b| (b.file.uuid.clone(), b.file.name.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         if bodies.len() == self.companion_ai.minds.len()
-            && bodies.iter().zip(&self.companion_ai.minds).all(|(b, m)| b.0 == m.uuid)
+            && bodies
+                .iter()
+                .zip(&self.companion_ai.minds)
+                .all(|(b, m)| b.0 == m.uuid)
         {
             return;
         }
-        let persona = self.persona();
         let owner = self.owner_name();
         let language = self.settings.language.clone();
+        let systems: Vec<String> = bodies
+            .iter()
+            .map(|(uuid, _)| {
+                prompt::system_prompt(&self.companion_persona(uuid), &owner, &language)
+            })
+            .collect();
         let mut old = std::mem::take(&mut self.companion_ai.minds);
-        for (uuid, name) in bodies {
+        for ((uuid, name), system) in bodies.into_iter().zip(systems) {
             let mind = match old.iter().position(|m| m.uuid == uuid) {
                 Some(i) => old.remove(i),
                 None => Mind {
-                    system: prompt::system_prompt(&Persona { name: name.clone(), ..persona.clone() }, &owner, &language),
+                    system,
                     uuid,
                     name,
                     history: Vec::new(),
@@ -481,6 +627,7 @@ impl Game<'_> {
                     said: false,
                     feedback: Vec::new(),
                     step: None,
+                    guarded: false,
                 },
             };
             self.companion_ai.minds.push(mind);
@@ -504,13 +651,16 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
-        let named = host
-            .companions
-            .iter()
-            .find_map(|b| reflex::addressed(line, &b.file.name, false).map(|cmd| (b.file.uuid.clone(), cmd.to_owned())));
+        let named = host.companions.iter().find_map(|b| {
+            reflex::addressed(line, &b.file.name, false)
+                .map(|cmd| (b.file.uuid.clone(), cmd.to_owned()))
+        });
         let (uuid, cmd) = match named {
             Some(n) => n,
-            None => match self.chat_mode_target().or_else(|| host.companions.first().map(|b| b.file.uuid.clone())) {
+            None => match self
+                .chat_mode_target()
+                .or_else(|| host.companions.first().map(|b| b.file.uuid.clone()))
+            {
                 Some(uuid) => (uuid, line.to_owned()),
                 None => return,
             },
@@ -535,7 +685,8 @@ impl Game<'_> {
         if owner && let Some(rest) = trimmed.strip_prefix('@') {
             let rest = rest.trim();
             if rest.is_empty() || !rest.contains(' ') {
-                let hit = companion_index(host, Some(rest)).map(|i| host.companions[i].file.name.clone());
+                let hit =
+                    companion_index(host, Some(rest)).map(|i| host.companions[i].file.name.clone());
                 let message = match (&self.companion_ai.chat_mode, hit) {
                     (Some(_), _) if rest.is_empty() => {
                         self.companion_ai.chat_mode = None;
@@ -546,7 +697,9 @@ impl Game<'_> {
                         "Back to the chat".to_owned()
                     }
                     (_, Some(name)) => {
-                        let message = format!("Talking to {name}: what you type goes to {name}. Type @ to stop.");
+                        let message = format!(
+                            "Talking to {name}: what you type goes to {name}. Type @ to stop."
+                        );
                         self.companion_ai.chat_mode = Some(name);
                         message
                     }
@@ -556,10 +709,17 @@ impl Game<'_> {
                 return;
             }
         }
-        let mode = if owner { self.companion_ai.chat_mode.clone() } else { None };
+        let mode = if owner {
+            self.companion_ai.chat_mode.clone()
+        } else {
+            None
+        };
         let target = host.companions.iter().find_map(|b| {
-            let in_mode = mode.as_ref().is_some_and(|m| m.eq_ignore_ascii_case(&b.file.name));
-            reflex::addressed(trimmed, &b.file.name, in_mode).map(|cmd| (b.file.uuid.clone(), cmd.to_owned()))
+            let in_mode = mode
+                .as_ref()
+                .is_some_and(|m| m.eq_ignore_ascii_case(&b.file.name));
+            reflex::addressed(trimmed, &b.file.name, in_mode)
+                .map(|cmd| (b.file.uuid.clone(), cmd.to_owned()))
         });
         if let Some((uuid, cmd)) = target {
             self.companion_route(&uuid, who, &cmd);
@@ -570,26 +730,59 @@ impl Game<'_> {
     fn companion_route(&mut self, uuid: &str, who: &str, line: &str) {
         let language = self.settings.language.clone();
         let started = Instant::now();
+        // A request the guard's words catch never reaches the brain.
+        if let Some(trip) = guard::check(line) {
+            log::info!(
+                "[companion] heard {who}: {line} (stopped by the guard: {})",
+                trip.name()
+            );
+            self.companion_ai.guarded += 1;
+            self.companion_refuse(uuid, trip);
+            return;
+        }
         let parse = reflex::parse(line, &language, self.name_index());
-        log::info!("[companion] heard {who}: {line} ({:?} in {:?})", parse, started.elapsed());
+        log::info!(
+            "[companion] heard {who}: {line} ({:?} in {:?})",
+            parse,
+            started.elapsed()
+        );
         match parse {
             Parse::Intent(intent) => self.companion_reflex(uuid, intent, Stage::Rules),
             Parse::Unclear if self.companion_ai.classifier_ready => {
                 let id = self.companion_ai.next_id;
                 self.companion_ai.next_id += 1;
                 let sent = self.companion_ai.worker.as_ref().is_some_and(|w| {
-                    w.to.send(ToWorker::Classify { id, line: line.to_owned(), language: language.clone() })
-                        .is_ok()
+                    w.to.send(ToWorker::Classify {
+                        id,
+                        line: line.to_owned(),
+                        language: language.clone(),
+                    })
+                    .is_ok()
                 });
                 if sent {
-                    self.companion_ai
-                        .classifying
-                        .push((id, uuid.to_owned(), who.to_owned(), line.to_owned()));
+                    self.companion_ai.classifying.push((
+                        id,
+                        uuid.to_owned(),
+                        who.to_owned(),
+                        line.to_owned(),
+                    ));
                 } else {
-                    self.companion_ask(uuid, Input::Said { who: who.to_owned(), text: line.to_owned() });
+                    self.companion_ask(
+                        uuid,
+                        Input::Said {
+                            who: who.to_owned(),
+                            text: line.to_owned(),
+                        },
+                    );
                 }
             }
-            Parse::Unclear => self.companion_ask(uuid, Input::Said { who: who.to_owned(), text: line.to_owned() }),
+            Parse::Unclear => self.companion_ask(
+                uuid,
+                Input::Said {
+                    who: who.to_owned(),
+                    text: line.to_owned(),
+                },
+            ),
         }
     }
 
@@ -617,9 +810,9 @@ impl Game<'_> {
     /// "10 oak logs" in the game's words, for `{what}`.
     fn intent_what(&self, intent: &Intent) -> String {
         let (item, count) = match intent {
-            Intent::Collect { item, count } | Intent::Give { item, count } | Intent::Craft { item, count } => {
-                (item.as_str(), *count)
-            }
+            Intent::Collect { item, count }
+            | Intent::Give { item, count }
+            | Intent::Craft { item, count } => (item.as_str(), *count),
             _ => return String::new(),
         };
         let name = item_display(item);
@@ -637,7 +830,9 @@ impl Game<'_> {
             Intent::Follow => w(&["follow"]),
             Intent::Stay => w(&["stay"]),
             Intent::Come => w(&["come"]),
-            Intent::GoTo { target: Target::Crosshair { .. } } => w(&["goto", "there"]),
+            Intent::GoTo {
+                target: Target::Crosshair { .. },
+            } => w(&["goto", "there"]),
             Intent::Stop => w(&["stop"]),
             Intent::Attack { target: None } => w(&["attack", "nearest"]),
             Intent::Attack { target: Some(kind) } => match self.nearest_mob(kind) {
@@ -660,13 +855,18 @@ impl Game<'_> {
     /// The brain's action as the body's words.
     fn action_words(&self, a: &Action) -> Vec<String> {
         let item = a.item.clone().unwrap_or_default();
-        let target = a.target.as_deref().map(|t| t.strip_prefix("minecraft:").unwrap_or(t));
+        let target = a
+            .target
+            .as_deref()
+            .map(|t| t.strip_prefix("minecraft:").unwrap_or(t));
         let intent = match a.skill {
             BrainSkill::Follow => Intent::Follow,
             BrainSkill::Stay => Intent::Stay,
             BrainSkill::Come => Intent::Come,
             BrainSkill::GoTo => match target {
-                None | Some("crosshair") | Some("there") => Intent::GoTo { target: Target::Crosshair { kind: None } },
+                None | Some("crosshair") | Some("there") => Intent::GoTo {
+                    target: Target::Crosshair { kind: None },
+                },
                 Some("owner") | Some("me") => Intent::Come,
                 Some(block) => return vec!["goto".into(), block.to_owned()],
             },
@@ -680,11 +880,20 @@ impl Game<'_> {
             BrainSkill::Jump => Intent::Jump,
             BrainSkill::Crouch => Intent::Crouch(true),
             BrainSkill::StandUp => Intent::Crouch(false),
-            BrainSkill::Collect => Intent::Collect { item, count: a.count },
-            BrainSkill::Give => Intent::Give { item, count: a.count },
+            BrainSkill::Collect => Intent::Collect {
+                item,
+                count: a.count,
+            },
+            BrainSkill::Give => Intent::Give {
+                item,
+                count: a.count,
+            },
             BrainSkill::Eat => Intent::Eat,
             BrainSkill::Sleep => Intent::Sleep,
-            BrainSkill::Craft => Intent::Craft { item, count: a.count },
+            BrainSkill::Craft => Intent::Craft {
+                item,
+                count: a.count,
+            },
         };
         self.intent_words(&intent)
     }
@@ -697,7 +906,12 @@ impl Game<'_> {
         self.mobs
             .iter()
             .filter(|m| m.alive() && c::short_id(&m.kind.id) == kind)
-            .map(|m| (m.id, c::distance(at, [m.position.x, m.position.y, m.position.z])))
+            .map(|m| {
+                (
+                    m.id,
+                    c::distance(at, [m.position.x, m.position.y, m.position.z]),
+                )
+            })
             .filter(|(_, d)| *d <= 24.0)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(id, _)| id)
@@ -712,8 +926,12 @@ impl Game<'_> {
                 Refused::Bad(e)
             }
         })?;
-        let name = self.mind_name(uuid).ok_or(Refused::Bad("no such companion".into()))?;
-        self.companion_command(Some(&name), command).map(|_| ()).map_err(Refused::Bad)
+        let name = self
+            .mind_name(uuid)
+            .ok_or(Refused::Bad("no such companion".into()))?;
+        self.companion_command(Some(&name), command)
+            .map(|_| ())
+            .map_err(Refused::Bad)
     }
 
     fn mind_name(&self, uuid: &str) -> Option<String> {
@@ -730,7 +948,11 @@ impl Game<'_> {
         let personality = self.companion_settings().persona.personality;
         let language = self.settings.language.clone();
         let line = phrases::acknowledge(ack, personality, &language, what, self.ticks);
-        let tone = if ack == Ack::Attack { Tone::Excited } else { Tone::Normal };
+        let tone = if ack == Ack::Attack {
+            Tone::Excited
+        } else {
+            Tone::Normal
+        };
         if let Some(name) = self.mind_name(uuid) {
             self.companion_speak(&name, &line, tone);
         }
@@ -754,20 +976,70 @@ impl Game<'_> {
         said.push(json!({ "at": at, "name": name, "line": line, "tone": tone.name() }));
         let chat = Text::translate("chat.type.text", &[c::name_text(name), Text::literal(line)]);
         let focused = self.screen == super::Screen::Chat;
-        self.ui.chat.add(&self.gui.atlas, chat, None, self.ticks, focused);
+        self.ui
+            .chat
+            .add(&self.gui.atlas, chat, None, self.ticks, focused);
         if let Some(host) = &self.lan {
             host.hub.companion_chat(name, line);
         }
-        let language = self.settings.language.split('_').next().unwrap_or("en").to_owned();
+        let language = self
+            .settings
+            .language
+            .split('_')
+            .next()
+            .unwrap_or("en")
+            .to_owned();
+        let voice = self.companion_voice_id();
         self.companion_say(
             name,
             Speak {
                 text: line.to_owned(),
-                voice: None,
+                voice,
                 tone: horizon_senses::voice::Tone::parse(tone.name()),
                 language,
             },
         );
+    }
+
+    /// The voice the settings pick on the running voice model (else the personality's default).
+    fn companion_voice_id(&mut self) -> Option<String> {
+        let model = self.companion_ai.tts?;
+        self.companion_settings().voice_id(model).map(str::to_owned)
+    }
+
+    /// The Companion screen's "Play sample": a short line in the chosen voice. It plays like any
+    /// line (and lands in the WAV tap when one is set); without the voice running, the screen says so.
+    pub(super) fn companion_voice_sample(&mut self) {
+        let personality = self.companion_settings().persona.personality;
+        let name = self.companion_settings().persona.name.clone();
+        let language = self.settings.language.clone();
+        let line = phrases::acknowledge(Ack::Follow, personality, &language, "", self.ticks);
+        let voice = self.companion_voice_id();
+        if self.companion_ai.tts.is_none()
+            || !self
+                .companion_voice_status()
+                .get("text_to_speech")
+                .is_some_and(|v| v == true)
+        {
+            self.system_message(Text::literal(
+                "The voice starts with your companion: open a world and spawn it to hear a sample.",
+            ));
+            return;
+        }
+        let spoken = self.mind_name_any().unwrap_or(name);
+        self.companion_say(
+            &spoken,
+            Speak {
+                text: line,
+                voice,
+                tone: horizon_senses::voice::Tone::Normal,
+                language: language.split('_').next().unwrap_or("en").to_owned(),
+            },
+        );
+    }
+
+    fn mind_name_any(&self) -> Option<String> {
+        self.companion_ai.minds.first().map(|m| m.name.clone())
     }
 
     // ---- the brain ----------------------------------------------------------------------
@@ -778,8 +1050,10 @@ impl Game<'_> {
             return Vec::new();
         };
         let name = self.companion_ai.minds[mi].name.clone();
-        let mut state = self.companion_state_summary(Some(&name)).unwrap_or_default();
-        if self.companion_settings().persona.level == Level::Partner {
+        let mut state = self
+            .companion_state_summary(Some(&name))
+            .unwrap_or_default();
+        if self.role_of(&name).follows_the_plan() {
             let step = self.partner_step(&name);
             state = format!("{}\n{state}", partner::state_line(step));
         }
@@ -794,7 +1068,15 @@ impl Game<'_> {
             .map(|b| b.file.notes.join("\n"))
             .unwrap_or_default();
         let mind = &self.companion_ai.minds[mi];
-        prompt::messages(&mind.system, &memory, &state, &mind.history, input, &self.settings.language, &Budget::default())
+        prompt::messages(
+            &mind.system,
+            &memory,
+            &state,
+            &mind.history,
+            input,
+            &self.settings.language,
+            &Budget::default(),
+        )
     }
 
     /// The Partner's step, from what the owner and the companion carry.
@@ -804,11 +1086,23 @@ impl Game<'_> {
             && let Some(bi) = companion_index(host, Some(name))
             && let Some(g) = host.hub.guest(host.companions[bi].conn)
         {
-            for s in g.inventory.iter().chain(g.armor.iter()).chain([&g.offhand]).flatten() {
+            for s in g
+                .inventory
+                .iter()
+                .chain(g.armor.iter())
+                .chain([&g.offhand])
+                .flatten()
+            {
                 items.push((s.item.to_string(), s.count));
             }
         }
-        for s in self.inventory.iter().chain(self.armor.iter()).chain([&self.offhand]).flatten() {
+        for s in self
+            .inventory
+            .iter()
+            .chain(self.armor.iter())
+            .chain([&self.offhand])
+            .flatten()
+        {
             items.push((s.item.to_string(), s.count));
         }
         partner::step(&items, self.dim.id())
@@ -848,6 +1142,7 @@ impl Game<'_> {
         }
         let id = brain.ask(request);
         mind.asking = Some((id, messages, Instant::now()));
+        mind.guarded = false;
         mind.spoke = false;
         mind.first_said = None;
         mind.thought = false;
@@ -867,7 +1162,11 @@ impl Game<'_> {
             .minds
             .iter_mut()
             .filter(|m| m.said && !m.spoke && !m.thought)
-            .filter(|m| m.asking.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= THINK_AFTER))
+            .filter(|m| {
+                m.asking
+                    .as_ref()
+                    .is_some_and(|(_, _, at)| at.elapsed() >= THINK_AFTER)
+            })
             .map(|m| {
                 m.thought = true;
                 m.uuid.clone()
@@ -904,27 +1203,63 @@ impl Game<'_> {
             match event {
                 BrainEvent::Sentence { text, tone, .. } => {
                     let mind = &mut self.companion_ai.minds[mi];
+                    if mind.guarded {
+                        continue;
+                    }
                     mind.spoke = true;
                     if mind.first_said.is_none() {
                         mind.first_said = mind.asking.as_ref().map(|(_, _, at)| at.elapsed());
                     }
+                    if let Some(trip) = guard::check(&text) {
+                        let uuid = mind.uuid.clone();
+                        self.companion_guarded(&uuid, trip);
+                        continue;
+                    }
                     self.companion_speak(&name, &text, tone);
                 }
-                BrainEvent::Done { reply, raw, stats, .. } => {
+                BrainEvent::Done {
+                    reply, raw, stats, ..
+                } => {
                     let mind = &mut self.companion_ai.minds[mi];
                     let Some((_, sent, asked)) = mind.asking.take() else {
                         continue;
                     };
-                    mind.history.push(Exchange::new(&sent, raw));
+                    let uuid = mind.uuid.clone();
+                    // A reply the guard stops never reaches the chat; nor its actions or memory.
+                    let trip = if mind.guarded {
+                        None
+                    } else {
+                        guard::check(&reply.say)
+                    };
+                    let guarded = mind.guarded || trip.is_some();
+                    mind.guarded = false;
+                    let answer = if guarded {
+                        r#"{"tone":"normal","say":"(refused: that stays out of the game)","actions":[]}"#.to_owned()
+                    } else {
+                        raw
+                    };
+                    mind.history.push(Exchange::new(&sent, answer));
                     let spoke = mind.spoke;
                     let first_said = mind.first_said.unwrap_or_else(|| asked.elapsed());
-                    let uuid = mind.uuid.clone();
                     self.record_timing(&name, asked, first_said, &stats);
+                    if let Some(trip) = trip {
+                        self.companion_guarded(&uuid, trip);
+                        if let Some(mind) = self.companion_ai.minds.get_mut(mi) {
+                            mind.guarded = false;
+                        }
+                        continue;
+                    }
+                    if guarded {
+                        continue;
+                    }
                     if !spoke && !reply.say.trim().is_empty() {
                         self.companion_speak(&name, &reply.say, reply.tone);
                     }
                     self.run_actions(&uuid, &reply.actions, &reply.rejected);
-                    if let Some(note) = reply.remember.filter(|n| !n.trim().is_empty()) {
+                    if let Some(note) = reply
+                        .remember
+                        .filter(|n| !n.trim().is_empty() && guard::check(n).is_none())
+                    {
                         self.companion_remember(&uuid, note.trim());
                     }
                 }
@@ -940,6 +1275,27 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    /// The guard stopped a reply: an in-character refusal (a caring line for self-harm) instead,
+    /// and the rest of the reply is dropped.
+    fn companion_guarded(&mut self, uuid: &str, trip: Trip) {
+        log::info!("[companion] the guard stopped a reply ({})", trip.name());
+        if let Some(mind) = self.companion_ai.minds.iter_mut().find(|m| m.uuid == uuid) {
+            mind.guarded = true;
+            mind.spoke = true;
+        }
+        self.companion_ai.guarded += 1;
+        self.companion_refuse(uuid, trip);
+    }
+
+    fn companion_refuse(&mut self, uuid: &str, trip: Trip) {
+        let ack = if trip == Trip::SelfHarm {
+            Ack::Care
+        } else {
+            Ack::Refuse
+        };
+        self.companion_ack(uuid, ack, "");
     }
 
     fn record_timing(&mut self, name: &str, asked: Instant, first_said: Duration, stats: &Stats) {
@@ -968,11 +1324,17 @@ impl Game<'_> {
     /// doesn't have yet is said and told to the brain next turn.
     fn run_actions(&mut self, uuid: &str, actions: &[Action], rejected: &[String]) {
         let allowed = BrainSkill::allowed_for(self.companion_ai.tier);
-        let mut feedback: Vec<String> = rejected.iter().map(|r| format!("there is no skill called {r}")).collect();
+        let mut feedback: Vec<String> = rejected
+            .iter()
+            .map(|r| format!("there is no skill called {r}"))
+            .collect();
         let mut not_yet = false;
         for a in actions {
             if allowed.is_some_and(|list| !list.contains(&a.skill)) {
-                log::info!("[companion] {:?} left to the reflexes on this brain", a.skill);
+                log::info!(
+                    "[companion] {:?} left to the reflexes on this brain",
+                    a.skill
+                );
                 continue;
             }
             let words = self.action_words(a);
@@ -980,7 +1342,9 @@ impl Game<'_> {
                 Ok(()) => log::info!("[companion] brain action {}", words.join(" ")),
                 Err(Refused::NotYet(skill)) => {
                     not_yet = true;
-                    feedback.push(format!("you can't {skill} yet: that skill isn't available, say so if asked again"));
+                    feedback.push(format!(
+                        "you can't {skill} yet: that skill isn't available, say so if asked again"
+                    ));
                 }
                 Err(Refused::Bad(e)) => feedback.push(format!("{} failed: {e}", a.skill.name())),
             }
@@ -1025,17 +1389,33 @@ impl Game<'_> {
             return;
         };
         let now = self.now_seconds();
-        if !important && self.companion_ai.last_remark.is_some_and(|at| now - at < cooldown) {
+        if !important
+            && self
+                .companion_ai
+                .last_remark
+                .is_some_and(|at| now - at < cooldown)
+        {
             return;
         }
-        let Some(uuid) = self.companion_ai.minds.iter().find(|m| m.name == name).map(|m| m.uuid.clone()) else {
+        let Some(uuid) = self
+            .companion_ai
+            .minds
+            .iter()
+            .find(|m| m.name == name)
+            .map(|m| m.uuid.clone())
+        else {
             return;
         };
         if self.companion_ai.brain.is_none() {
             return;
         }
         // An answer in progress is not interrupted for a remark.
-        if self.companion_ai.minds.iter().any(|m| m.uuid == uuid && m.asking.is_some()) {
+        if self
+            .companion_ai
+            .minds
+            .iter()
+            .any(|m| m.uuid == uuid && m.asking.is_some())
+        {
             return;
         }
         self.companion_ai.last_remark = Some(now);
@@ -1044,7 +1424,11 @@ impl Game<'_> {
 
     fn companion_ai_report(&mut self, name: &str, report: CompanionReport) {
         match report {
-            CompanionReport::SawHostile { kind, bearing, distance } => {
+            CompanionReport::SawHostile {
+                kind,
+                bearing,
+                distance,
+            } => {
                 let range = Range::of(f64::from(distance));
                 if range == Range::Far {
                     return;
@@ -1055,22 +1439,51 @@ impl Game<'_> {
                     return;
                 }
                 let personality = self.companion_settings().persona.personality;
-                let what = lang::get_or(&format!("entity.minecraft.{}", c::short_id(&kind)), c::short_id(&kind));
-                let (line, tone) = phrases::callout(&what, bearing, range, personality, &self.settings.language);
+                let what = lang::get_or(
+                    &format!("entity.minecraft.{}", c::short_id(&kind)),
+                    c::short_id(&kind),
+                );
+                let (line, tone) =
+                    phrases::callout(&what, bearing, range, personality, &self.settings.language);
                 self.companion_speak(name, &line, tone);
             }
-            CompanionReport::Died { cause } => self.remark(name, format!("You died ({cause}). You respawn in 10 seconds."), true),
+            CompanionReport::Died { cause } => self.remark(
+                name,
+                format!("You died ({cause}). You respawn in 10 seconds."),
+                true,
+            ),
             CompanionReport::ChangedDimension { dimension } => {
-                self.remark(name, format!("You came along with the owner to {}.", c::short_id(&dimension)), true);
+                self.remark(
+                    name,
+                    format!(
+                        "You came along with the owner to {}.",
+                        c::short_id(&dimension)
+                    ),
+                    true,
+                );
             }
             CompanionReport::StayedBehind { dimension } => {
-                self.remark(name, format!("The owner left; you stayed behind in {}.", c::short_id(&dimension)), false);
+                self.remark(
+                    name,
+                    format!(
+                        "The owner left; you stayed behind in {}.",
+                        c::short_id(&dimension)
+                    ),
+                    false,
+                );
             }
             CompanionReport::SkillFailed { skill, reason } => {
-                self.remark(name, format!("Your {} skill failed: {reason}.", skill.name()), true);
+                self.remark(
+                    name,
+                    format!("Your {} skill failed: {reason}.", skill.name()),
+                    true,
+                );
             }
             CompanionReport::SkillFinished(skill)
-                if !matches!(skill.name(), "idle" | "follow" | "stay" | "come" | "go to" | "attack" | "defend" | "retreat") =>
+                if !matches!(
+                    skill.name(),
+                    "idle" | "follow" | "stay" | "come" | "go to" | "attack" | "defend" | "retreat"
+                ) =>
             {
                 self.remark(name, format!("You finished: {}.", skill.name()), true);
             }
@@ -1094,22 +1507,37 @@ impl Game<'_> {
         if before > 0.0 && health <= 0.0 {
             self.remark(&name, format!("{owner} died."), true);
         } else if before - health >= BIG_HIT {
-            self.remark(&name, format!("{owner} just lost {:.0} health and has {health:.0} of 20 left.", before - health), false);
+            self.remark(
+                &name,
+                format!(
+                    "{owner} just lost {:.0} health and has {health:.0} of 20 left.",
+                    before - health
+                ),
+                false,
+            );
         }
     }
 
-    /// Partner: when the run reaches a new step, the brain hears of it (and says the new plan).
+    /// Teammate, Speedrunner and Coach: when the run reaches a new step, the brain hears of it (and
+    /// says the new plan).
     fn partner_progress(&mut self) {
-        if self.ticks % BOOST_EVERY != 0 || self.companion_settings().persona.level != Level::Partner {
+        if !self.ticks.is_multiple_of(BOOST_EVERY) {
             return;
         }
         let Some(name) = self.companion_ai.minds.first().map(|m| m.name.clone()) else {
             return;
         };
+        if !self.role_of(&name).follows_the_plan() {
+            return;
+        }
         let step = self.partner_step(&name);
         let before = self.companion_ai.minds[0].step.replace(step);
         if before.is_some_and(|b| b != step) {
-            self.remark(&name, format!("New step of the plan: {}.", step.goal()), true);
+            self.remark(
+                &name,
+                format!("New step of the plan: {}.", step.goal()),
+                true,
+            );
         }
     }
 
@@ -1120,7 +1548,11 @@ impl Game<'_> {
         }
         let name = self.companion_ai.minds[0].name.clone();
         let owner = self.owner_name();
-        self.remark(&name, format!("{owner} made the advancement \"{title}\"."), false);
+        self.remark(
+            &name,
+            format!("{owner} made the advancement \"{title}\"."),
+            false,
+        );
     }
 
     /// Each body's voice follows it.
@@ -1132,26 +1564,40 @@ impl Game<'_> {
         let places: Vec<(String, [f64; 3], bool)> = host
             .companions
             .iter()
-            .filter_map(|b| host.hub.guest(b.conn).map(|g| (b.file.name.clone(), g.position, b.dim != here)))
+            .filter_map(|b| {
+                host.hub
+                    .guest(b.conn)
+                    .map(|g| (b.file.name.clone(), g.position, b.dim != here))
+            })
             .collect();
         for (name, at, elsewhere) in places {
             self.companion_voice_place(&name, at, elsewhere);
         }
     }
 
-    /// Super strong: Strength II, Resistance II and Regeneration I, with their particles, kept up.
+    /// Bodyguard: Strength II, Resistance II and Regeneration I, with their particles, kept up.
     fn boost_super_strong(&mut self) {
-        if self.ticks % BOOST_EVERY != 0 || self.companion_settings().persona.level != Level::SuperStrong {
+        if !self.ticks.is_multiple_of(BOOST_EVERY) {
             return;
         }
+        let fallback = self.companion_settings().persona.role;
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        let conns: Vec<u32> = host.companions.iter().map(|b| b.conn).collect();
+        let conns: Vec<u32> = host
+            .companions
+            .iter()
+            .filter(|b| Role::parse(&b.file.role).unwrap_or(fallback) == Role::Bodyguard)
+            .map(|b| b.conn)
+            .collect();
         for conn in conns {
             self.as_guest(&mut host, conn, |game| {
                 for (id, amplifier) in [("strength", 1), ("resistance", 1), ("regeneration", 0)] {
-                    game.add_player_effect(horizon_client::effects::EffectInstance::new(id, BOOST_TICKS, amplifier));
+                    game.add_player_effect(horizon_client::effects::EffectInstance::new(
+                        id,
+                        BOOST_TICKS,
+                        amplifier,
+                    ));
                 }
             });
         }
@@ -1163,14 +1609,42 @@ impl Game<'_> {
     /// `companion ai`, `companion hear <text>`, `companion hear-wav <file>`, `companion forget [name]`.
     pub(super) fn companion_ai_words(&mut self, words: &[&str]) -> Option<Result<Value, String>> {
         let first = words.first().copied()?;
-        let ours = matches!(first, "ai" | "hear" | "hear-voice" | "hear-wav" | "forget" | "notes")
-            || first == "spawn" && self.no_ai();
+        let ours = matches!(
+            first,
+            "ai" | "hear" | "hear-voice" | "hear-wav" | "forget" | "notes" | "persona" | "sample"
+        ) || first == "spawn" && self.no_ai();
         ours.then(|| self.companion_ai_run(words))
     }
 
     fn companion_ai_run(&mut self, words: &[&str]) -> Result<Value, String> {
         match words[0] {
             "spawn" => Err("No AI is on: companions are hidden".into()),
+            "persona" => {
+                let uuids: Vec<String> = self
+                    .companion_ai
+                    .minds
+                    .iter()
+                    .map(|m| m.uuid.clone())
+                    .collect();
+                let voice = self.companion_voice_id();
+                let minds: Vec<Value> = uuids
+                    .iter()
+                    .map(|uuid| {
+                        let p = self.companion_persona(uuid);
+                        json!({
+                            "name": p.name, "personality": p.personality.label(), "role": p.role.id(),
+                            "perception": p.perception.id(), "salty": p.salty_on(), "kid_friendly": p.kid_friendly,
+                        })
+                    })
+                    .collect();
+                Ok(
+                    json!({ "ok": true, "minds": minds, "voice": voice, "tts": self.companion_ai.tts.map(|m| m.id) }),
+                )
+            }
+            "sample" => {
+                self.companion_voice_sample();
+                Ok(json!({ "ok": true, "voice": self.companion_voice_id() }))
+            }
             "ai" => {
                 let ai = &self.companion_ai;
                 Ok(json!({
@@ -1185,6 +1659,7 @@ impl Game<'_> {
                     "queued": ai.queued.len(),
                     "timings": ai.timings,
                     "said": ai.said,
+                    "guarded": ai.guarded,
                     "chat_mode": ai.chat_mode,
                     "no_ai": self.no_ai(),
                     "voice": self.companion_voice_status(),
@@ -1205,11 +1680,13 @@ impl Game<'_> {
             }
             "hear-wav" => {
                 let path = words.get(1).ok_or("hear-wav <file.wav>")?;
-                self.companion_voice_hear_wav(std::path::Path::new(path)).map(|()| json!({ "ok": true }))
+                self.companion_voice_hear_wav(std::path::Path::new(path))
+                    .map(|()| json!({ "ok": true }))
             }
             "forget" => {
                 let host = self.lan.as_mut().ok_or("no companion here")?;
-                let bi = companion_index(host, words.get(1).copied()).ok_or("no companion by that name")?;
+                let bi = companion_index(host, words.get(1).copied())
+                    .ok_or("no companion by that name")?;
                 host.companions[bi].file.notes.clear();
                 let uuid = host.companions[bi].file.uuid.clone();
                 if let Some(m) = self.companion_ai.minds.iter_mut().find(|m| m.uuid == uuid) {
@@ -1219,7 +1696,8 @@ impl Game<'_> {
             }
             "notes" => {
                 let host = self.lan.as_ref().ok_or("no companion here")?;
-                let bi = companion_index(host, words.get(1).copied()).ok_or("no companion by that name")?;
+                let bi = companion_index(host, words.get(1).copied())
+                    .ok_or("no companion by that name")?;
                 Ok(json!({ "ok": true, "notes": host.companions[bi].file.notes }))
             }
             other => Err(format!("unknown companion command: {other}")),
@@ -1236,7 +1714,11 @@ enum Refused {
 
 /// `collect 10 oak_log`: the count first, as the body's words read it.
 fn counted(verb: &str, item: &str, count: Option<u32>) -> Vec<String> {
-    vec![verb.to_owned(), count.unwrap_or(1).to_string(), item.strip_prefix("minecraft:").unwrap_or(item).to_owned()]
+    vec![
+        verb.to_owned(),
+        count.unwrap_or(1).to_string(),
+        item.strip_prefix("minecraft:").unwrap_or(item).to_owned(),
+    ]
 }
 
 /// An item or tag in the game's language: `oak_log` → "Oak Log", `#logs` → "logs".
@@ -1315,17 +1797,20 @@ fn worker(
         }
     }
     let mut embed: Option<EmbedServer> = None;
-    let pipeline = parts.classifier.and_then(|part| match start_classifier(&home, &part, item_names) {
-        Ok((server, pipeline)) => {
-            embed = Some(server);
-            let _ = tx.send(FromWorker::Classifier(Ok(())));
-            Some(pipeline)
-        }
-        Err(e) => {
-            let _ = tx.send(FromWorker::Classifier(Err(e)));
-            None
-        }
-    });
+    let pipeline =
+        parts
+            .classifier
+            .and_then(|part| match start_classifier(&home, &part, item_names) {
+                Ok((server, pipeline)) => {
+                    embed = Some(server);
+                    let _ = tx.send(FromWorker::Classifier(Ok(())));
+                    Some(pipeline)
+                }
+                Err(e) => {
+                    let _ = tx.send(FromWorker::Classifier(Err(e)));
+                    None
+                }
+            });
     let rules = reflex::Pipeline::default();
     let mut brain_sent = runtime.is_none();
     loop {
@@ -1350,7 +1835,10 @@ fn worker(
                     Some(p) => p.route(&line, &language, &names),
                     None => rules.route(&line, &language, &names),
                 };
-                log::info!("[companion] classified {line:?}: {route:?} in {:?}", started.elapsed());
+                log::info!(
+                    "[companion] classified {line:?}: {route:?} in {:?}",
+                    started.elapsed()
+                );
                 if tx.send(FromWorker::Routed { id, route }).is_err() {
                     break;
                 }
@@ -1373,13 +1861,26 @@ fn start_classifier(
     let model = part.dir.join(part.model.local_path(part.model.main_file()));
     let work = home.join("companion").join("logs");
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let server = EmbedServer::start(&part.server, &model, part.model.id, part.threads, &work).map_err(|e| e.to_string())?;
+    let server = EmbedServer::start(&part.server, &model, part.model.id, part.threads, &work)
+        .map_err(|e| e.to_string())?;
     let examples = classifier::parse_examples(classifier::BANK)?;
     let cache = classifier::cache_dir(&home.join("companion"));
     let started = Instant::now();
-    let mut built = Classifier::build(server.client(), &examples, Some(&cache)).map_err(|e| e.to_string())?;
+    let mut built =
+        Classifier::build(server.client(), &examples, Some(&cache)).map_err(|e| e.to_string())?;
     built.add_items(item_names);
-    log::info!("[companion] classifier ready ({} examples in {:?})", built.len(), started.elapsed());
+    log::info!(
+        "[companion] classifier ready ({} examples in {:?})",
+        built.len(),
+        started.elapsed()
+    );
     let client = server.client().clone();
-    Ok((server, ReflexClassifier { classifier: built, client }.pipeline()))
+    Ok((
+        server,
+        ReflexClassifier {
+            classifier: built,
+            client,
+        }
+        .pipeline(),
+    ))
 }
