@@ -104,10 +104,33 @@ def open_world(endpoint, name):
         command(endpoint, f'command gamerule {rule} false')
     command(endpoint, 'command difficulty easy')
     command(endpoint, 'command gamemode creative')
-    command(endpoint, 'command tp @s 0.5 200 0.5')
-    wait_for(endpoint, 'status', lambda v: v['player'] and v['player'].get('on_ground')
-             and v['pending_chunks'] == 0, timeout=60, what='owner at the start')
+    # The seed's 0, 0 is under the sea: an owner left standing there drowns
+    # during the scenario. The first spot out of these with dry ground.
+    for x, z in DRY_START_CANDIDATES:
+        command(endpoint, f'command tp @s {x + 0.5} 200 {z + 0.5}')
+        at = wait_for(endpoint, 'status', lambda v: v['player'] and v['player'].get('on_ground')
+                      and v['pending_chunks'] == 0, timeout=60, what='owner at the start')['player']['position']
+        if dry(endpoint, at):
+            break
+    else:
+        raise AssertionError('no dry ground to start on')
     command(endpoint, 'command gamemode survival')
+
+
+# Where open_world tries to put the owner, in order.
+DRY_START_CANDIDATES = [(0, 0)] + [(dx * r, dz * r) for r in (48, 96, 160, 256)
+                                   for dx, dz in ((1, 0), (0, 1), (-1, 0), (0, -1))]
+
+
+def dry(endpoint, at):
+    """Standing on solid ground with no water or lava at the feet, the head or around."""
+    x, y, z = (math.floor(v) for v in at)
+    def name(dx, dy, dz):
+        return command(endpoint, f'block {x + dx} {y + dy} {z + dz}')['block']
+    if any(w in name(0, -1, 0) for w in ('water', 'lava', 'air', 'leaves')):
+        return False
+    around = [name(dx, dy, dz) for dx, dz in ((0, 0), (2, 0), (-2, 0), (0, 2), (0, -2)) for dy in (0, 1)]
+    return not any(w in b for b in around for w in ('water', 'lava', 'seagrass', 'kelp', 'bubble_column'))
 
 
 def spawn_and_wait(endpoint, name='Kev', brain=True, timeout=300):

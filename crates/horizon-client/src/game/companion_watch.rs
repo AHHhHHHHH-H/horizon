@@ -60,6 +60,12 @@ impl Game<'_> {
         self.companions.watch.is_some()
     }
 
+    fn owner_dead(&self) -> bool {
+        self.player
+            .as_ref()
+            .is_some_and(|p| p.health.dead_or_dying())
+    }
+
     /// Whether `b` is the companion its owner watches.
     pub(super) fn watched(&self, b: &Body) -> bool {
         self.companions
@@ -93,6 +99,11 @@ impl Game<'_> {
     fn companion_watch(&mut self, name: Option<&str>) -> std::result::Result<Value, String> {
         if self.player.is_none() || self.travelling.is_some() {
             return Err("you are not in the world yet".into());
+        }
+        // The death screen is the dead owner's: Respawn first (a camera
+        // started now would sit behind it).
+        if self.owner_dead() {
+            return Err("you are dead: respawn first".into());
         }
         let host = self.lan.as_ref().ok_or("no companion here")?;
         let bi = companion_index(host, name).ok_or("no companion by that name")?;
@@ -138,11 +149,16 @@ impl Game<'_> {
         let Some(w) = self.companions.watch.take() else {
             return;
         };
-        let at = self.lan.as_ref().and_then(|host| {
-            let b = &host.companions[companion_index(host, Some(&w.name))?];
-            let g = host.hub.guest(b.conn)?;
-            (b.dim == self.dim && !g.dead).then_some(g.position)
-        });
+        // A dead owner stays where they died.
+        let at = self
+            .lan
+            .as_ref()
+            .filter(|_| !self.owner_dead())
+            .and_then(|host| {
+                let b = &host.companions[companion_index(host, Some(&w.name))?];
+                let g = host.hub.guest(b.conn)?;
+                (b.dim == self.dim && !g.dead).then_some(g.position)
+            });
         if let (Some(at), Some(p)) = (at, self.player.as_mut()) {
             p.position = Vec3::new(at[0], at[1], at[2]);
             p.velocity = Vec3::ZERO;
@@ -169,12 +185,19 @@ impl Game<'_> {
     /// Per tick, after the hub's: the camera, the body's portals, and the
     /// owner after a body that came back elsewhere.
     pub(super) fn tick_companion_watch(&mut self) {
+        if self.companions.watch.is_none() || self.player.is_none() || self.travelling.is_some() {
+            return;
+        }
+        // A spectator takes no damage but what bypasses invulnerability
+        // (`/kill`): an owner killed while watching gets their death screen
+        // and their mode back, not a camera behind it.
+        if self.owner_dead() {
+            self.watch_end();
+            return;
+        }
         let Some(w) = self.companions.watch.as_mut() else {
             return;
         };
-        if self.player.is_none() || self.travelling.is_some() {
-            return;
-        }
         w.ticks += 1;
         let name = w.name.clone();
         if !self.spectator() {

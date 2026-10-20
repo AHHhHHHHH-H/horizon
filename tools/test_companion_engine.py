@@ -257,6 +257,28 @@ def watch(endpoint):
     assert status['player']['game_mode'] == 1, status['player']
     assert command(endpoint, 'companion watch status')['watching'] is None
     print('watch: off, the owner is back in creative where Bea is')
+
+    # Killed while watching (only /kill reaches a spectator): the death screen and the owner's own
+    # mode, no camera; no Watch until they respawn.
+    command(endpoint, 'companion watch Bea')
+    command(endpoint, 'command kill @s')
+    wait_for(endpoint, 'status', lambda v: v['screen'] == 'dead', timeout=10, what='the death screen')
+    time.sleep(0.5)
+    assert command(endpoint, 'companion watch status')['watching'] is None
+    assert command(endpoint, 'status')['screen'] == 'dead'
+    try:
+        command(endpoint, 'companion watch Bea')
+        refused = 'Watch started'
+    except AssertionError as e:
+        refused = str(e)
+    assert 'respawn first' in refused, refused
+    # DeathScreen enables Respawn after 20 ticks.
+    time.sleep(1.5)
+    command(endpoint, 'respawn')
+    status = wait_for(endpoint, 'status', lambda v: v['screen'] != 'dead' and v['player'] is not None,
+                      timeout=10, what='respawned')
+    assert status['player']['game_mode'] == 1, status['player']
+    print('watch: killed while watching, the owner got the death screen and creative back; Watch waits for the respawn')
     command(endpoint, 'companion dismiss Bea')
 
 
