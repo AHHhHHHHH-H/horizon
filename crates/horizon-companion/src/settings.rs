@@ -196,7 +196,6 @@ impl CompanionSettings {
             })
             .collect()
     }
-
 }
 
 /// The game's extras file in its home, and the key No AI is kept under there.
@@ -217,7 +216,10 @@ pub fn sync_extras(game_home: &Path, no_ai: bool) -> io::Result<()> {
     let line = format!("{EXTRAS_KEY}:{no_ai}");
     let mut lines: Vec<&str> = text
         .lines()
-        .filter(|l| l.split_once(':').is_none_or(|(k, _)| k.trim() != EXTRAS_KEY))
+        .filter(|l| {
+            l.split_once(':')
+                .is_none_or(|(k, _)| k.trim() != EXTRAS_KEY)
+        })
         .collect();
     if !no_ai && lines.is_empty() && !path.exists() {
         // Nothing to say yet: the game's default is off.
@@ -482,7 +484,10 @@ mod tests {
     fn no_ai_reaches_the_games_extras_file_and_keeps_its_lines() {
         let home = crate::download::tests::scratch("extras");
         sync_extras(&home, false).unwrap();
-        assert!(!home.join(EXTRAS_FILE).exists(), "nothing written for the default");
+        assert!(
+            !home.join(EXTRAS_FILE).exists(),
+            "nothing written for the default"
+        );
         fs::write(home.join(EXTRAS_FILE), "zoom:true\nfps:false\n").unwrap();
         sync_extras(&home, true).unwrap();
         assert_eq!(
