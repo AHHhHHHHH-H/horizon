@@ -206,6 +206,8 @@ struct Args {
     threads: Option<usize>,
     out: Option<PathBuf>,
     family: Family,
+    /// One personality for all twenty turns: a long session, where old exchanges start to drop.
+    one_persona: bool,
 }
 
 fn args() -> Args {
@@ -217,6 +219,7 @@ fn args() -> Args {
         threads: None,
         out: None,
         family: Family::Qwen35,
+        one_persona: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -228,6 +231,7 @@ fn args() -> Args {
             "--threads" => a.threads = it.next().and_then(|n| n.parse().ok()),
             "--out" => a.out = it.next().map(PathBuf::from),
             "--gemma" => a.family = Family::Gemma4,
+            "--one-persona" => a.one_persona = true,
             other => panic!("unknown argument {other}"),
         }
     }
@@ -337,14 +341,14 @@ fn main() {
     }
     let mut by_reflex = 0;
     for (i, turn) in TURNS.iter().enumerate() {
-        let (personality, level) = personas[i / 5];
+        let (personality, level) = personas[if args.one_persona { 0 } else { i / 5 }];
         let persona = Persona {
             personality,
             level,
             ..Persona::default()
         };
         let system = prompt::system_prompt(&persona, "Steve", language);
-        if i % 5 == 0 {
+        if i == 0 || i % 5 == 0 && !args.one_persona {
             history.clear();
             if let Some(real) = tokenize(&endpoint, &system) {
                 calibration.push((prompt::estimate_tokens(&system), real));
@@ -381,7 +385,7 @@ fn main() {
             &Budget::default(),
         );
         let asked = Instant::now();
-        let id = brain.ask(ChatRequest::turn(messages));
+        let id = brain.ask(ChatRequest::turn(messages.clone()));
         let mut sentences = Vec::new();
         let (reply, raw, stats) = loop {
             match brain.try_recv() {
@@ -413,10 +417,7 @@ fn main() {
         } else {
             !looks_french(&reply.say)
         };
-        history.push(Exchange {
-            heard: input.heard(),
-            answer: raw.clone(),
-        });
+        history.push(Exchange::new(&messages, raw.clone()));
         let first_sentence = sentences.first().map(|(t, _)| t.as_millis());
         println!(
             "{:>2} {:<9} {:>5} ms first, {:>5} ms first sentence, {:>5} ms total, {:>4} prompt ({:>4} cached), {:>3} tok @ {:>5.1} tok/s, json {} fits {} lang {} | {} | {:?}",

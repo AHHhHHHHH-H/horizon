@@ -261,6 +261,7 @@ fn looks_integrated(name: &str) -> bool {
     false
 }
 
+#[cfg(any(target_os = "macos", windows))]
 fn output(program: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(program).args(args).output().ok()?;
     let text = String::from_utf8(out.stdout).ok()?.trim().to_owned();

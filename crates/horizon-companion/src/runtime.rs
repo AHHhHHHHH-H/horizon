@@ -738,9 +738,15 @@ mod tests {
         let mut runtime = Runtime::start(&config).unwrap();
         assert_eq!(*runtime.poll(), State::Loading);
         let pid = runtime.pid() as libc::pid_t;
-        // SAFETY: reads the scheduling priority of the child just started.
-        let nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as _) };
-        assert_eq!(nice, 10);
+        // SAFETY: reads the scheduling priority of this process and of the child just started.
+        let (ours, nice) = unsafe {
+            (
+                libc::getpriority(libc::PRIO_PROCESS, 0),
+                libc::getpriority(libc::PRIO_PROCESS, pid as _),
+            )
+        };
+        // 10, or what it inherited when the game itself runs nicer (raising priority needs root).
+        assert_eq!(nice, ours.max(10));
         wait_for("the log", || {
             fs::read_to_string(&config.log)
                 .unwrap_or_default()

@@ -322,11 +322,24 @@ pub fn language_name(code: &str) -> String {
     name.into()
 }
 
-/// One past turn: what the companion heard and its raw JSON answer.
+/// One past turn: the user message exactly as it was sent (state included) and the raw JSON answer.
+/// Keeping the sent text, not just the line, lets the runtime reuse the whole conversation from its
+/// cache: the next turn then only processes its own message (the benchmark measured a third of the
+/// prompt work per turn).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Exchange {
     pub heard: String,
     pub answer: String,
+}
+
+impl Exchange {
+    /// The exchange for a turn: `sent` is what [`messages`] returned for it.
+    pub fn new(sent: &[Message], answer: impl Into<String>) -> Exchange {
+        Exchange {
+            heard: sent.last().map(|m| m.content.clone()).unwrap_or_default(),
+            answer: answer.into(),
+        }
+    }
 }
 
 /// What this turn is about.
@@ -355,7 +368,14 @@ pub struct Budget {
     pub total: usize,
     pub memory: usize,
     pub state: usize,
+    /// The most past exchanges sent.
     pub exchanges: usize,
+    /// How many old exchanges go at once when there are too many, so between 3 and 6 are sent. Dropping
+    /// one per turn would change the start of the conversation every turn and the runtime would process
+    /// all of it again each time (measured on Qwen3.5 2B: 450 new tokens a turn instead of 160; on a
+    /// 2-core laptop that is 10 s instead of 4 before the first word). With 4 at once, three turns in
+    /// four only process their own message.
+    pub evict: usize,
 }
 
 impl Default for Budget {
@@ -365,6 +385,7 @@ impl Default for Budget {
             memory: 300,
             state: 250,
             exchanges: 6,
+            evict: 4,
         }
     }
 }
@@ -410,7 +431,10 @@ pub fn messages(
     let fixed = estimate_tokens(&system) + estimate_tokens(&turn) + 16;
     let mut room = budget.total.saturating_sub(fixed);
     let mut kept = Vec::new();
-    for exchange in history.iter().rev().take(budget.exchanges) {
+    let over = history.len().saturating_sub(budget.exchanges);
+    let evict = budget.evict.max(1);
+    let first = (over.div_ceil(evict) * evict).min(history.len());
+    for exchange in history[first..].iter().rev() {
         let cost = estimate_tokens(&exchange.heard) + estimate_tokens(&exchange.answer) + 8;
         if cost > room {
             break;
@@ -581,7 +605,7 @@ mod tests {
 
     #[test]
     fn messages_keep_the_cache_friendly_order() {
-        let history: Vec<Exchange> = (0..9).map(exchange).collect();
+        let history: Vec<Exchange> = (0..10).map(exchange).collect();
         let input = Input::Said {
             who: "Steve".into(),
             text: " get wood ".into(),
@@ -598,7 +622,7 @@ mod tests {
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[0].content, "SYSTEM\n# Memory\nBase at 100 64 -20\n");
         assert_eq!(msgs.len(), 1 + 6 * 2 + 1, "the last six exchanges");
-        assert_eq!(msgs[1].content, "Steve: message 3");
+        assert_eq!(msgs[1].content, "Steve: message 4");
         assert_eq!(msgs[2].role, Role::Assistant);
         let last = msgs.last().unwrap();
         assert_eq!(
@@ -620,6 +644,26 @@ mod tests {
             french[1].content,
             format!("Steve: get wood\n(Answer in {}.)", language_name("fr_fr"))
         );
+    }
+
+    #[test]
+    fn old_exchanges_go_four_at_a_time_so_the_cache_survives() {
+        let input = Input::Event("x".into());
+        let first_kept = |n: usize| {
+            let history: Vec<Exchange> = (0..n).map(exchange).collect();
+            let msgs = messages("S", "", "", &history, &input, "en_us", &Budget::default());
+            (msgs.len() > 2).then(|| msgs[1].content.clone())
+        };
+        assert_eq!(first_kept(6).as_deref(), Some("Steve: message 0"));
+        for n in 7..=10 {
+            assert_eq!(first_kept(n).as_deref(), Some("Steve: message 4"), "{n}");
+        }
+        for n in 11..=14 {
+            assert_eq!(first_kept(n).as_deref(), Some("Steve: message 8"), "{n}");
+        }
+        let sent = messages("S", "", "Day", &[], &input, "en_us", &Budget::default());
+        let past = Exchange::new(&sent, "{}");
+        assert_eq!(past.heard, "State:\nDay\n\n[event] x");
     }
 
     #[test]
