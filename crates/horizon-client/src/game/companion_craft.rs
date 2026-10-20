@@ -358,7 +358,7 @@ impl Game<'_> {
     }
 
     /// A right click on block `p` (a crafting table or furnace opens).
-    fn companion_use_block(
+    pub(super) fn companion_use_block(
         &mut self,
         host: &mut LanHost,
         b: &mut Body,

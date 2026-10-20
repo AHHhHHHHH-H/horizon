@@ -209,7 +209,9 @@ impl Game<'_> {
             .iter()
             .any(|m| threat(m) && c::distance(mob_at(m), pos) < 5.0);
         let hungry = food < c::EAT_BELOW || b.retreating && food < 20 && !danger_close;
-        if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
+        // (The End route eats when it is out of the dragon's way.)
+        let ending = b.end.as_ref().is_some_and(|e| e.active());
+        if b.eating.is_none() && hungry && !ending && (b.target.is_none() || !danger_close) {
             self.companion_start_eating(host, b);
         }
         self.companion_work_reflexes(host, b);
@@ -232,6 +234,27 @@ impl Game<'_> {
         owner: [f64; 3],
     ) {
         let pos = host.hub.guest(b.conn).map_or(owner, |g| g.position);
+        // The Watch's Stay as the body goes through the End portal leaves
+        // the End route on; any other order for where it goes ends it.
+        if b.end.as_ref().is_some_and(|e| e.arriving()) && matches!(command, CompanionCommand::Stay)
+        {
+            return;
+        }
+        // (A finished run's record stays for its status.)
+        if b.end.as_ref().is_some_and(|e| e.active())
+            && matches!(
+                command,
+                CompanionCommand::Follow
+                    | CompanionCommand::Stay
+                    | CompanionCommand::Come
+                    | CompanionCommand::GoTo(_)
+                    | CompanionCommand::Stop
+                    | CompanionCommand::Defend
+                    | CompanionCommand::End { .. }
+            )
+        {
+            b.end = None;
+        }
         // A new order for where it goes ends the work it had on.
         if !b.work.tasks.is_empty()
             && matches!(
@@ -349,6 +372,9 @@ impl Game<'_> {
             | CompanionCommand::Craft { .. }
             | CompanionCommand::Smelt { .. }
             | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
+            CompanionCommand::End { perception, beds } => {
+                self.companion_start_end(b, perception, beds);
+            }
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
                     self.companion_report(
@@ -568,6 +594,9 @@ impl Game<'_> {
 
     /// Where it goes this tick, and the blow it strikes.
     fn companion_move(&mut self, host: &mut LanHost, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
+        if b.end.as_ref().is_some_and(|e| e.active()) && self.companion_end_tick(host, b, pos) {
+            return;
+        }
         let eye = [pos[0], pos[1] + 1.62, pos[2]];
         // Fighting.
         if let Some(id) = b.target {
@@ -619,6 +648,7 @@ impl Game<'_> {
         }
         match b.skill {
             Skill::Idle | Skill::Attack => self.companion_look_at_owner(b, pos, owner),
+            Skill::End => {}
             Skill::Collect | Skill::Give | Skill::Craft | Skill::Smelt | Skill::Sleep => {
                 self.companion_work(host, b, pos, owner);
             }
@@ -1010,7 +1040,7 @@ impl Game<'_> {
 
     /// Its best armour on and its best weapon in hand.
     pub(super) fn companion_gear(&mut self, host: &mut LanHost, b: &mut Body) {
-        if b.eating.is_some() || b.work.busy_hands() {
+        if b.eating.is_some() || b.work.busy_hands() || super::companion_end::holds(b) {
             return;
         }
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
@@ -1069,7 +1099,7 @@ impl Game<'_> {
 
     /// Start eating its best food: into the hotbar, then used as a client's
     /// use-item packet would. False when it carries nothing worth eating.
-    fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
+    pub(super) fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
         if b.eating.is_some() {
             return true;
         }
@@ -1157,6 +1187,7 @@ impl Game<'_> {
             stacks.extend(g.carried.take());
         }
         let mut b = host.companions.remove(bi);
+        self.companion_end_died(&mut b, at);
         for stack in stacks {
             // Player.drop(stack, true): thrown in a random direction.
             let f = b.next_float() * 0.5;

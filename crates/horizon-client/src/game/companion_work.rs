@@ -1687,6 +1687,21 @@ impl Game<'_> {
         DigStep::Busy
     }
 
+    /// Dig `p` on a walk (its drops don't matter): Ok while it digs or once
+    /// it broke, Err when it can't.
+    pub(super) fn companion_dig_step(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        p: [i32; 3],
+        face: u8,
+    ) -> Result<(), ()> {
+        match self.companion_dig(host, b, p, face, false) {
+            DigStep::Failed(_) => Err(()),
+            _ => Ok(()),
+        }
+    }
+
     /// The dig stops: STOP once the block is gone (its client saw it break),
     /// else ABORT.
     pub(super) fn companion_stop_dig(&mut self, host: &mut LanHost, b: &mut Body) {

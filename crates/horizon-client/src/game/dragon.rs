@@ -2735,6 +2735,62 @@ impl Game<'_> {
             "respawn": self.fight.respawn.map(|(s, t)| format!("{} {t}", s.name())),
         })
     }
+    /// The dragon as a player fighting it sees it (game/companion_end.rs):
+    /// where it is, its phase, its parts' boxes (head, neck, body, tail
+    /// 1-3, wings 1-2).
+    pub(super) fn dragon_view(&self) -> Option<DragonView> {
+        let d = self.dragon.as_ref()?;
+        let corners = |b: Aabb| {
+            let (lo, hi) = (b.min_position(), b.max_position());
+            ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
+        };
+        Some(DragonView {
+            id: d.id,
+            position: [d.position.x, d.position.y, d.position.z],
+            velocity: [d.velocity.x, d.velocity.y, d.velocity.z],
+            health: d.health,
+            phase: d.phase.id(),
+            sitting: d.phase.sitting(),
+            alive: d.alive(),
+            parts: std::array::from_fn(|i| corners(d.part_box(i))),
+        })
+    }
+    /// The breath clouds on the ground (the dragon's and its fireballs'):
+    /// where, how wide, whether the dragon breathed it.
+    pub(super) fn breath_view(&self) -> Vec<([f64; 3], f32, bool)> {
+        self.breath_clouds
+            .iter()
+            .map(|c| (c.at, c.radius, c.from_dragon))
+            .collect()
+    }
+    /// The dragon's fireballs in flight: where, and their motion a tick.
+    pub(super) fn dragon_fireball_view(&self) -> Vec<([f64; 3], [f64; 3])> {
+        self.dragon_fireballs
+            .iter()
+            .map(|f| {
+                (
+                    [f.position.x, f.position.y, f.position.z],
+                    [f.velocity.x, f.velocity.y, f.velocity.z],
+                )
+            })
+            .collect()
+    }
+}
+
+/// What `dragon_view` shows.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DragonView {
+    pub id: u32,
+    pub position: [f64; 3],
+    pub velocity: [f64; 3],
+    pub health: f32,
+    /// `EnderDragonPhase` id: 0 holding, 1 strafe, 2 landing approach,
+    /// 3 landing, 4 takeoff, 5 flaming, 6 scanning, 7 attacking, 8 charging,
+    /// 9 dying, 10 hover.
+    pub phase: i32,
+    pub sitting: bool,
+    pub alive: bool,
+    pub parts: [([f64; 3], [f64; 3]); 8],
 }
 /// Respawning the dragon with end crystals on the exit portal
 /// (`EndCrystalItem.useOn`, `EnderDragonFight.tryRespawn`, `DragonRespawnStage`).

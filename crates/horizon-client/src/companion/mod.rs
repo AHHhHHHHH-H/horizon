@@ -5,6 +5,7 @@
 //! world folder and the compact state text the brain reads
 //! ([`summary::state_summary`]). The body itself, a LAN guest with no
 //! connection, lives in the game (game/companion.rs).
+pub mod end;
 pub mod file;
 pub mod gear;
 pub mod moves;
@@ -65,6 +66,13 @@ pub enum CompanionCommand {
     },
     /// Sleep in a bed within 16 blocks (it also does when its owner sleeps).
     Sleep,
+    /// The End of the Speedrunner's route (game/companion_end.rs): from the
+    /// portal room to the dragon's death, at a perception level when one is
+    /// given; `beds` tries the bed one-cycle on the perched dragon.
+    End {
+        perception: Option<perception::PerceptionLevel>,
+        beds: bool,
+    },
 }
 
 /// What [`CompanionCommand::Collect`] and [`CompanionCommand::Give`] are
@@ -170,6 +178,8 @@ pub enum Skill {
     Craft,
     Smelt,
     Sleep,
+    /// The End of the Speedrunner's route.
+    End,
 }
 
 impl Skill {
@@ -188,6 +198,7 @@ impl Skill {
             Skill::Craft,
             Skill::Smelt,
             Skill::Sleep,
+            Skill::End,
         ]
         .into_iter()
         .find(|s| s.name() == name)
@@ -207,6 +218,7 @@ impl Skill {
             Skill::Craft => "craft",
             Skill::Smelt => "smelt",
             Skill::Sleep => "sleep",
+            Skill::End => "end",
         }
     }
 }
@@ -263,6 +275,10 @@ pub enum CompanionReport {
         done: u32,
         total: u32,
     },
+    /// A moment of its route worth calling out ("The dragon is down!").
+    Milestone {
+        line: String,
+    },
 }
 
 impl CompanionReport {
@@ -297,6 +313,7 @@ impl CompanionReport {
                 done,
                 total,
             } => format!("{} {done}/{total} {}", skill.name(), short_id(item)),
+            Self::Milestone { line } => line.clone(),
         }
     }
 }
@@ -383,6 +400,23 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
             }
         }
         "sleep" | "bed" => CompanionCommand::Sleep,
+        "end" | "dragon" => {
+            let mut perception = None;
+            let mut beds = false;
+            for w in &words[1..] {
+                match w.to_ascii_lowercase().as_str() {
+                    "beds" | "bed" => beds = true,
+                    "sword" => beds = false,
+                    level => {
+                        perception =
+                            Some(perception::PerceptionLevel::parse(level).ok_or_else(|| {
+                                format!("end [fair|sharp|scout|all] [beds], not {level}")
+                            })?)
+                    }
+                }
+            }
+            CompanionCommand::End { perception, beds }
+        }
         other => return Err(format!("unknown companion command: {other}")),
     })
 }

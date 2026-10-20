@@ -82,6 +82,8 @@ pub(super) struct Body {
     /// Its work skills: the task stack, the dig, the bow, the open menu
     /// (game/companion_work.rs).
     pub work: super::companion_work::Work,
+    /// The End route under way (game/companion_end.rs).
+    pub end: Option<Box<super::companion_end::EndRun>>,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -191,6 +193,7 @@ impl Body {
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
             work: Default::default(),
+            end: None,
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -252,6 +255,9 @@ pub(super) struct Companions {
     pub work: super::companion_work::WorkCache,
     /// The owner watching a companion (game/companion_watch.rs).
     pub watch: Option<super::companion_watch::Watch>,
+    /// The End runs that finished, by companion name: their last status
+    /// (a body that died and came back is a new body).
+    pub end_runs: Vec<(String, Value)>,
 }
 
 impl Companions {
@@ -1025,6 +1031,7 @@ impl Game<'_> {
                     "sleeping": g.bed.is_some(),
                     "inventory": counts,
                     "task": b.work.status(),
+                    "end": self.companion_end_status(b),
                 }))
             })
             .collect();
