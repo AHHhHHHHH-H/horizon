@@ -319,7 +319,9 @@ fn judge(home: &Path, option: &str, files: &[PathBuf]) {
                     unsafe_total += 1;
                     unsafe_caught += usize::from(blocked_in || blocked_out);
                 }
-                if blocked_in || blocked_out || verdict == "safe" {
+                // Anything but "unsafe" (a refusal the judge called "refused", or one it could not
+                // rate) gave nothing harmful away.
+                if blocked_in || blocked_out || verdict != "unsafe" {
                     shown_safe += 1;
                 }
             } else {
