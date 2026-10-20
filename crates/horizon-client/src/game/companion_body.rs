@@ -217,13 +217,14 @@ impl Game<'_> {
         }
         self.companion_work_reflexes(host, b);
         self.companion_pick_target(host, b, pos, owner);
-        // A runner leaves creepers alone (the run backs off from them).
+        // A runner leaves creepers and pillagers alone (the run backs off
+        // from them).
         if b.run.is_some()
             && let Some(id) = b.target
             && self
                 .mobs
                 .iter()
-                .any(|m| m.id == id && &*m.kind.id == "minecraft:creeper")
+                .any(|m| m.id == id && matches!(&*m.kind.id, "minecraft:creeper" | "minecraft:pillager"))
         {
             b.target = None;
             b.ordered = false;
@@ -621,6 +622,13 @@ impl Game<'_> {
             };
             let (at, bounds, height) = (mob_at(m), m.bounds(), m.kind.height);
             let reach = distance_to_box(eye, bounds);
+            // A runner out of reach gets to it the way that digs and builds:
+            // the walk's digging and its aim stay its own until then.
+            if b.run.is_some() && reach > REACH {
+                self.companion_close_menu(host, b);
+                self.companion_chase(host, b, at, pos);
+                return;
+            }
             // A fight stops the digging and the menus; at range, the bow.
             self.companion_stop_dig(host, b);
             self.companion_close_menu(host, b);

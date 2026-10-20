@@ -365,7 +365,7 @@ enum DigStep {
 }
 
 /// `Direction.get3DDataValue` of a face's normal.
-fn face_index(face: [i32; 3]) -> u8 {
+pub(super) fn face_index(face: [i32; 3]) -> u8 {
     match face {
         [0, -1, 0] => 0,
         [0, 1, 0] => 1,
@@ -1541,7 +1541,7 @@ impl Game<'_> {
 
     /// A natural block it may dig through to reach another: leaves, plants,
     /// earth and stone, never what someone built.
-    fn natural(&self, p: [i32; 3]) -> bool {
+    pub(super) fn natural(&self, p: [i32; 3]) -> bool {
         let f = self.res.facts().get(self.world.block(p[0], p[1], p[2]));
         let n = c::short_id(&f.name);
         let earth = matches!(

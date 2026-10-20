@@ -134,6 +134,8 @@ pub(super) struct Walk {
     replans: u32,
     /// Blocks it failed to break or stand on: planned as walls.
     bad: Vec<[i32; 3]>,
+    /// Blocks it builds with (a portal's mould): never dug on the way.
+    pub keep: Vec<[i32; 3]>,
     /// A pillar step's jump started.
     jumped: bool,
     /// Where a chase goes (a mob's place when it was set).
@@ -172,6 +174,7 @@ impl Walk {
             "replans": self.replans,
             "bad": self.bad.len(),
             "since": self.since,
+            "wait": self.wait,
         })
     }
     /// The steps left of its plan (for the status line).
@@ -191,9 +194,12 @@ struct GameTerrain<'a, 'g> {
     /// touches them).
     near: [i32; 3],
     bad: &'a [[i32; 3]],
+    keep: &'a [[i32; 3]],
     digs: RefCell<HashMap<u32, u16>>,
     /// Each block state's cell, worked out once a search.
     states: RefCell<HashMap<u32, Cell>>,
+    /// Each block's cell, worked out once a search.
+    cells: RefCell<HashMap<[i32; 3], Cell>>,
     min_y: i32,
 }
 
@@ -248,6 +254,17 @@ impl GameTerrain<'_, '_> {
 
 impl Terrain for GameTerrain<'_, '_> {
     fn cell(&self, p: [i32; 3]) -> Cell {
+        if let Some(c) = self.cells.borrow().get(&p) {
+            return *c;
+        }
+        let c = self.cell_uncached(p);
+        self.cells.borrow_mut().insert(p, c);
+        c
+    }
+}
+
+impl GameTerrain<'_, '_> {
+    fn cell_uncached(&self, p: [i32; 3]) -> Cell {
         let world = &self.game.world;
         if p[1] < self.min_y || !world.loaded(p[0], p[2]) || self.bad.contains(&p) {
             return Cell::Solid { dig: 0, falls: false };
@@ -264,6 +281,11 @@ impl Terrain for GameTerrain<'_, '_> {
         };
         if !matches!(solid, Cell::Solid { .. }) {
             return solid;
+        }
+        if let Cell::Solid { falls, .. } = solid
+            && self.keep.contains(&p)
+        {
+            return Cell::Solid { dig: 0, falls };
         }
         // Fair sight: a solid block it never saw and doesn't touch is a
         // block of unknown kind (planned as stone).
@@ -325,6 +347,9 @@ impl Game<'_> {
             blocks: Self::companion_blocks(&inventory),
             stone: self.stone_ticks(&inventory),
             budget: BUDGET,
+            // A few milliseconds of the tick at most: a longer way is
+            // planned a leg at a time.
+            time: std::time::Duration::from_millis(12),
             min_y: self.dim.min_y() + 1,
             ..Default::default()
         };
@@ -337,8 +362,10 @@ impl Game<'_> {
                 memory: b.senses.memory(),
                 near: from,
                 bad: &b.walk.bad,
+                keep: &b.walk.keep,
                 digs: RefCell::new(HashMap::new()),
                 states: RefCell::new(HashMap::new()),
+                cells: RefCell::new(HashMap::with_capacity(8192)),
                 min_y: self.dim.min_y(),
             };
             moves::find(&t, from, goal, &rules)
@@ -593,11 +620,21 @@ impl Game<'_> {
             (false, true) => (pos[0] - (f64::from(f[0]) + 0.5)).abs(),
             _ => 0.0,
         };
-        let middle = [f64::from(f[0]) + 0.5, pos[1], f64::from(f[2]) + 0.5];
+        // Back to the middle of the way, still edging forward (aimed at the
+        // middle of its own block it would undo its progress each time and
+        // never get past).
+        let middle = [
+            if sx != 0 { pos[0] + f64::from(sx) * 0.3 } else { f64::from(f[0]) + 0.5 },
+            pos[1],
+            if sz != 0 { pos[2] + f64::from(sz) * 0.3 } else { f64::from(f[2]) + 0.5 },
+        ];
         let centring = aside > 0.2 && on_ground && step.how != Move::Fall;
+        let straight = next
+            .as_ref()
+            .is_some_and(|n| n.to[0] - step.to[0] == sx && n.to[2] - step.to[2] == sz);
         let aim = if centring {
             middle
-        } else if chain {
+        } else if chain && straight {
             // Straight walks: aim past this block at the next one.
             next.map_or(to_c, |n| [f64::from(n.to[0]) + 0.5, f64::from(n.to[1]), f64::from(n.to[2]) + 0.5])
         } else {
@@ -617,6 +654,11 @@ impl Game<'_> {
             // Over the hole or the edge: in it, it drops.
             Move::Fall | Move::Down | Move::DigDown if h < 0.25 => b.keys.forward = false,
             _ => {}
+        }
+        // In water whatever the step: up to it, or it sinks below it.
+        if in_water && step.to[1] >= f[1] && !matches!(step.how, Move::DigDown) {
+            b.keys.jump = true;
+            b.keys.shift = false;
         }
         // Edges it isn't meant to go off: sneaking keeps it on.
         if matches!(step.how, Move::Walk) && !in_water {

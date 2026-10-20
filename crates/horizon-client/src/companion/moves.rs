@@ -133,6 +133,8 @@ pub struct Rules {
     /// more: a quicker search for a longer path, since digging and
     /// placing cost much more per block than walking).
     pub greed: f64,
+    /// Wall time the search may take at most (it runs inside a game tick).
+    pub time: std::time::Duration,
 }
 
 impl Default for Rules {
@@ -147,6 +149,7 @@ impl Default for Rules {
             dig_extra: 4,
             min_y: -63,
             greed: 2.5,
+            time: std::time::Duration::from_secs(1),
         }
     }
 }
@@ -215,6 +218,7 @@ struct Node {
 
 /// Search a path from `from` (its feet) to `goal`.
 pub fn find<T: Terrain>(t: &T, from: [i32; 3], goal: Goal, rules: &Rules) -> Route {
+    let started = std::time::Instant::now();
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<[i32; 3], usize> = HashMap::new();
     let mut heap: BinaryHeap<Reverse<(u32, u32, usize)>> = BinaryHeap::new();
@@ -235,6 +239,7 @@ pub fn find<T: Terrain>(t: &T, from: [i32; 3], goal: Goal, rules: &Rules) -> Rou
     let mut closed: HashSet<usize> = HashSet::new();
     let mut found = None;
     let mut moves: Vec<(Step, u32)> = Vec::with_capacity(16);
+    let (mut dug, mut placed_on) = (Vec::with_capacity(32), Vec::with_capacity(32));
     while let Some(Reverse((_, _, i))) = heap.pop() {
         if !closed.insert(i) {
             continue;
@@ -249,15 +254,17 @@ pub fn find<T: Terrain>(t: &T, from: [i32; 3], goal: Goal, rules: &Rules) -> Rou
             best = (hi, i);
         }
         opened += 1;
-        if opened > rules.budget {
+        if opened > rules.budget || opened.is_multiple_of(256) && started.elapsed() > rules.time {
             break;
         }
         moves.clear();
         // What its own path dug and placed lately reads as it will be.
+        dug.clear();
+        placed_on.clear();
         let mut view = Overlay {
             t,
-            dug: Vec::new(),
-            placed: Vec::new(),
+            dug,
+            placed: placed_on,
             stone: rules.stone.max(1),
         };
         let mut at = i;
@@ -279,6 +286,7 @@ pub fn find<T: Terrain>(t: &T, from: [i32; 3], goal: Goal, rules: &Rules) -> Rou
             rules.blocks.saturating_sub(placed),
             &mut moves,
         );
+        (dug, placed_on) = (view.dug, view.placed);
         for (step, cost) in moves.drain(..) {
             let ng = g + cost;
             let np = placed + u32::from(step.place.is_some());
@@ -464,7 +472,15 @@ fn neighbours<T: Terrain>(
                 } else {
                     Move::Walk
                 };
-                let cost = if wet { walk * 2 } else { walk } + c + near;
+                // Under water (its head too) it has 15 s of air: dear.
+                let cost = if wet && t.cell(up(q, 1)) == Cell::Water {
+                    walk * 6
+                } else if wet {
+                    walk * 2
+                } else {
+                    walk
+                } + c
+                    + near;
                 out.push((
                     Step {
                         to: q,
@@ -629,7 +645,7 @@ fn neighbours<T: Terrain>(
                         dig: Vec::new(),
                         place: None,
                     },
-                    walk * 2,
+                    if t.cell(up(q, 1)) == Cell::Water { walk * 6 } else { walk * 2 },
                 ));
             }
         }

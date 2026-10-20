@@ -1064,6 +1064,7 @@ impl Game<'_> {
                     "ticks": b.ticks,
                     "digging": b.work.dig.map(|d| d.0),
                     "mining": host.play.get(&b.conn).and_then(|p| p.mining()),
+                    "on_ground": g.on_ground,
                 }))
             })
             .collect();
