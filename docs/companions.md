@@ -558,12 +558,19 @@ WAV) or `examples/companion_safety.rs`, on the Mac mini (M4 Pro, 64 GB), unless 
   | mining | 0.005–0.007 ms | 0.20 ms |
   | smelt | 0.003–0.007 ms | 0.16 ms |
 
-  The hub's whole tick (body, guest and view) averages 0.04–0.12 ms, with a worst of 1.9–5.5 ms. Path
-  searches cost 0.35 ms at most.
-  - The few one-off costs are cached for the session:
-    - what every block drops, read from the loot tables once: about 2 ms;
-    - the recipe index: 0.5 ms;
-    - the block-to-states index: under 1 ms.
+  The hub's whole tick (body, guest and view) averages 0.05–0.09 ms, p99 0.13–0.94 ms, worst 0.2–1.6 ms
+  (three runs of the skills script, 2026-10-20; its CPU time 1.4 ms at worst; one 11.5 ms tick ran
+  0.23 ms of it, the thread off its core while other builds loaded the machine). Path searches cost 1 ms
+  at most. Before, its worst was 3–10.5 ms: every inventory change scanned all ~1900
+  `inventory_changed` criteria and every unlocked recipe all ~1300 `recipe_unlocked` ones (now indexed
+  by item and by recipe), each report was logged with a blocking write on the game thread (now on a
+  "Log writer" thread), and the work indexes were built on the first order's tick. `HORIZON_SPIKES=1`
+  prints each slow hub tick with its spans and its CPU time: a tick with far more wall time than CPU
+  time was off its core (a busy machine), not working.
+  - The few one-off costs are built on a worker thread when the world opens (2–5 ms there):
+    - what every block drops, read from the loot tables once;
+    - the recipe index;
+  - and cached for the session: the block-to-states index, under 1 ms.
   - Block searches read at most 6 sections a tick, and sections whose palette can't hold the block cost
     nothing. A 48-block search (about 340 sections) usually ends in a few ticks.
   - Craft plans are cached until the inventory changes.
