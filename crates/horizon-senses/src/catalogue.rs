@@ -319,13 +319,13 @@ const AUDIOCPP_GGUF_REVISION: &str = "02f5de92a82339ebb722ea6fdadc14b7bec43a7f";
 const POCKET_CREDIT: &str =
     "Pocket TTS by Kyutai (CC-BY-4.0); GGUF conversion by the audio.cpp project";
 const POCKET_NEEDS: Needs = Needs {
-    ram_mb: 450,
+    ram_mb: 400,
     vram_mb: 0,
     cores: 2,
     backends: &[Backend::Cpu],
 };
-const POCKET_LATENCY: &str =
-    "First sound in about 0.1 s, about 7× faster than real time on 2 cores of an Apple M4 Pro";
+const POCKET_LATENCY: &str = "First sound in 0.04 s and 4× faster than real time on 2 cores of an \
+     Apple M4 Pro; 0.12 s and 1.6× on 2 cores of a 2016 laptop (Core i7-7500U)";
 const POCKET_VOICES: &[Voice] = &[
     Voice {
         id: "alba",
@@ -397,12 +397,13 @@ pub const MODELS: &[SenseModel] = &[
             "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
         ],
         needs: Needs {
-            ram_mb: 1300,
+            ram_mb: 3300,
             vram_mb: 0,
             cores: 2,
             backends: &[Backend::Cpu],
         },
-        latency: "A 3 s sentence in about 0.2 s on 2 cores of an Apple M4 Pro",
+        latency: "A 3.5 s sentence in 0.3 s on 2 cores of an Apple M4 Pro (0.04 s on its GPU), \
+                  0.7 s on 2 cores of a 2016 laptop (Core i7-7500U)",
         sample_rate: 16000,
         voices: &[],
         instruct: false,
@@ -411,7 +412,7 @@ pub const MODELS: &[SenseModel] = &[
     SenseModel {
         id: "canary-180m-flash-q8_0",
         kind: SenseKind::SpeechToText,
-        label: "Light speech recognition — for older PCs",
+        label: "Light speech recognition — for older PCs, makes more mistakes",
         name: "NVIDIA Canary 180M Flash",
         engine: Engine::AudioCpp {
             family: "canary_asr",
@@ -428,12 +429,12 @@ pub const MODELS: &[SenseModel] = &[
         credit: "Canary 180M Flash by NVIDIA (CC-BY-4.0); GGUF conversion by the audio.cpp project",
         languages: &["en", "de", "es", "fr"],
         needs: Needs {
-            ram_mb: 500,
+            ram_mb: 820,
             vram_mb: 0,
             cores: 2,
             backends: &[Backend::Cpu],
         },
-        latency: "A 3 s sentence in about 0.1 s on 2 cores of an Apple M4 Pro",
+        latency: "A 3.5 s sentence in 0.14 s on 2 cores of an Apple M4 Pro",
         sample_rate: 16000,
         voices: &[],
         instruct: false,
@@ -660,11 +661,11 @@ pub const MODELS: &[SenseModel] = &[
         languages: &["zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"],
         needs: Needs {
             ram_mb: 1000,
-            vram_mb: 4500,
+            vram_mb: 5000,
             cores: 2,
             backends: &[Backend::Metal, Backend::Cuda, Backend::Vulkan],
         },
-        latency: "First sound in about 0.6 s, about 1.3× faster than real time on an Apple M4 Pro GPU",
+        latency: "First sound in 0.06–0.09 s, about 2.2× faster than real time on an Apple M4 Pro GPU",
         sample_rate: 24000,
         voices: &[
             Voice {
@@ -726,12 +727,13 @@ pub const MODELS: &[SenseModel] = &[
         credit: "multilingual-e5-small by Microsoft (intfloat, MIT); GGUF by TwinSuns LLC",
         languages: &["en", "fr", "es", "de", "pt", "it", "nl", "pl", "ru"],
         needs: Needs {
-            ram_mb: 200,
+            ram_mb: 280,
             vram_mb: 0,
             cores: 1,
             backends: &[Backend::Cpu],
         },
-        latency: "About 5 ms a line on 1 core of an Apple M4 Pro",
+        latency: "3 ms a line on 1 core of an Apple M4 Pro, 16 ms on 1 core of a 2016 laptop \
+                  (Core i7-7500U)",
         sample_rate: 0,
         voices: &[],
         instruct: false,
@@ -755,12 +757,12 @@ pub const MODELS: &[SenseModel] = &[
         credit: "paraphrase-multilingual-MiniLM-L12-v2 by the sentence-transformers team (Apache-2.0); GGUF by mykor",
         languages: &["en", "fr", "es", "de", "pt", "it", "nl", "pl", "ru"],
         needs: Needs {
-            ram_mb: 200,
+            ram_mb: 280,
             vram_mb: 0,
             cores: 1,
             backends: &[Backend::Cpu],
         },
-        latency: "About 5 ms a line on 1 core of an Apple M4 Pro",
+        latency: "2.6 ms a line on 1 core of an Apple M4 Pro",
         sample_rate: 0,
         voices: &[],
         instruct: false,

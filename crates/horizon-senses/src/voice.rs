@@ -163,14 +163,16 @@ impl VoiceServer {
             }
         }
         if let Some(recognition) = self.recognition() {
-            recognition.transcribe(&vec![0.0; 16000])?;
+            recognition.transcribe(&vec![0.0; 16000], None)?;
         }
         Ok(())
     }
 }
 
-/// How a line is said. The brain's JSON names it; an expressive model gets it as an instruction, the
-/// natural voice (no instruction support) as a playback gain.
+/// How a line is said. The brain's JSON names it; an expressive model gets it as an instruction, and
+/// every voice is played with its gain: Qwen3-TTS evens out its loudness (a shout and a whisper came
+/// out within 0.2 dB RMS of each other on an M4 Pro), so the instruction changes the delivery and the
+/// game makes it loud or quiet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tone {
     Normal,
@@ -213,7 +215,7 @@ impl Tone {
         })
     }
 
-    /// The gain the natural voice is played with instead.
+    /// The gain the line is played with.
     pub fn playback_gain(&self) -> f32 {
         match self {
             Tone::Shout => 1.6,
@@ -317,13 +319,12 @@ impl SpeechClient {
         {
             body["voice"] = voice.as_str().into();
         }
-        let mut gain = speak.tone.playback_gain();
+        let gain = speak.tone.playback_gain();
         if model.instruct {
             body["language"] = speak.language.as_str().into();
             if let Some(instruction) = speak.tone.instruction() {
                 body["options"] = json!({ "instruct": instruction });
             }
-            gain = 1.0;
         }
         (body, model, gain)
     }
@@ -440,7 +441,8 @@ fn http_error(e: ureq::Error) -> io::Error {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transcript {
     pub text: String,
-    /// ISO 639-1, when the model reports it.
+    /// ISO 639-1, when the model reports it: Canary repeats the language it was asked for,
+    /// Parakeet reports none (the brain reads the language from the text).
     pub language: Option<String>,
     /// From sending the clip to the text.
     pub took: Duration,
@@ -467,8 +469,10 @@ impl RecognitionClient {
         self.model
     }
 
-    /// Transcribe 16 kHz mono samples.
-    pub fn transcribe(&self, samples: &[f32]) -> io::Result<Transcript> {
+    /// Transcribe 16 kHz mono samples. `language` (ISO 639-1, the game's language) is what the
+    /// player most likely speaks: Canary needs it or it translates to English, Parakeet finds the
+    /// language itself and ignores it.
+    pub fn transcribe(&self, samples: &[f32], language: Option<&str>) -> io::Result<Transcript> {
         let wav = crate::dsp::wav_pcm16(samples, 16000);
         let boundary = "horizon-senses-7f3a9c1e5b";
         let mut body = Vec::with_capacity(wav.len() + 512);
@@ -481,6 +485,9 @@ impl RecognitionClient {
             );
         };
         field(&mut body, "model", self.model.id);
+        if let Some(language) = language.filter(|l| self.model.speaks(l)) {
+            field(&mut body, "language", language);
+        }
         body.extend_from_slice(
             format!(
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
@@ -575,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn expressive_models_get_the_tone_as_an_instruction_and_natural_ones_as_gain() {
+    fn expressive_models_get_the_tone_as_an_instruction_and_every_voice_as_gain() {
         let m = setup();
         let client = SpeechClient::new(
             "http://127.0.0.1:1/",
@@ -595,7 +602,7 @@ mod tests {
         );
         assert_eq!(body["language"], "fr");
         assert_eq!(body["voice"], "ryan");
-        assert_eq!(gain, 1.0);
+        assert!(gain > 1.0);
         let natural = SpeechClient::new("http://x", vec![pocket_for("fr_fr")]);
         let (body, model, gain) = natural.request(&line("fr", Tone::Whisper));
         assert!(!model.instruct);
@@ -717,13 +724,14 @@ mod tests {
             reply.len()
         ));
         let client = RecognitionClient::new(&base, model("parakeet-tdt-0.6b-v3-q8_0").unwrap());
-        let t = client.transcribe(&vec![0.25; 1600]).unwrap();
+        let t = client.transcribe(&vec![0.25; 1600], Some("fr")).unwrap();
         assert_eq!(t.text, "follow me");
         assert_eq!(t.language.as_deref(), Some("en"));
         let request = server.join().unwrap();
         let text = String::from_utf8_lossy(&request);
         assert!(text.starts_with("POST /v1/audio/transcriptions/details"));
         assert!(text.contains("name=\"model\"\r\n\r\nparakeet-tdt-0.6b-v3-q8_0"));
+        assert!(text.contains("name=\"language\"\r\n\r\nfr"));
         let riff = request.windows(4).position(|w| w == b"RIFF").unwrap();
         // 16 000 Hz in the WAV header.
         assert_eq!(&request[riff + 24..riff + 28], &16000u32.to_le_bytes());

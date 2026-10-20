@@ -481,7 +481,7 @@ fn voice(
             let (pcm, rate) = dsp::read_wav_pcm16(&std::fs::read(path)?).ok_or("wav")?;
             let mut clip = Vec::new();
             dsp::To16k::new(rate, 1).push(&pcm, &mut clip);
-            let t = recognition.transcribe(&clip)?;
+            let t = recognition.transcribe(&clip, Some(language))?;
             println!(
                 "| {} | {:.2} s | {:.0} ms | {} (want {language}) | {:.0} % | {} |",
                 path.file_name().unwrap_or_default().to_string_lossy(),
