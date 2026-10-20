@@ -118,9 +118,11 @@ def one_run(args, seed, level):
                 missing = portal_room(endpoint, rng)
                 command(endpoint, f'command tp @s 0.5 {ROOM_Y} -3.5')
                 command(endpoint, f'companion spawn {NAME}')
-                command(endpoint, f'companion do {NAME} stay')
                 time.sleep(1)
                 command(endpoint, f'command tp {NAME} 0.5 {ROOM_Y} 0.5 0 0')
+                time.sleep(0.5)
+                # Its post where it stands now (a Stay before the /tp walks it back).
+                command(endpoint, f'companion do {NAME} stay')
                 gear(endpoint, args, missing, rng)
                 time.sleep(2)
                 command(endpoint, f'companion watch {NAME}')
@@ -145,6 +147,7 @@ def one_run(args, seed, level):
                     row = {k: end.get(k) for k in ('phase', 'note', 'ticks', 'destroyed', 'known',
                                                     'dragon_health', 'deaths', 'danger')}
                     row['health'] = (c or {}).get('health')
+                    row['food'] = (c or {}).get('food')
                     row['dim'] = (c or {}).get('dimension')
                     row['pos'] = [round(v, 1) for v in (c or {}).get('position', [0, 0, 0])]
                     row['dragon'] = dragon.get('health')

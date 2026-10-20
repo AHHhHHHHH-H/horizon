@@ -258,13 +258,14 @@ pub struct CagePlan {
     pub window: [[i32; 3]; 3],
 }
 
-/// The cage plan for `spike`, shooting from `far` blocks out from its centre.
-pub fn cage_plan(spike: &Spike, far: i32) -> CagePlan {
+/// The cage plan for `spike`, `near` blocks out from its centre (just off
+/// the obsidian: its radius + 1) and shooting from `far` blocks out.
+pub fn cage_plan(spike: &Spike, near: i32, far: i32) -> CagePlan {
     let [dx, dz] = spike.inward();
     let at = |n: i32| [spike.x + dx * n, spike.z + dz * n];
     let wall = at(2);
     CagePlan {
-        near: at(3),
+        near: at(near.max(3)),
         far: at(far),
         stand_y: spike.height,
         window: [0, 1, 2].map(|dy| [wall[0], spike.height + dy, wall[1]]),
@@ -507,7 +508,7 @@ mod tests {
         let s = Spike::under([-12.5, 80.0, -39.5], true);
         assert_eq!((s.x, s.z, s.height), (-13, -40, 79));
         assert_eq!(s.inward(), [0, 1]);
-        let p = cage_plan(&s, 12);
+        let p = cage_plan(&s, 3, 12);
         assert_eq!(p.near, [-13, -37]);
         assert_eq!(p.far, [-13, -28]);
         assert_eq!(p.stand_y, 79);
@@ -516,7 +517,7 @@ mod tests {
         assert_eq!(s.inward(), [-1, 0]);
         // The shot from the far pillar: level, through the window, onto the crystal.
         let s = Spike::under([33.5, 83.0, -24.5], true);
-        let p = cage_plan(&s, 12);
+        let p = cage_plan(&s, 3, 12);
         let feet = [
             f64::from(p.far[0]) + 0.5,
             f64::from(p.stand_y),
