@@ -101,6 +101,8 @@ impl Game<'_> {
             return Err(format!("{} is in another dimension", b.file.name));
         }
         let name = b.file.name.clone();
+        // The HUD's perception line follows the companion's setting (`watch perception` overrides).
+        let perception = self.perception_of(&name).label().to_owned();
         // Watching another one keeps the mode from before the first.
         let mode = self.companions.watch.take().map_or(self.mode, |w| w.mode);
         self.companions.watch = Some(Watch {
@@ -109,7 +111,7 @@ impl Game<'_> {
             dim: self.dim,
             ticks: 0,
             step: String::new(),
-            perception: String::new(),
+            perception,
         });
         self.set_mode(GameMode::Spectator);
         self.watch_camera(true);

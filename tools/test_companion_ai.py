@@ -294,6 +294,12 @@ def scenario_demo(endpoint, shots, language, ptt_wav):
         print(f'> push-to-talk {ptt_wav}'); print_said([s for s in heard['said'] if s['at'] >= since])
         time.sleep(6)
         shot('push-to-talk')
+    # Watch mode: its HUD shows the perception setting.
+    watch = command(endpoint, 'companion watch')
+    assert watch.get('perception') == 'Fair', watch
+    time.sleep(3)
+    shot('watch')
+    command(endpoint, 'companion watch off')
     return ai(endpoint)
 
 

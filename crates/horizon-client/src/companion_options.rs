@@ -44,6 +44,8 @@ pub struct CompanionView {
     /// Advanced: the brain tier's uncensored variant for Salty mode: (name, licence), or `None`
     /// while none is chosen.
     pub salty_brain: Option<(String, String)>,
+    /// The owner is watching the companion here (Watch mode, `game/companion_watch.rs`).
+    pub watching: bool,
 }
 
 /// One row of the section.
@@ -68,6 +70,8 @@ pub enum Row {
     VoiceSample,
     TalkKey,
     Spawn,
+    /// Watch mode: the owner becomes a camera on the companion.
+    Watch,
     Advanced,
     Part(Part),
     /// Salty mode's uncensored brain.
@@ -92,6 +96,8 @@ pub enum Action {
     EditName,
     /// Say a short line with the chosen voice.
     PlaySample,
+    /// Start or stop watching the companion here.
+    Watch,
 }
 
 pub fn rows(view: &CompanionView) -> Vec<Row> {
@@ -117,7 +123,11 @@ pub fn rows(view: &CompanionView) -> Vec<Row> {
         }
         rows.push(Row::TalkKey);
     }
-    rows.extend([Row::Spawn, Row::Advanced]);
+    rows.push(Row::Spawn);
+    if view.in_world && view.here.is_some() {
+        rows.push(Row::Watch);
+    }
+    rows.push(Row::Advanced);
     if view.advanced {
         rows.push(Row::Header("Advanced"));
         rows.extend([Part::Brain, Part::Classifier].map(Row::Part));
@@ -264,6 +274,11 @@ pub fn row_parts(
             };
             ("Companion".into(), text, control)
         }
+        Row::Watch => (
+            "Watch your companion".into(),
+            "Follow it as a camera, through portals, with its timer, step and perception.".into(),
+            Control::Button(if view.watching { "Stop watching" } else { "Watch" }.into()),
+        ),
         Row::Advanced => (
             "Show advanced".into(),
             "Pick each model yourself.".into(),
@@ -368,6 +383,7 @@ pub fn click(row: Row, view: &mut CompanionView, back: bool) -> Option<Action> {
         Row::TalkKey => Some(Action::BindTalk),
         Row::Spawn if view.here.is_some() => Some(Action::Dismiss),
         Row::Spawn if view.in_world => Some(Action::Spawn),
+        Row::Watch if view.here.is_some() => Some(Action::Watch),
         Row::Advanced => {
             view.advanced = !view.advanced;
             None
@@ -551,6 +567,28 @@ mod tests {
         view.in_world = true;
         assert_eq!(click(Row::Spawn, &mut view, false), Some(Action::Spawn));
         assert_eq!(name_chars("Kev the 2nd!"), "Kevthe2nd");
+    }
+
+    #[test]
+    fn watch_shows_once_a_companion_is_here() {
+        let mut view = CompanionView {
+            ready: true,
+            in_world: true,
+            ..CompanionView::default()
+        };
+        assert!(!rows(&view).contains(&Row::Watch));
+        view.here = Some("Kev".into());
+        assert!(rows(&view).contains(&Row::Watch));
+        assert_eq!(click(Row::Watch, &mut view, false), Some(Action::Watch));
+        assert_eq!(
+            row_parts(Row::Watch, &view, "", None).2,
+            Control::Button("Watch".into())
+        );
+        view.watching = true;
+        assert_eq!(
+            row_parts(Row::Watch, &view, "", None).2,
+            Control::Button("Stop watching".into())
+        );
     }
 
     #[test]

@@ -284,8 +284,21 @@ impl Game<'_> {
             .unwrap_or(fallback)
     }
 
+    /// The perception of the companion with this name (the Watch HUD shows it).
+    pub(super) fn perception_of(&mut self, name: &str) -> Perception {
+        let fallback = self.companion_settings().persona.perception;
+        self.lan
+            .as_ref()
+            .and_then(|h| h.companions.iter().find(|b| b.file.name == name))
+            .and_then(|b| Perception::parse(&b.file.perception))
+            .unwrap_or(fallback)
+    }
+
     /// The Companion screen changed the role or perception: the companions in the world take them.
     pub(super) fn companion_apply_persona(&mut self, role: Role, perception: Perception) {
+        if let Some(w) = self.companions.watch.as_mut() {
+            w.perception = perception.label().to_owned();
+        }
         let world = self.world_root.clone();
         let Some(host) = self.lan.as_mut() else {
             return;

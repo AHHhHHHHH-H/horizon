@@ -2,7 +2,7 @@
 //! plan, the setup's progress, who is here) and what its buttons do. Setting up runs
 //! `horizon_companion::setup`, the launcher's code, on its own thread; the settings are the
 //! launcher's file, so a change on either side shows on the other.
-use super::{Game, companion_ai::home};
+use super::{Game, Screen, companion_ai::home};
 use horizon_client::{
     companion as c,
     companion_options::Action,
@@ -117,9 +117,11 @@ impl Game<'_> {
             && self.integrated.is_none()
             && !self.serving();
         let status = self.companion_ai.status.clone();
+        let watching = self.watching();
         let view = &mut self.settings.companion;
         view.here = here;
         view.in_world = in_world;
+        view.watching = watching;
         view.status = status;
     }
 
@@ -264,6 +266,26 @@ impl Game<'_> {
                 );
             }
             Action::PlaySample => self.companion_voice_sample(),
+            Action::Watch => {
+                let result = if self.watching() {
+                    self.companion_watch_words(&["off"])
+                } else {
+                    let name = self.settings.companion.here.clone();
+                    let words: Vec<&str> = name.iter().map(String::as_str).collect();
+                    let result = self.companion_watch_words(&words);
+                    if result.is_ok() {
+                        // Straight to the view: the options and the pause menu close.
+                        self.settings.save(&Self::options_path());
+                        self.screen = Screen::Playing;
+                        self.capture(true);
+                    }
+                    result
+                };
+                self.settings.companion.watching = self.watching();
+                self.companion_result(
+                    result.map(|v| v["message"].as_str().unwrap_or("").to_owned()),
+                );
+            }
             Action::BindTalk | Action::EditName => {}
         }
     }
