@@ -11,6 +11,7 @@ pub mod catalogue;
 pub mod client;
 pub mod download;
 pub mod hardware;
+pub mod partner;
 pub mod phrases;
 pub mod plan;
 pub mod prompt;

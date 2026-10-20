@@ -27,6 +27,8 @@ pub struct CompanionSettings {
     pub set_up: bool,
     /// Push-to-talk and the spoken voice. Off by default: the microphone is opened only after this.
     pub voice: bool,
+    /// How often it speaks up on its own (callouts, remarks on what happens).
+    pub chattiness: Chattiness,
     pub persona: Persona,
     pub brain: BrainChoice,
     pub classifier: PartChoice,
@@ -42,12 +44,55 @@ impl Default for CompanionSettings {
             no_ai: false,
             set_up: false,
             voice: false,
+            chattiness: Chattiness::default(),
             persona: Persona::default(),
             brain: BrainChoice::Auto,
             classifier: PartChoice::Auto,
             speech_to_text: PartChoice::Auto,
             text_to_speech: PartChoice::Auto,
             tuning: Tuning::default(),
+        }
+    }
+}
+
+/// How often the companion speaks without being spoken to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Chattiness {
+    /// Only danger callouts; it never remarks on events.
+    Quiet,
+    #[default]
+    Normal,
+    /// Shorter cooldowns, and it remarks on more of what happens.
+    Chatty,
+}
+
+impl Chattiness {
+    pub const ALL: [Chattiness; 3] = [Chattiness::Quiet, Chattiness::Normal, Chattiness::Chatty];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Chattiness::Quiet => "Quiet",
+            Chattiness::Normal => "Normal",
+            Chattiness::Chatty => "Chatty",
+        }
+    }
+
+    /// Seconds between two callouts of one kind of mob.
+    pub fn callout_cooldown(self) -> f64 {
+        match self {
+            Chattiness::Quiet => 60.0,
+            Chattiness::Normal => 30.0,
+            Chattiness::Chatty => 15.0,
+        }
+    }
+
+    /// Seconds between two remarks the brain makes on its own about events.
+    pub fn remark_cooldown(self) -> Option<f64> {
+        match self {
+            Chattiness::Quiet => None,
+            Chattiness::Normal => Some(90.0),
+            Chattiness::Chatty => Some(30.0),
         }
     }
 }
@@ -201,6 +246,16 @@ impl CompanionSettings {
 /// The game's extras file in its home, and the key No AI is kept under there.
 pub const EXTRAS_FILE: &str = "horizon-extras.txt";
 pub const EXTRAS_KEY: &str = "noAi";
+
+/// Whether the game's extras file says No AI (the game's own switch, in Extras).
+pub fn extras_no_ai(game_home: &Path) -> bool {
+    fs::read_to_string(game_home.join(EXTRAS_FILE)).is_ok_and(|text| {
+        text.lines().any(|l| {
+            l.split_once(':')
+                .is_some_and(|(k, v)| k.trim() == EXTRAS_KEY && v.trim() == "true")
+        })
+    })
+}
 
 /// Writes `noAi:true|false` into the game's `horizon-extras.txt`, keeping every other line, so the
 /// game sees No AI even before it reads the companion's settings. The launcher calls it on every

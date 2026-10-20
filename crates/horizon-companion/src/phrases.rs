@@ -30,10 +30,15 @@ pub enum Ack {
     Sleep,
     /// A command it didn't understand, when no brain is there to ask.
     Huh,
+    /// Said at once when a line goes to the brain and its first word is a few seconds away (a CPU
+    /// brain): the player hears that they were heard.
+    Think,
+    /// A skill the body doesn't have yet.
+    NotYet,
 }
 
 impl Ack {
-    pub const ALL: [Ack; 16] = [
+    pub const ALL: [Ack; 18] = [
         Ack::Follow,
         Ack::Stay,
         Ack::Come,
@@ -50,6 +55,8 @@ impl Ack {
         Ack::Eat,
         Ack::Sleep,
         Ack::Huh,
+        Ack::Think,
+        Ack::NotYet,
     ];
 
     pub fn of(intent: &Intent) -> Ack {
@@ -90,6 +97,8 @@ impl Ack {
             Ack::Eat => "eat",
             Ack::Sleep => "sleep",
             Ack::Huh => "huh",
+            Ack::Think => "think",
+            Ack::NotYet => "not_yet",
         }
     }
 }
@@ -170,6 +179,8 @@ veteran.craft = Crafting {what}. Watch and learn. | {what}, coming up.
 veteran.eat = Finally, a break. | Eating. Don't touch my bread.
 veteran.sleep = Sleep. Best idea you've had all day. | Bed. Wake me if something explodes.
 veteran.huh = Speak Minecraft, would you? | No idea what that means.
+veteran.think = Hm. Give me a second. | Let me think about that.
+veteran.not_yet = Can't do that one yet. Ask me something else. | Not in my skill set. Yet.
 coach.follow = Right behind you, let's go! | Following! Lead the way.
 coach.stay = I'll hold this spot for you. | Staying here. Call me when you need me.
 coach.come = On my way! | Coming to you!
@@ -186,6 +197,8 @@ coach.craft = Crafting {what}! | Making {what} now.
 coach.eat = Good call, eating now. | Quick snack!
 coach.sleep = Good idea, let's skip the night. | Off to bed!
 coach.huh = Sorry, I didn't get that. Try \"follow me\" or \"get 10 logs\".
+coach.think = Good question, one sec! | Hmm, let me think.
+coach.not_yet = I can't do that yet, sorry! | That's one I haven't learned yet.
 expert.follow = Following. | Two blocks behind you.
 expert.stay = Holding position. | I'll stay here.
 expert.come = Coming. | Moving to you.
@@ -202,6 +215,8 @@ expert.craft = Crafting {what}. | {what}, in progress.
 expert.eat = Eating. | Topping up hunger.
 expert.sleep = Going to bed. | Sleeping.
 expert.huh = Not understood. | Unclear. Say it another way.
+expert.think = One moment. | Thinking.
+expert.not_yet = Not supported yet. | I can't do that yet.
 joker.follow = Following you like a lost puppy. | Where you go, I go. Unless it's lava.
 joker.stay = I'll just stand here. Looking cool. | Staying. Bring snacks.
 joker.come = Incoming! Brace yourself. | Coming! Cue dramatic music.
@@ -218,6 +233,8 @@ joker.craft = Crafting {what}. Artisanal, handmade. | {what}, fresh out of the o
 joker.eat = Nom time! | Snack break! Don't judge.
 joker.sleep = Nap time, my favourite sport. | Goodnight, cruel world. See you at dawn.
 joker.huh = Error 404: meaning not found. | I understood every word. Just not in that order.
+joker.think = Loading brain... please hold. | Hmm, gears turning.
+joker.not_yet = That skill is still in the oven. | Coming soon to a companion near you.
 quiet.follow = Okay.
 quiet.stay = Here.
 quiet.come = Coming.
@@ -234,6 +251,8 @@ quiet.craft = {what}.
 quiet.eat = Eating.
 quiet.sleep = Night.
 quiet.huh = ?
+quiet.think = Hm.
+quiet.not_yet = Can't yet.
 ";
 
 const FR: &str = "
@@ -253,6 +272,8 @@ veteran.craft = Je fabrique {what}. Regarde et apprends. | {what}, ça arrive.
 veteran.eat = Enfin une pause. | Je mange. Touche pas à mon pain.
 veteran.sleep = Dormir. Meilleure idée de la journée. | Au lit. Réveille-moi si ça explose.
 veteran.huh = Parle Minecraft, tu veux ? | Aucune idée de ce que ça veut dire.
+veteran.think = Hm. Deux secondes. | Laisse-moi réfléchir.
+veteran.not_yet = Ça, je sais pas encore faire. | Pas dans mes cordes. Pour l'instant.
 coach.follow = Je te suis, on y va ! | Je suis juste derrière, montre la route !
 coach.stay = Je garde la place pour toi. | Je reste ici. Appelle-moi si besoin.
 coach.come = J'arrive ! | Je viens vers toi !
@@ -269,6 +290,8 @@ coach.craft = Je fabrique {what} ! | {what}, c'est parti !
 coach.eat = Bonne idée, je mange. | Petite pause goûter !
 coach.sleep = Bonne idée, on saute la nuit. | Au lit !
 coach.huh = Désolé, j'ai pas compris. Essaie « suis-moi » ou « ramasse 10 bûches ».
+coach.think = Bonne question, une seconde ! | Hmm, je réfléchis.
+coach.not_yet = Je ne sais pas encore faire ça, désolé ! | Ça, je ne l'ai pas encore appris.
 expert.follow = Je te suis. | Deux blocs derrière toi.
 expert.stay = Je tiens la position. | Je reste ici.
 expert.come = J'arrive. | Je te rejoins.
@@ -285,6 +308,8 @@ expert.craft = Je fabrique {what}. | {what} : en cours.
 expert.eat = Je mange. | Je refais le plein.
 expert.sleep = Je vais me coucher. | Je dors.
 expert.huh = Pas compris. | Reformule, s'il te plaît.
+expert.think = Un instant. | Je réfléchis.
+expert.not_yet = Pas encore possible. | Je ne sais pas encore faire ça.
 joker.follow = Je te suis comme un petit chien perdu. | Où tu vas, je vais. Sauf dans la lave.
 joker.stay = Je reste planté là. Avec classe. | Je reste. Ramène des snacks.
 joker.come = J'arrive ! Accroche-toi. | J'arrive ! Musique dramatique, s'il vous plaît.
@@ -301,6 +326,8 @@ joker.craft = Je fabrique {what}. Artisanal, fait main. | {what}, tout chaud sor
 joker.eat = Miam ! | Pause goûter ! Me juge pas.
 joker.sleep = La sieste, mon sport préféré. | Bonne nuit, monde cruel. À l'aube.
 joker.huh = Erreur 404 : sens introuvable. | J'ai compris tous les mots. Juste pas dans cet ordre.
+joker.think = Chargement du cerveau... | Hmm, ça mouline.
+joker.not_yet = Cette compétence est encore au four. | Bientôt dans un compagnon près de chez vous.
 quiet.follow = Ok.
 quiet.stay = Ici.
 quiet.come = J'arrive.
@@ -317,6 +344,8 @@ quiet.craft = {what}.
 quiet.eat = Je mange.
 quiet.sleep = Bonne nuit.
 quiet.huh = ?
+quiet.think = Hm.
+quiet.not_yet = Pas encore.
 ";
 
 const ES: &str = "
@@ -336,6 +365,8 @@ veteran.craft = Fabricando {what}. Mira y aprende. | {what}, marchando.
 veteran.eat = Por fin, un descanso. | Comiendo. No toques mi pan.
 veteran.sleep = Dormir. La mejor idea que has tenido hoy. | A la cama. Despiértame si algo explota.
 veteran.huh = Habla en Minecraft, ¿quieres? | Ni idea de qué significa eso.
+veteran.think = Mm. Dame un segundo. | Déjame pensarlo.
+veteran.not_yet = Eso todavía no sé hacerlo. | No está en mi repertorio. Aún.
 coach.follow = ¡Detrás de ti, vamos! | ¡Te sigo, guía tú!
 coach.stay = Te guardo este sitio. | Me quedo aquí. Llámame si me necesitas.
 coach.come = ¡Voy! | ¡Voy hacia ti!
@@ -352,6 +383,8 @@ coach.craft = ¡Fabricando {what}! | ¡{what}, marchando!
 coach.eat = Buena idea, a comer. | ¡Un tentempié rápido!
 coach.sleep = Buena idea, saltemos la noche. | ¡A la cama!
 coach.huh = Perdona, no lo entendí. Prueba «sígueme» o «consigue 10 troncos».
+coach.think = ¡Buena pregunta, un segundo! | Mmm, déjame pensar.
+coach.not_yet = ¡Todavía no sé hacer eso, perdona! | Eso aún no lo he aprendido.
 expert.follow = Te sigo. | Dos bloques detrás de ti.
 expert.stay = Mantengo la posición. | Me quedo aquí.
 expert.come = Voy. | Voy hacia ti.
@@ -368,6 +401,8 @@ expert.craft = Fabricando {what}. | {what}: en proceso.
 expert.eat = Comiendo. | Recupero energía.
 expert.sleep = Me voy a la cama. | Durmiendo.
 expert.huh = No entendido. | Dilo de otra forma.
+expert.think = Un momento. | Pensando.
+expert.not_yet = Aún no disponible. | Todavía no puedo hacer eso.
 joker.follow = Te sigo como un perrito perdido. | A donde vayas, voy. Menos a la lava.
 joker.stay = Me quedo aquí. Con estilo. | Me quedo. Trae algo de picar.
 joker.come = ¡Allá voy! Agárrate. | ¡Voy! Música dramática, por favor.
@@ -384,6 +419,8 @@ joker.craft = Fabricando {what}. Artesanal, hecho a mano. | {what}, recién sali
 joker.eat = ¡Ñam! | ¡Pausa para merendar! No me juzgues.
 joker.sleep = La siesta, mi deporte favorito. | Buenas noches, mundo cruel. Hasta el amanecer.
 joker.huh = Error 404: sentido no encontrado. | Entendí todas las palabras. Pero no en ese orden.
+joker.think = Cargando cerebro... | Mmm, los engranajes giran.
+joker.not_yet = Esa habilidad sigue en el horno. | Próximamente en un compañero cerca de ti.
 quiet.follow = Vale.
 quiet.stay = Aquí.
 quiet.come = Voy.
@@ -400,6 +437,8 @@ quiet.craft = {what}.
 quiet.eat = Como.
 quiet.sleep = Buenas noches.
 quiet.huh = ?
+quiet.think = Mm.
+quiet.not_yet = Aún no.
 ";
 
 const DE: &str = "
@@ -419,6 +458,8 @@ veteran.craft = Ich baue {what}. Schau zu und lern was. | {what}, kommt sofort.
 veteran.eat = Endlich eine Pause. | Ich esse. Finger weg von meinem Brot.
 veteran.sleep = Schlafen. Die beste Idee, die du heute hattest. | Ab ins Bett. Weck mich, wenn was explodiert.
 veteran.huh = Sprich Minecraft, ja? | Keine Ahnung, was das heißen soll.
+veteran.think = Hm. Moment. | Lass mich nachdenken.
+veteran.not_yet = Das kann ich noch nicht. | Nicht mein Fach. Noch nicht.
 coach.follow = Ich bin direkt hinter dir, los geht's! | Ich folge dir, zeig den Weg!
 coach.stay = Ich halte den Platz für dich. | Ich bleibe hier. Ruf mich, wenn du mich brauchst.
 coach.come = Bin unterwegs! | Ich komme zu dir!
@@ -435,6 +476,8 @@ coach.craft = Ich baue {what}! | {what}, kommt sofort!
 coach.eat = Gute Idee, ich esse was. | Kurze Snackpause!
 coach.sleep = Gute Idee, überspringen wir die Nacht. | Ab ins Bett!
 coach.huh = Sorry, das hab ich nicht verstanden. Versuch „folge mir“ oder „hol 10 Stämme“.
+coach.think = Gute Frage, eine Sekunde! | Hmm, ich überlege.
+coach.not_yet = Das kann ich leider noch nicht! | Das hab ich noch nicht gelernt.
 expert.follow = Ich folge dir. | Zwei Blöcke hinter dir.
 expert.stay = Halte die Stellung. | Ich bleibe hier.
 expert.come = Komme. | Bin auf dem Weg zu dir.
@@ -451,6 +494,8 @@ expert.craft = Baue {what}. | {what}: in Arbeit.
 expert.eat = Esse. | Fülle den Hunger auf.
 expert.sleep = Gehe schlafen. | Schlafe.
 expert.huh = Nicht verstanden. | Sag es bitte anders.
+expert.think = Einen Moment. | Ich denke nach.
+expert.not_yet = Noch nicht möglich. | Das kann ich noch nicht.
 joker.follow = Ich folge dir wie ein verlorenes Hündchen. | Wo du hingehst, geh ich hin. Außer in Lava.
 joker.stay = Ich steh hier einfach rum. Lässig. | Ich bleibe. Bring Snacks mit.
 joker.come = Achtung, ich komme! Festhalten. | Ich komme! Dramatische Musik, bitte.
@@ -467,6 +512,8 @@ joker.craft = Ich baue {what}. Handarbeit, aus eigener Werkstatt. | {what}, fris
 joker.eat = Mampf! | Snackpause! Nicht urteilen.
 joker.sleep = Nickerchen, mein Lieblingssport. | Gute Nacht, grausame Welt. Bis zum Morgen.
 joker.huh = Fehler 404: Sinn nicht gefunden. | Ich hab jedes Wort verstanden. Nur nicht in der Reihenfolge.
+joker.think = Gehirn lädt... bitte warten. | Hmm, die Zahnräder drehen sich.
+joker.not_yet = Diese Fähigkeit ist noch im Ofen. | Demnächst bei einem Begleiter in deiner Nähe.
 quiet.follow = Okay.
 quiet.stay = Hier.
 quiet.come = Komme.
@@ -483,6 +530,8 @@ quiet.craft = {what}.
 quiet.eat = Esse.
 quiet.sleep = Nacht.
 quiet.huh = ?
+quiet.think = Hm.
+quiet.not_yet = Noch nicht.
 ";
 
 const PT: &str = "
@@ -502,6 +551,8 @@ veteran.craft = Fabricando {what}. Olha e aprende. | {what}, saindo.
 veteran.eat = Finalmente, uma pausa. | Comendo. Não mexe no meu pão.
 veteran.sleep = Dormir. A melhor ideia que você teve hoje. | Cama. Me acorda se algo explodir.
 veteran.huh = Fala Minecraft, pode ser? | Não faço ideia do que isso quer dizer.
+veteran.think = Hm. Um segundo. | Deixa eu pensar.
+veteran.not_yet = Isso eu ainda não sei fazer. | Não está no meu repertório. Ainda.
 coach.follow = Tô logo atrás, vamos! | Te sigo, mostra o caminho!
 coach.stay = Seguro esse lugar pra você. | Fico aqui. Me chama se precisar.
 coach.come = Tô indo! | Indo até você!
@@ -518,6 +569,8 @@ coach.craft = Fabricando {what}! | {what}, saindo!
 coach.eat = Boa ideia, vou comer. | Lanchinho rápido!
 coach.sleep = Boa ideia, vamos pular a noite. | Pra cama!
 coach.huh = Foi mal, não entendi. Tenta \"me siga\" ou \"pega 10 troncos\".
+coach.think = Boa pergunta, um segundo! | Hmm, deixa eu pensar.
+coach.not_yet = Ainda não sei fazer isso, foi mal! | Isso eu ainda não aprendi.
 expert.follow = Seguindo. | Dois blocos atrás de você.
 expert.stay = Mantendo posição. | Fico aqui.
 expert.come = Indo. | Indo até você.
@@ -534,6 +587,8 @@ expert.craft = Fabricando {what}. | {what}: em andamento.
 expert.eat = Comendo. | Repondo energia.
 expert.sleep = Indo dormir. | Dormindo.
 expert.huh = Não entendi. | Fala de outro jeito.
+expert.think = Um momento. | Pensando.
+expert.not_yet = Ainda não disponível. | Ainda não consigo fazer isso.
 joker.follow = Te sigo igual cachorrinho perdido. | Aonde você for, eu vou. Menos na lava.
 joker.stay = Vou ficar aqui parado. Com estilo. | Fico. Traz um lanche.
 joker.come = Lá vou eu! Segura. | Tô indo! Música dramática, por favor.
@@ -550,6 +605,8 @@ joker.craft = Fabricando {what}. Artesanal, feito à mão. | {what}, saindo do f
 joker.eat = Nham! | Pausa pro lanche! Sem julgamentos.
 joker.sleep = Soneca, meu esporte favorito. | Boa noite, mundo cruel. Até o amanhecer.
 joker.huh = Erro 404: sentido não encontrado. | Entendi todas as palavras. Só não nessa ordem.
+joker.think = Carregando cérebro... | Hmm, as engrenagens estão girando.
+joker.not_yet = Essa habilidade ainda está no forno. | Em breve num companheiro perto de você.
 quiet.follow = Ok.
 quiet.stay = Aqui.
 quiet.come = Indo.
@@ -566,6 +623,8 @@ quiet.craft = {what}.
 quiet.eat = Comendo.
 quiet.sleep = Boa noite.
 quiet.huh = ?
+quiet.think = Hm.
+quiet.not_yet = Ainda não.
 ";
 
 /// The hour on a clock face where `target` is, seen from `from` facing `yaw` (Minecraft degrees:
