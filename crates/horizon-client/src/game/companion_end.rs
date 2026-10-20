@@ -74,7 +74,7 @@ const CAGE_FAR: i32 = 12;
 /// Where it waits for the dragon to perch: this far from the fountain.
 const WAIT_RING: f64 = 12.0;
 /// Its health below which it backs off to eat, and above which it goes back.
-const LOW: f32 = 9.0;
+const LOW: f32 = 11.0;
 const HEALED: f32 = 16.0;
 /// A part of the route taking longer than this is a failure (ticks).
 const BUDGET_PORTAL: u64 = 2400;
@@ -112,6 +112,8 @@ struct Shot {
     tried: Vec<[f64; 3]>,
     /// The tick the arrow flew, waiting to see it land.
     fired: Option<u64>,
+    /// How long the last arrow takes to get there.
+    flight: u64,
     misses: u32,
     since: u64,
 }
@@ -137,6 +139,8 @@ struct Cage {
     since: u64,
     fired: Option<u64>,
     misses: u32,
+    /// Times it came down its pillar out of a breath cloud.
+    retreats: u32,
 }
 
 /// A step it stands on by the perched dragon's head.
@@ -202,6 +206,10 @@ pub(super) struct EndRun {
     /// Where and since when it stood still while walking.
     stall: Option<([f64; 3], u64)>,
     health: f32,
+    /// The fight's crystals have been there (its arena is in).
+    arena: bool,
+    /// The armour modifiers put on its attributes (`end_wear_armor`).
+    armor_mods: Vec<(String, String)>,
 }
 
 impl EndRun {
@@ -238,6 +246,8 @@ impl EndRun {
             walk_fails: 0,
             stall: None,
             health: 20.0,
+            arena: false,
+            armor_mods: Vec::new(),
         }
     }
     /// Whether it is on its way through the portal (the Watch's Stay on
@@ -286,6 +296,16 @@ impl EndRun {
             "danger": self.danger,
         })
     }
+}
+
+/// The bow's aim at a crystal: where to look, how long the arrow flies,
+/// whether it is the high arc.
+#[derive(Clone, Copy, Debug)]
+struct Aim {
+    yaw: f32,
+    pitch: f32,
+    ticks: u32,
+    lob: bool,
 }
 
 /// What a primitive came to this tick.
@@ -425,6 +445,9 @@ impl Game<'_> {
         let Some(mut run) = b.end.take() else {
             return false;
         };
+        if b.ticks.is_multiple_of(20) {
+            self.end_wear_armor(host, b, &mut run);
+        }
         self.end_trace_hurt(host, b, &mut run, pos);
         let handled = self.end_step(host, b, &mut run, pos);
         if !matches!(run.phase, EndPhase::Done | EndPhase::Failed) {
@@ -488,6 +511,20 @@ impl Game<'_> {
             self.end_keep_record(b, &run);
             b.end = Some(run);
         }
+    }
+
+    /// Its worn armour protects it: the hub never puts a guest's armour
+    /// modifiers on its attributes (`LivingEntity.collectEquipmentChanges`),
+    /// so the dragon's head, its wings and the endermen hit as through none.
+    /// The local player's `apply_equipment`, for the guest, with its own list.
+    fn end_wear_armor(&mut self, host: &mut LanHost, b: &Body, run: &mut EndRun) {
+        let mut mods = std::mem::take(&mut run.armor_mods);
+        self.as_guest(host, b.conn, |g| {
+            std::mem::swap(&mut g.applied_modifiers, &mut mods);
+            g.apply_equipment();
+            std::mem::swap(&mut g.applied_modifiers, &mut mods);
+        });
+        run.armor_mods = mods;
     }
 
     /// Each hurt in the log, with what was round it then (the harness's
@@ -697,6 +734,13 @@ impl Game<'_> {
     /// hears gone.
     fn end_see_crystals(&mut self, run: &mut EndRun, pos: [f64; 3], yaw: f32) {
         let from = eye(pos);
+        // The fight's crystals come with its arena: none there before then
+        // says nothing.
+        run.arena |= !self.crystals.is_empty();
+        // (All-knowing knows where they stand all the same.)
+        if !run.arena && !(run.level == PerceptionLevel::AllKnowing && run.known.is_empty()) {
+            return;
+        }
         if run.level == PerceptionLevel::AllKnowing {
             if run.known.is_empty() {
                 for s in horizon_world::worldgen::end_spike::spikes_for_seed(self.level.seed) {
@@ -714,7 +758,7 @@ impl Game<'_> {
                 }
             }
             for i in 0..run.known.len() {
-                if !run.known[i].gone && !self.end_crystal_there(run.known[i].at) {
+                if run.arena && !run.known[i].gone && !self.end_crystal_there(run.known[i].at) {
                     run.known[i].gone = true;
                 }
             }
@@ -1449,6 +1493,7 @@ impl Game<'_> {
                 run.known[i].skipped = true;
                 return;
             }
+            run.walk_fails = 0;
             run.cage = Some(Cage {
                 crystal: i,
                 plan,
@@ -1457,6 +1502,7 @@ impl Game<'_> {
                 since: now,
                 fired: None,
                 misses: 0,
+                retreats: 0,
             });
         } else {
             run.shot = Some(Shot {
@@ -1488,7 +1534,8 @@ impl Game<'_> {
         let inward = (e::FOUNTAIN[1] - target[2]).atan2(e::FOUNTAIN[0] - target[0]);
         let clouds = self.breath_view();
         let mut out = Vec::new();
-        for r in [16.0, 20.0, 24.0, 28.0, 32.0] {
+        let mut lobs = Vec::new();
+        for r in [16.0, 22.0, 28.0, 34.0, 40.0, 46.0, 52.0, 58.0] {
             for k in -4i32..=4 {
                 let a = inward + f64::from(k) * 0.3;
                 let x = (target[0] + a.cos() * r).floor() as i32;
@@ -1505,12 +1552,18 @@ impl Game<'_> {
                 {
                     continue;
                 }
-                if self.end_arc(eye(spot), spike).is_some() {
-                    out.push(spot);
+                // A flat arc first: a lob flies long and lands wide.
+                match self.end_arc(eye(spot), spike) {
+                    Some(a) if !a.lob => out.push(spot),
+                    Some(_) => lobs.push(spot),
+                    None => {}
                 }
             }
         }
-        out.sort_by(|a, z| c::horizontal(pos, *a).total_cmp(&c::horizontal(pos, *z)));
+        let near = |a: &[f64; 3], z: &[f64; 3]| c::horizontal(pos, *a).total_cmp(&c::horizontal(pos, *z));
+        out.sort_by(near);
+        lobs.sort_by(near);
+        out.extend(lobs);
         out
     }
 
@@ -1527,7 +1580,7 @@ impl Game<'_> {
 
     /// The bow's aim from `from` (the eye) onto `spike`'s crystal: yaw and
     /// pitch, when an arc gets there clear of blocks.
-    fn end_arc(&self, from: [f64; 3], spike: &Spike) -> Option<(f32, f32)> {
+    fn end_arc(&self, from: [f64; 3], spike: &Spike) -> Option<Aim> {
         let target = spike.crystal_centre();
         let d = c::horizontal(from, target);
         let start = [from[0], from[1] - e::ARROW_DROP, from[2]];
@@ -1537,20 +1590,23 @@ impl Game<'_> {
             [lo[0] - 0.3, lo[1] - 0.3, lo[2] - 0.3],
             [hi[0] + 0.3, hi[1] + 0.3, hi[2] + 0.3],
         );
-        for pitch in e::aim_pitches(d, target[1] - start[1], e::ARROW_SPEED) {
-            let flight = e::arrow_flight(start, yaw, pitch, e::ARROW_SPEED, 80, d + 4.0);
-            let mut clear = true;
+        for (i, pitch) in e::aim_pitches(d, target[1] - start[1], e::ARROW_SPEED)
+            .into_iter()
+            .enumerate()
+        {
+            let flight = e::arrow_flight(start, yaw, pitch, e::ARROW_SPEED, 120, d + 4.0);
             for w in flight.windows(2) {
                 if e::segment_box(w[0].at, w[1].at, lo, hi).is_some() {
-                    break;
+                    return Some(Aim {
+                        yaw,
+                        pitch,
+                        ticks: w[1].tick,
+                        lob: i > 0 || pitch < -60.0,
+                    });
                 }
                 if self.end_segment_blocked(w[0].at, w[1].at) {
-                    clear = false;
                     break;
                 }
-            }
-            if clear {
-                return Some((yaw, pitch));
             }
         }
         None
@@ -1697,6 +1753,8 @@ impl Game<'_> {
                 b.conn,
                 S::SetCarriedItem(play::SetCarriedItem { slot }),
             );
+            // Player.stopUsingItem: the drawn bow no longer slows it.
+            self.as_guest(host, b.conn, |g| g.using = None);
         }
     }
 
@@ -1719,13 +1777,14 @@ impl Game<'_> {
         }
         if let Some(at) = s.fired {
             // Watching it fly (about 15 ticks at 40 blocks).
-            if now - at < 30 {
+            if now - at < s.flight.max(30) {
                 run.hands = true;
                 run.shot = Some(s);
                 return;
             }
             s.fired = None;
             s.misses += 1;
+            log::info!("[end] {} missed crystal {}", b.file.name, s.crystal);
             if s.misses >= 3 {
                 if let Some(spot) = s.spot.take() {
                     s.tried.push(spot);
@@ -1771,8 +1830,20 @@ impl Game<'_> {
             return;
         }
         match self.end_arc(eye(pos), &spike) {
-            Some(aim) => match self.end_bow(host, b, run, aim) {
-                Some(true) => s.fired = Some(now),
+            Some(arc) => match self.end_bow(host, b, run, (arc.yaw, arc.pitch)) {
+                Some(true) => {
+                    s.fired = Some(now);
+                    s.flight = u64::from(arc.ticks) + 10;
+                    log::info!(
+                        "[end] {} shoots crystal {} from {:?}: {:.1} blocks, yaw {:.1} pitch {:.1}",
+                        b.file.name,
+                        s.crystal,
+                        pos.map(|v| (v * 10.0).round() / 10.0),
+                        c::distance(eye(pos), spike.crystal_centre()),
+                        arc.yaw,
+                        arc.pitch
+                    );
+                }
                 Some(false) => {}
                 None => run.known[s.crystal].skipped = true,
             },
@@ -1785,6 +1856,21 @@ impl Game<'_> {
     }
 
     fn end_cage(&mut self, host: &mut LanHost, b: &mut Body, run: &mut EndRun, pos: [f64; 3]) {
+        let Some(i) = run.cage.as_ref().map(|k| k.crystal) else {
+            return;
+        };
+        let (was, step) = (run.known[i].skipped, run.cage.as_ref().map(|k| k.step));
+        self.end_cage_step(host, b, run, pos);
+        if !was && run.known[i].skipped {
+            log::info!(
+                "[end] {} gives up on caged crystal {i} at step {step:?}, feet {:?}",
+                b.file.name,
+                feet(pos)
+            );
+        }
+    }
+
+    fn end_cage_step(&mut self, host: &mut LanHost, b: &mut Body, run: &mut EndRun, pos: [f64; 3]) {
         let now = now_of(self);
         let Some(mut k) = run.cage.take() else {
             return;
@@ -1822,27 +1908,87 @@ impl Game<'_> {
                         run.known[k.crystal].skipped = true;
                         return;
                     };
-                    k.ground = y;
                     let goal = col(at, y);
-                    let there = [f[0], f[2]] == at && (f[1] - y).abs() <= 1;
-                    if there || c::horizontal(pos, goal) < 0.3 {
+                    if self
+                        .breath_view()
+                        .iter()
+                        .any(|(c, r, _)| e::in_breath(goal, *c, *r, 3.0))
+                    {
+                        run.note = format!(
+                            "Destroying crystals {}/10: waiting for the breath to clear",
+                            run.destroyed()
+                        );
+                        run.cage = Some(k);
+                        return;
+                    }
+                    // In its column, on the ground or on its own bridge.
+                    let there = [f[0], f[2]] == at && f[1] >= y - 1;
+                    if there {
+                        k.ground = f[1];
+                    }
+                    if there {
                         Some(if near {
                             CageStep::PillarNear
                         } else {
                             CageStep::PillarFar
                         })
-                    } else if c::horizontal(pos, goal) < 1.5 {
+                    } else if c::horizontal(pos, goal) < 3.0 {
+                        // Close: straight there, sneaking (no step off an edge).
                         b.yaw = yaw_to(pos, goal);
                         b.pitch = 0.0;
                         b.keys.forward = true;
-                        b.keys.shift = true;
-                        None
-                    } else {
-                        if self.end_walk(host, b, goal, 0.25, pos) == Steer::Stuck {
+                        b.keys.shift = c::horizontal(pos, goal) < 1.5;
+                        b.keys.jump = !self.passable(add(feet(pos), {
+                            let d = [goal[0] - pos[0], goal[2] - pos[2]];
+                            if d[0].abs() >= d[1].abs() {
+                                [d[0].signum() as i32, 0, 0]
+                            } else {
+                                [0, 0, d[1].signum() as i32]
+                            }
+                        }));
+                        if self.end_stalled(run, pos, now) {
+                            run.walk_fails += 1;
+                        }
+                        if run.walk_fails > 3 {
                             run.known[k.crystal].skipped = true;
                             return;
                         }
                         None
+                    } else {
+                        // The walker first; where it can't get there, straight
+                        // on, digging up and bridging (no step down).
+                        if run.walk_fails >= 2 {
+                            if self.end_traverse(host, b, run, goal, pos) == Prog::Failed
+                                || now - k.since > 3000
+                            {
+                                run.known[k.crystal].skipped = true;
+                                return;
+                            }
+                        } else if self.end_walk(host, b, goal, 2.0, pos) == Steer::Stuck
+                            || self.end_stalled(run, pos, now)
+                        {
+                            run.walk_fails += 1;
+                            b.nav.reset();
+                        }
+                        None
+                    }
+                }
+                // Pushed off its column (a dodge, a blow): back to it, or
+                // down and up again.
+                CageStep::PillarNear | CageStep::PillarFar
+                    if [f[0], f[2]]
+                        != if k.step == CageStep::PillarNear {
+                            k.plan.near
+                        } else {
+                            k.plan.far
+                        } =>
+                {
+                    let near = k.step == CageStep::PillarNear;
+                    if f[1] < k.ground + 2 {
+                        Some(if near { CageStep::GoNear } else { CageStep::GoFar })
+                    } else {
+                        k.retreats += 1;
+                        Some(if near { CageStep::DownNear } else { CageStep::DownFar })
                     }
                 }
                 CageStep::PillarNear | CageStep::PillarFar
@@ -1883,7 +2029,9 @@ impl Game<'_> {
                         None => Some(CageStep::DownNear),
                         Some(bar) => match self.end_dig(host, b, bar, pos) {
                             Prog::Failed => {
-                                run.known[k.crystal].skipped = true;
+                                // Down, and up again where it can reach (up
+                                // to three times).
+                                k.retreats += 1;
                                 Some(CageStep::DownNear)
                             }
                             _ => None,
@@ -1894,6 +2042,24 @@ impl Game<'_> {
                     match self.end_descend(host, b, run, k.ground, pos) {
                         Prog::Busy => None,
                         _ => {
+                            let crystal = &run.known[k.crystal];
+                            // Down out of a cloud: back up once it's clear.
+                            let bars = k.plan.window.iter().any(|p| {
+                                !self.passable(*p) || self.block_name(*p).ends_with("iron_bars")
+                            });
+                            if k.retreats > 0 && !crystal.skipped && !crystal.gone {
+                                if k.retreats > 3 {
+                                    run.known[k.crystal].skipped = true;
+                                } else if k.step == CageStep::DownNear && bars {
+                                    k.step = CageStep::PillarNear;
+                                    run.cage = Some(k);
+                                    return;
+                                } else if k.step == CageStep::DownFar {
+                                    k.step = CageStep::PillarFar;
+                                    run.cage = Some(k);
+                                    return;
+                                }
+                            }
                             let crystal = &run.known[k.crystal];
                             if k.step == CageStep::DownFar || crystal.skipped || crystal.gone {
                                 self.companion_stop_dig(host, b);
@@ -1979,21 +2145,41 @@ impl Game<'_> {
         let up_high = run
             .cage
             .as_ref()
-            .is_some_and(|k| feet(pos)[1] >= k.ground + 2);
+            .is_some_and(|k| {
+                let f = feet(pos);
+                [f[0], f[2]] == k.plan.near && f[1] >= k.ground + 2
+                    || [f[0], f[2]] == k.plan.far && f[1] >= k.ground + 2
+            });
         // In a cloud: out of it, away from its middle.
         let clouds = self.breath_view();
+        // Up its pillar in one: down, out of the cloud's reach (a block below
+        // it is out of it).
+        if up_high
+            && clouds.iter().any(|(at, r, _)| e::in_breath(pos, *at, *r, 0.5))
+            && let Some(k) = run.cage.as_mut()
+            && !matches!(k.step, CageStep::DownNear | CageStep::DownFar)
+        {
+            run.danger = "dragon breath";
+            k.retreats += 1;
+            k.step = if k.step >= CageStep::GoFar {
+                CageStep::DownFar
+            } else {
+                CageStep::DownNear
+            };
+            self.end_put_bow_away(host, b);
+        }
         if !up_high
             && let Some((at, r, _)) = clouds
                 .iter()
-                .find(|(at, r, _)| e::in_breath(pos, *at, *r, 1.5))
+                .find(|(at, r, _)| e::in_breath(pos, *at, *r, 2.5))
         {
             run.danger = "dragon breath";
             let (dx, dz) = (pos[0] - at[0], pos[2] - at[2]);
             let len = dx.hypot(dz).max(0.1);
             let out = [
-                at[0] + dx / len * (f64::from(*r) + 3.0),
+                at[0] + dx / len * (f64::from(*r) + 4.5),
                 pos[1],
-                at[2] + dz / len * (f64::from(*r) + 3.0),
+                at[2] + dz / len * (f64::from(*r) + 4.5),
             ];
             self.end_put_bow_away(host, b);
             self.end_stop_eating(host, b);
@@ -2064,8 +2250,19 @@ impl Game<'_> {
                 return true;
             }
         }
-        if run.retreating && run.phase == EndPhase::Dragon {
-            run.note = "Backing off to heal".into();
+        // The dragon down on its podium while it isn't fighting it (busy
+        // with the crystals, or too hurt): well away from its head.
+        let landed = self
+            .dragon_view()
+            .filter(|d| d.alive && matches!(d.phase, 2 | 3 | 5 | 6 | 7 | 10))
+            .filter(|d| c::horizontal(d.position, [e::FOUNTAIN[0], 0.0, e::FOUNTAIN[1]]) < 12.0);
+        let keep_off = landed.is_some() && (run.phase != EndPhase::Dragon || run.retreating);
+        if run.retreating || keep_off {
+            run.note = if run.retreating {
+                "Backing off to heal".into()
+            } else {
+                format!("Destroying crystals {}/10: keeping away from the perched dragon", run.destroyed())
+            };
             if let Some(d) = self.dragon_view()
                 && c::horizontal(pos, d.position) < 24.0
             {
@@ -2077,8 +2274,9 @@ impl Game<'_> {
                     let goal = [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5];
                     let _ = self.end_walk(host, b, goal, 2.0, pos);
                 }
+                return true;
             }
-            return true;
+            return run.retreating;
         }
         false
     }
@@ -2235,7 +2433,7 @@ impl Game<'_> {
         let on_step = run
             .perch
             .is_some_and(|p| feet(pos)[1] > p.step[1] && c::horizontal(pos, p.spot) < 0.6);
-        if d.sitting && matches!(d.phase, 5 | 7 | 10) && (health >= 12.0 || on_step) {
+        if d.sitting && matches!(d.phase, 5 | 7 | 10) && (health >= 14.0 || on_step) {
             run.note = format!("Dragon perched: attacking ({:.0} health left)", d.health);
             self.end_perch(host, b, run, &d, pos);
             return;
@@ -2254,6 +2452,18 @@ impl Game<'_> {
         };
         if d.phase == 1 {
             run.danger = "the dragon's fireballs";
+        }
+        // Up on its step over a breath cloud: it waits there till it's gone.
+        let over_cloud = self.breath_view().iter().any(|(at, r, _)| {
+            c::horizontal(pos, *at) <= f64::from(*r) + 1.0 && (0.99..3.5).contains(&(pos[1] - at[1]))
+        });
+        if over_cloud
+            && !(!d.sitting && c::horizontal(pos, d.position) < 10.0 && d.position[1] - pos[1] < 8.0)
+        {
+            run.note = "Waiting on its step for the breath to clear".into();
+            b.yaw = yaw_to(pos, d.position);
+            b.keys.shift = true;
+            return;
         }
         // Flying low past it: out of its wings' way.
         if !d.sitting && c::horizontal(pos, d.position) < 10.0 && d.position[1] - pos[1] < 8.0 {
@@ -2382,6 +2592,25 @@ impl Game<'_> {
             run.note = "Dragon perched: no place by its head".into();
             return;
         };
+        if std::env::var_os("HORIZON_END_TRACE").is_some() && b.ticks.is_multiple_of(5) {
+            let r = |v: [f64; 3]| v.map(|x| (x * 10.0).round() / 10.0);
+            log::info!(
+                "[end] perch phase {} pos {:?} spot {:?} step {:?} head {:?}-{:?} neck {:?}-{:?} clouds {:?} ground {:?}",
+                d.phase,
+                r(pos),
+                r(p.spot),
+                p.step,
+                r(head.0),
+                r(head.1),
+                r(parts.neck.0),
+                r(parts.neck.1),
+                self.breath_view()
+                    .iter()
+                    .map(|(a, rr, _)| (r(*a), *rr))
+                    .collect::<Vec<_>>(),
+                self.end_guest(host, b).map(|g| g.0),
+            );
+        }
         let f = feet(pos);
         let step_col = [p.step[0], p.step[2]];
         if [f[0], f[2]] == step_col && f[1] <= p.step[1] {
@@ -2396,18 +2625,23 @@ impl Game<'_> {
                 f64::from(p.step[1]),
                 f64::from(p.step[2]) + 0.5,
             ];
-            if c::horizontal(pos, goal) < 1.2 {
+            if c::horizontal(pos, goal) < 3.0 {
+                // Close: straight there (the walker would go round the head).
                 b.yaw = yaw_to(pos, goal);
                 b.pitch = 0.0;
                 b.keys.forward = true;
-                b.keys.jump = self.floor(p.step) && f[1] <= p.step[1];
+                b.keys.jump = self.floor(p.step) && f[1] <= p.step[1] && c::horizontal(pos, goal) < 1.2;
             } else if self.end_walk(host, b, goal, 0.3, pos) == Steer::Stuck {
                 run.perch = None;
             }
             return;
         }
-        // On the step: to the exact spot, sneaking, then the head.
-        if c::horizontal(pos, p.spot) > 0.15 {
+        let Some((on_ground, v)) = self.end_guest(host, b) else {
+            return;
+        };
+        // On the step: to the middle of it, sneaking, then the head. In the
+        // air (its jump) it doesn't steer: it lands back on the step.
+        if on_ground && c::horizontal(pos, p.spot) > 0.25 {
             b.yaw = yaw_to(pos, p.spot);
             b.pitch = 0.0;
             b.keys.forward = true;
@@ -2420,9 +2654,6 @@ impl Game<'_> {
         if let Some(sword) = slot_of(&self.end_inventory(host, b), &SWORDS) {
             self.companion_hold_slot(host, b, sword);
         }
-        let Some((on_ground, v)) = self.end_guest(host, b) else {
-            return;
-        };
         // A sword charges in 12.5 ticks: jump, strike falling (a critical hit).
         let since = b.ticks - run.last_strike;
         if on_ground && since >= 6 {

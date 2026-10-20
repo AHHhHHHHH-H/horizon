@@ -348,8 +348,9 @@ pub fn in_breath(at: [f64; 3], cloud: [f64; 3], radius: f32, margin: f64) -> boo
         && (at[1] - cloud[1]).abs() < 1.0
 }
 
-/// Spots around a perched dragon's head to hit it from: on rings round the
-/// head at heights `floors` (feet), clear of its parts with `margin`, the
+/// Spots around a perched dragon's head to hit it from: the middles of the
+/// blocks round the head (no edge to slip off when it jumps for a critical
+/// hit) at heights `floors` (feet), clear of its parts with `margin`, the
 /// head within `reach` of the eye. Nearest `from` first.
 pub fn perch_spots(
     parts: &DragonParts,
@@ -361,11 +362,11 @@ pub fn perch_spots(
     let h = parts.head;
     let c = [(h.0[0] + h.1[0]) / 2.0, (h.0[2] + h.1[2]) / 2.0];
     let mut out: Vec<(f64, [f64; 3])> = Vec::new();
+    let (cx, cz) = (c[0].floor() as i32, c[1].floor() as i32);
     for &y in floors {
-        for ring in [1.8, 2.1, 2.4, 2.7, 3.0, 3.3] {
-            for i in 0..48 {
-                let a = f64::from(i) / 48.0 * std::f64::consts::TAU;
-                let feet = [c[0] + a.cos() * ring, y, c[1] + a.sin() * ring];
+        for dx in -4..=4 {
+            for dz in -4..=4 {
+                let feet = [f64::from(cx + dx) + 0.5, y, f64::from(cz + dz) + 0.5];
                 let eye = [feet[0], feet[1] + 1.62, feet[2]];
                 if !parts.clear_of(feet, margin) || reach_to(eye, h) > reach {
                     continue;
