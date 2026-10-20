@@ -307,6 +307,7 @@ promise, where the base is, a new role {owner} gives you. Leave it out otherwise
 - jump, crouch, stand_up.
 - collect with item and count: mine or gather that many. give with item and count: throw them to {owner}.
 - craft with item and count: craft it, gathering what it needs first.
+- smelt with item and count: smelt that many in a furnace (the ore or the result: iron_ingot).
 - eat. sleep: use a nearby bed.
 Items, blocks and mobs are Minecraft ids in English: oak_log, cobblestone, iron_ingot, bread, zombie.
 

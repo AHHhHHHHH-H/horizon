@@ -28,10 +28,11 @@ pub enum Skill {
     Eat,
     Sleep,
     Craft,
+    Smelt,
 }
 
 impl Skill {
-    pub const ALL: [Skill; 17] = [
+    pub const ALL: [Skill; 18] = [
         Skill::Follow,
         Skill::Stay,
         Skill::Come,
@@ -49,6 +50,7 @@ impl Skill {
         Skill::Eat,
         Skill::Sleep,
         Skill::Craft,
+        Skill::Smelt,
     ];
 
     pub fn name(self) -> &'static str {
@@ -70,6 +72,7 @@ impl Skill {
             Skill::Eat => "eat",
             Skill::Sleep => "sleep",
             Skill::Craft => "craft",
+            Skill::Smelt => "smelt",
         }
     }
 
@@ -167,10 +170,10 @@ pub const MAX_SAY_CHARS: usize = 240;
 
 /// The schema for runtimes that turn it into a grammar (llama.cpp, LM Studio, Ollama). Properties are
 /// written in the order the model must produce them; it is sent as written, never re-serialised.
-pub const SCHEMA: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string","maxLength":240},"actions":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft"]},"item":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":256},"target":{"type":"string"}},"required":["skill"],"additionalProperties":false}},"remember":{"type":"string"}},"required":["tone","say","actions"],"additionalProperties":false}"#;
+pub const SCHEMA: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string","maxLength":240},"actions":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft","smelt"]},"item":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":256},"target":{"type":"string"}},"required":["skill"],"additionalProperties":false}},"remember":{"type":"string"}},"required":["tone","say","actions"],"additionalProperties":false}"#;
 
 /// OpenAI's strict mode: every property required (optional ones nullable), no length or range limits.
-pub const SCHEMA_STRICT: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string"},"actions":{"type":"array","items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft"]},"item":{"type":["string","null"]},"count":{"type":["integer","null"]},"target":{"type":["string","null"]}},"required":["skill","item","count","target"],"additionalProperties":false}},"remember":{"type":["string","null"]}},"required":["tone","say","actions","remember"],"additionalProperties":false}"#;
+pub const SCHEMA_STRICT: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string"},"actions":{"type":"array","items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft","smelt"]},"item":{"type":["string","null"]},"count":{"type":["integer","null"]},"target":{"type":["string","null"]}},"required":["skill","item","count","target"],"additionalProperties":false}},"remember":{"type":["string","null"]}},"required":["tone","say","actions","remember"],"additionalProperties":false}"#;
 
 /// The tone of a reply still being written, once its `"tone"` value is complete (it comes first, so
 /// the voice knows it before the first sentence of `say`).

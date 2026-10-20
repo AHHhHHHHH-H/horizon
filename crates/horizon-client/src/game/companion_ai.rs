@@ -894,6 +894,8 @@ impl Game<'_> {
                 item,
                 count: a.count,
             },
+            // No spoken intent for smelting yet: the brain's word goes straight to the body.
+            BrainSkill::Smelt => return counted("smelt", &item, a.count),
         };
         self.intent_words(&intent)
     }
