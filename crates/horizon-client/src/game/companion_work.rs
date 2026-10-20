@@ -146,6 +146,13 @@ pub(super) struct WorkCache {
     pub book: Option<Arc<super::companion_craft::BookIndex>>,
     /// Block name → the items its loot table gives without a tool match.
     pub block_drops: Option<Arc<HashMap<String, Vec<String>>>>,
+    /// Both being built on a worker thread (`companion_prepare_work`).
+    pub prepared: Option<
+        std::thread::JoinHandle<(
+            super::companion_craft::BookIndex,
+            HashMap<String, Vec<String>>,
+        )>,
+    >,
     pub mob_drops: HashMap<String, Arc<Vec<String>>>,
     /// Each block's name and its states' ids (a block's states are listed together).
     pub blocks: std::sync::OnceLock<Vec<(String, std::ops::Range<usize>)>>,
@@ -400,6 +407,27 @@ fn carried_any(inventory: &[Option<ItemStack>], items: &[String]) -> u32 {
         .sum()
 }
 
+/// Block name → the items its loot table gives without a tool match.
+fn build_block_drops(res: &super::Resources) -> HashMap<String, Vec<String>> {
+    let items = res.items();
+    let mut drops: HashMap<String, Vec<String>> = HashMap::new();
+    let mut last = "";
+    for f in &res.facts().states {
+        // A block's states are listed together.
+        if *f.name == *last || drops.contains_key(&*f.name) {
+            continue;
+        }
+        last = &f.name;
+        let table = format!("minecraft:blocks/{}", c::short_id(&f.name));
+        let got = items
+            .loot_json(&table)
+            .map(work::loot_items)
+            .unwrap_or_default();
+        drops.insert(f.name.to_string(), got);
+    }
+    drops
+}
+
 impl Game<'_> {
     // ---- commands -------------------------------------------------------------------
 
@@ -442,6 +470,7 @@ impl Game<'_> {
         command: CompanionCommand,
         resume: Skill,
     ) -> Result<Task, String> {
+        let _span = horizon_client::spans::Span::new("companion_task");
         let g = host.hub.guest(b.conn).ok_or("no body")?;
         let (skill, kind) = match command {
             CompanionCommand::Collect { what, count } => {
@@ -605,6 +634,7 @@ impl Game<'_> {
         owner: [f64; 3],
     ) {
         let started = std::time::Instant::now();
+        let _span = horizon_client::spans::Span::new("companion_work");
         let Some(mut task) = b.work.tasks.pop() else {
             b.skill = Skill::Follow;
             return;
@@ -797,30 +827,59 @@ impl Game<'_> {
         }
     }
 
-    /// What each block drops without a tool match (`work::loot_items`), once.
+    /// What each block drops without a tool match (`work::loot_items`):
+    /// built on a worker thread when the first body joined, else here.
     fn block_drops(&mut self) -> Arc<HashMap<String, Vec<String>>> {
+        self.companion_prepared_work();
         if let Some(d) = &self.companions.work.block_drops {
             return d.clone();
         }
-        let items = self.res.items();
-        let mut drops: HashMap<String, Vec<String>> = HashMap::new();
-        let mut last = "";
-        for f in &self.res.facts().states {
-            // A block's states are listed together.
-            if *f.name == *last || drops.contains_key(&*f.name) {
-                continue;
-            }
-            last = &f.name;
-            let table = format!("minecraft:blocks/{}", c::short_id(&f.name));
-            let got = items
-                .loot_json(&table)
-                .map(work::loot_items)
-                .unwrap_or_default();
-            drops.insert(f.name.to_string(), got);
-        }
-        let drops = Arc::new(drops);
+        let _span = horizon_client::spans::Span::new("companion_block_drops");
+        let drops = Arc::new(build_block_drops(&self.res));
         self.companions.work.block_drops = Some(drops.clone());
         drops
+    }
+
+    /// A world opened (or a body joined): the work skills' indexes of the
+    /// game's data (recipes, block drops) are built on a worker thread, not
+    /// by the first order's tick (~1–1.5 ms each on an M4 Pro).
+    pub(super) fn companion_prepare_work(&mut self) {
+        let cache = &mut self.companions.work;
+        if cache.book.is_some() || cache.block_drops.is_some() || cache.prepared.is_some() {
+            return;
+        }
+        let res = self.res.clone();
+        cache.prepared = std::thread::Builder::new()
+            .name("companion work".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let built = (
+                    super::companion_craft::build_book(&res),
+                    build_block_drops(&res),
+                );
+                if horizon_client::spans::enabled() {
+                    eprintln!(
+                        "Horizon: companion work indexes built in {:.2} ms",
+                        started.elapsed().as_secs_f32() * 1000.0
+                    );
+                }
+                built
+            })
+            .ok();
+    }
+
+    /// The indexes `companion_prepare_work` built, once they are asked for.
+    pub(super) fn companion_prepared_work(&mut self) {
+        let cache = &mut self.companions.work;
+        let joined = cache.prepared.take().map(|h| {
+            let _span = horizon_client::spans::Span::new("companion_work_join");
+            h.join()
+        });
+        let Some(Ok((book, drops))) = joined else {
+            return;
+        };
+        cache.book.get_or_insert_with(|| Arc::new(book));
+        cache.block_drops.get_or_insert_with(|| Arc::new(drops));
     }
 
     /// What a mob kind drops (`minecraft:entities/<kind>`), once per kind.

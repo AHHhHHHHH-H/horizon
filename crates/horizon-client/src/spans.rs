@@ -29,6 +29,25 @@ pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     SPANS.with(|s| s.borrow_mut().push((name, ms)));
     out
 }
+/// A span from `new` until dropped, for a block `time` can't wrap.
+pub struct Span(Option<(&'static str, Instant)>);
+impl Span {
+    pub fn new(name: &'static str) -> Self {
+        Self(
+            ENABLED
+                .load(Ordering::Relaxed)
+                .then(|| (name, Instant::now())),
+        )
+    }
+}
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some((name, started)) = self.0 {
+            let ms = started.elapsed().as_secs_f32() * 1000.0;
+            SPANS.with(|s| s.borrow_mut().push((name, ms)));
+        }
+    }
+}
 /// The CPU time this thread has used, where the platform tells it: a tick
 /// with more wall time than CPU time waited (for a lock, or for a core on a
 /// busy machine).
@@ -41,9 +60,25 @@ pub fn thread_cpu() -> Option<Duration> {
     #[cfg(not(unix))]
     None
 }
+/// Whether spans are being recorded (`HORIZON_SPIKES`).
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+/// Where this thread's spans are now, for `since`.
+pub fn mark() -> usize {
+    SPANS.with(|s| s.borrow().len())
+}
+/// The spans recorded since `mark`, summed by name, slowest first; they
+/// stay for `take`. A part of the frame (the companions' hub tick) reports
+/// its own slow ticks this way.
+pub fn since(mark: usize) -> Vec<(&'static str, f32)> {
+    SPANS.with(|s| sum(s.borrow().get(mark..).unwrap_or_default().to_vec()))
+}
 /// The frame's spans, summed by name, slowest first; clears them.
 pub fn take() -> Vec<(&'static str, f32)> {
-    let spans = SPANS.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    sum(SPANS.with(|s| std::mem::take(&mut *s.borrow_mut())))
+}
+fn sum(spans: Vec<(&'static str, f32)>) -> Vec<(&'static str, f32)> {
     let mut sums: Vec<(&'static str, f32)> = Vec::new();
     for (name, ms) in spans {
         match sums.iter_mut().find(|(n, _)| *n == name) {

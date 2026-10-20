@@ -136,56 +136,64 @@ enum Reach {
     Failed,
 }
 
+/// The crafting recipes by the item they make.
+pub(super) fn build_book(res: &super::Resources) -> BookIndex {
+    let mut by_result: HashMap<String, Vec<Arc<CraftRecipe>>> = HashMap::new();
+    for (name, r) in &res.recipes().crafting {
+        let (cells, width, height, result) = match r {
+            Recipe::Shaped {
+                width,
+                height,
+                cells,
+                result,
+            } => (
+                cells
+                    .iter()
+                    .map(|c| c.as_ref().map(|i| i.1.clone()))
+                    .collect(),
+                *width,
+                *height,
+                result,
+            ),
+            Recipe::Shapeless {
+                ingredients,
+                result,
+            } => (
+                ingredients.iter().map(|i| Some(i.1.clone())).collect(),
+                0,
+                0,
+                result,
+            ),
+            Recipe::Special(_) => continue,
+        };
+        let Some(item) = result.item.as_deref().filter(|_| result.extra.is_none()) else {
+            continue;
+        };
+        by_result
+            .entry(item.to_owned())
+            .or_default()
+            .push(Arc::new(CraftRecipe {
+                id: format!("minecraft:{name}"),
+                result: item.to_owned(),
+                cells,
+                width,
+                height,
+                count: result.count,
+            }));
+    }
+    BookIndex { by_result }
+}
+
 impl Game<'_> {
-    /// The recipe index, built once.
+    /// The recipe index: built on a worker thread when the first body
+    /// joined (`companion_prepare_work`), else here.
     pub(super) fn companion_book(&mut self) -> Arc<BookIndex> {
+        self.companion_prepared_work();
         if let Some(b) = &self.companions.work.book {
             return b.clone();
         }
-        let mut by_result: HashMap<String, Vec<Arc<CraftRecipe>>> = HashMap::new();
-        for (name, r) in &self.res.recipes().crafting {
-            let (cells, width, height, result) = match r {
-                Recipe::Shaped {
-                    width,
-                    height,
-                    cells,
-                    result,
-                } => (
-                    cells
-                        .iter()
-                        .map(|c| c.as_ref().map(|i| i.1.clone()))
-                        .collect(),
-                    *width,
-                    *height,
-                    result,
-                ),
-                Recipe::Shapeless {
-                    ingredients,
-                    result,
-                } => (
-                    ingredients.iter().map(|i| Some(i.1.clone())).collect(),
-                    0,
-                    0,
-                    result,
-                ),
-                Recipe::Special(_) => continue,
-            };
-            let Some(item) = result.item.as_deref().filter(|_| result.extra.is_none()) else {
-                continue;
-            };
-            by_result
-                .entry(item.to_owned())
-                .or_default()
-                .push(Arc::new(CraftRecipe {
-                    id: format!("minecraft:{name}"),
-                    result: item.to_owned(),
-                    cells,
-                    width,
-                    height,
-                    count: result.count,
-                }));
-        }
-        let book = Arc::new(BookIndex { by_result });
+        let _span = horizon_client::spans::Span::new("companion_book");
+        let book = Arc::new(build_book(&self.res));
         self.companions.work.book = Some(book.clone());
         book
     }

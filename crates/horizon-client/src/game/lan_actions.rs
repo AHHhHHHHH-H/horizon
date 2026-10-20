@@ -177,9 +177,9 @@ impl Game<'_> {
         conn: u32,
         f: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
-        let swap = self.enter_guest(host, conn)?;
+        let swap = horizon_client::spans::time("enter_guest", || self.enter_guest(host, conn))?;
         let result = f(self);
-        self.leave_guest(host, swap);
+        horizon_client::spans::time("leave_guest", || self.leave_guest(host, swap));
         Some(result)
     }
 
@@ -1402,7 +1402,7 @@ impl Game<'_> {
             let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
                 continue;
             };
-            self.guest_sleep_tick(host, gi);
+            horizon_client::spans::time("guest_sleep", || self.guest_sleep_tick(host, gi));
             if host.hub.guests[gi].dead || self.on_server_trip(conn) {
                 continue;
             }
@@ -1411,6 +1411,7 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                let _span = horizon_client::spans::Span::new("guest_dig_use");
                 self.as_guest(host, conn, |g| {
                     g.attack_ticks = g.attack_ticks.saturating_add(1);
                     if let Some((pos, face)) = digging {
@@ -1433,28 +1434,37 @@ impl Game<'_> {
                     }
                 });
             }
-            self.guest_delayed_destroy(host, conn);
+            horizon_client::spans::time("guest_destroy", || self.guest_delayed_destroy(host, conn));
             if host.hub.guests[gi].companion {
                 // Its body moves on the server (game/companion_body.rs).
-                self.companion_body_tick(host, conn);
+                horizon_client::spans::time("companion_body", || {
+                    self.companion_body_tick(host, conn)
+                });
             } else {
                 self.guest_server_tick(host, conn);
             }
             // Player.tick's statistics and ServerPlayer.tick's triggers, then
             // PlayerAdvancements.flushDirty.
             let sleeping = host.hub.guests[gi].sleeping;
-            self.as_guest(host, conn, |g| {
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
+            horizon_client::spans::time("guest_player_tick", || {
+                self.as_guest(host, conn, |g| {
+                    horizon_client::spans::time("guest_stats", || g.count_tick_stats(sleeping));
+                    horizon_client::spans::time("guest_advancements", || g.tick_advancements());
+                    g.update_player_attributes();
+                })
             });
-            host.hub.flush_progress(conn);
-            self.guest_dig_feedback(host, conn);
-            let picked = self.guest_pickups(host, gi);
+            horizon_client::spans::time("guest_progress", || host.hub.flush_progress(conn));
+            horizon_client::spans::time("guest_dig_feedback", || {
+                self.guest_dig_feedback(host, conn)
+            });
+            let picked =
+                horizon_client::spans::time("guest_pickups", || self.guest_pickups(host, gi));
             if host.hub.guests[gi].companion && !picked.is_empty() {
-                self.companion_picked_up(host, conn, picked);
+                horizon_client::spans::time("companion_picked", || {
+                    self.companion_picked_up(host, conn, picked);
+                });
             }
-            self.guest_orbs(host, gi);
+            horizon_client::spans::time("guest_orbs", || self.guest_orbs(host, gi));
             let g = &mut host.hub.guests[gi];
             if g.health <= 0.0 && !g.dead {
                 g.dead = true;

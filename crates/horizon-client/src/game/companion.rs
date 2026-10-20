@@ -92,13 +92,27 @@ pub(super) struct Cost {
     total: std::time::Duration,
     max: std::time::Duration,
     views: std::time::Duration,
+    /// Every tick's time since the last report, for its 99th percentile
+    /// (at most a few thousand between `companion cost` calls).
+    each: Vec<f32>,
+    /// The thread's CPU time in those ticks: wall time beyond it is the
+    /// thread waiting (for a core, on a busy machine), not work.
+    cpu_total: std::time::Duration,
+    cpu_each: Vec<f32>,
 }
 
 impl Cost {
-    pub fn hub(&mut self, d: std::time::Duration) {
+    pub fn hub(&mut self, d: std::time::Duration, cpu: Option<std::time::Duration>) {
         self.ticks += 1;
         self.total += d;
         self.max = self.max.max(d);
+        if self.each.len() < 1 << 16 {
+            self.each.push(d.as_secs_f32() * 1000.0);
+            if let Some(cpu) = cpu {
+                self.cpu_total += cpu;
+                self.cpu_each.push(cpu.as_secs_f32() * 1000.0);
+            }
+        }
     }
     pub fn views(&mut self, d: std::time::Duration) {
         self.total += d;
@@ -107,10 +121,21 @@ impl Cost {
     /// Mean and worst milliseconds a tick, then clears.
     fn take(&mut self) -> Value {
         let n = self.ticks.max(1) as f64;
+        fn p99(each: &mut [f32]) -> f32 {
+            each.sort_by(f32::total_cmp);
+            each.get((each.len() * 99 / 100).min(each.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0.0)
+        }
+        let cpu_n = self.cpu_each.len().max(1) as f64;
         let v = json!({
             "ticks": self.ticks,
             "mean_ms": self.total.as_secs_f64() * 1000.0 / n,
             "max_ms": self.max.as_secs_f64() * 1000.0,
+            "p99_ms": p99(&mut self.each),
+            "cpu_mean_ms": self.cpu_total.as_secs_f64() * 1000.0 / cpu_n,
+            "cpu_max_ms": self.cpu_each.iter().copied().fold(0.0f32, f32::max),
+            "cpu_p99_ms": p99(&mut self.cpu_each),
             "views_ms": self.views.as_secs_f64() * 1000.0 / n,
         });
         *self = Self::default();
@@ -457,6 +482,7 @@ impl Game<'_> {
         self.companion_report(&mut b, CompanionReport::SkillStarted(skill));
         host.companions.push(b);
         self.lan = Some(host);
+        self.companion_prepare_work();
         Ok(())
     }
 
@@ -573,6 +599,11 @@ impl Game<'_> {
             .into_iter()
             .filter(|f| f.active)
             .collect();
+        // The work skills' indexes, on a worker while the world loads: ready
+        // long before a companion's first task asks for them.
+        if !self.settings.extras.no_ai {
+            self.companion_prepare_work();
+        }
     }
 
     /// Per tick before the hub's: the companions saved with the world come

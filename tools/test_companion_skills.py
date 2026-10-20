@@ -310,6 +310,8 @@ def main():
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--shots', type=Path, help='keep screenshots in this folder')
     parser.add_argument('--runs', type=int, default=1)
+    parser.add_argument('--logs', type=Path,
+                        help='copy each run\'s client log here (with HORIZON_SPIKES=MS it lists slow hub ticks)')
     args = parser.parse_args()
     client, resources = args.client.resolve(), args.resources.resolve()
     shots = args.shots.resolve() if args.shots else None
@@ -331,9 +333,15 @@ def main():
                     raise
                 finally:
                     stop(process)
+                    if args.logs:
+                        args.logs.mkdir(parents=True, exist_ok=True)
+                        log.seek(0)
+                        (args.logs / f'client-{run + 1}.log').write_text(log.read())
         print(f'run {run + 1}: ' + ', '.join(
             f'{k} {t:.0f} s (work {c["work_mean_ms"]:.3f} ms mean, {c["work_max_ms"]:.2f} worst; '
-            f'hub {c["mean_ms"]:.3f} mean, {c["max_ms"]:.2f} worst; worst path search {c.get("plan_max_ms", 0):.2f})'
+            f'hub {c["mean_ms"]:.3f} mean, {c["p99_ms"]:.2f} p99, {c["max_ms"]:.2f} worst over {c["ticks"]} ticks; '
+            f'hub CPU {c["cpu_mean_ms"]:.3f} mean, {c["cpu_p99_ms"]:.2f} p99, {c["cpu_max_ms"]:.2f} worst; '
+            f'worst path search {c.get("plan_max_ms", 0):.2f})'
             for k, (t, c) in numbers.items()))
     print('Companion skills passed: collect, make from nothing, tool check, mining, smelt, give, '
           'stop and resume, sleep, bow and melee')

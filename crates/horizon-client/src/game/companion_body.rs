@@ -147,7 +147,9 @@ impl Game<'_> {
             );
         }
         while let Some(command) = b.commands.pop_front() {
-            self.companion_apply(host, b, command, owner);
+            horizon_client::spans::time("companion_apply", || {
+                self.companion_apply(host, b, command, owner);
+            });
         }
         let Some(g) = host.hub.guest(b.conn) else {
             return true;
@@ -172,7 +174,9 @@ impl Game<'_> {
         b.near_owner = c::distance(pos, owner) <= c::COME_ALONG;
         self.companion_notice_hurt(host, b, pos, health);
         if b.ticks.is_multiple_of(10) {
-            self.companion_callouts(b, pos, owner);
+            horizon_client::spans::time("companion_callouts", || {
+                self.companion_callouts(b, pos, owner);
+            });
         }
         // Eating ends when the item is used up (or the use stops).
         if let Some((before, item)) = b.eating.clone() {
@@ -193,7 +197,7 @@ impl Game<'_> {
                 self.companion_gear(host, b);
             }
         } else if b.ticks.is_multiple_of(20) {
-            self.companion_gear(host, b);
+            horizon_client::spans::time("companion_gear", || self.companion_gear(host, b));
         }
         // Self-preservation: it backs off when badly hurt.
         if !b.retreating && health > 0.0 && health < c::RETREAT_BELOW {
@@ -212,9 +216,15 @@ impl Game<'_> {
         if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
             self.companion_start_eating(host, b);
         }
-        self.companion_work_reflexes(host, b);
-        self.companion_pick_target(host, b, pos, owner);
-        self.companion_move(host, b, pos, owner);
+        horizon_client::spans::time("companion_reflexes", || {
+            self.companion_work_reflexes(host, b);
+        });
+        horizon_client::spans::time("companion_target", || {
+            self.companion_pick_target(host, b, pos, owner);
+        });
+        horizon_client::spans::time("companion_move", || {
+            self.companion_move(host, b, pos, owner);
+        });
         if b.jump {
             b.keys.jump = true;
             b.jump = false;

@@ -912,7 +912,14 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        let metered = (!host.companions.is_empty()).then(std::time::Instant::now);
+        let metered = (!host.companions.is_empty()).then(|| {
+            let spans = horizon_client::spans::enabled().then(horizon_client::spans::mark);
+            (
+                std::time::Instant::now(),
+                horizon_client::spans::thread_cpu(),
+                spans,
+            )
+        });
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         // The host's own commands' (and command blocks') players moving
@@ -923,7 +930,7 @@ impl Game<'_> {
         if !self.admin_feedback.is_empty() {
             self.send_admin_feedback(&mut host, None);
         }
-        let state = self.lan_host_state(&host);
+        let state = horizon_client::spans::time("lan_host_state", || self.lan_host_state(&host));
         // A dedicated server runs the hub without a host player.
         if state.is_some() || host.hub.config.dedicated {
             // Companions have no client to send the entities to.
@@ -960,11 +967,13 @@ impl Game<'_> {
                 // (`tick_server`): the network is read once, before the first.
                 let pass = self.level_pass;
                 let mut events = if pass.first {
-                    host.hub.poll(&mut ctx)
+                    horizon_client::spans::time("hub_poll", || host.hub.poll(&mut ctx))
                 } else {
                     Vec::new()
                 };
-                events.extend(host.hub.tick_level(&mut ctx));
+                events.extend(horizon_client::spans::time("hub_level", || {
+                    host.hub.tick_level(&mut ctx)
+                }));
                 if pass.last {
                     host.hub.end_tick();
                 }
@@ -1040,7 +1049,9 @@ impl Game<'_> {
                     // Routed on the next companion tick (game/companion_ai.rs).
                     HostEvent::Said { name, text } => self.companion_ai.guest_said(name, text),
                     HostEvent::Packet(conn, packet) => {
-                        self.lan_guest_packet(&mut host, conn, *packet);
+                        horizon_client::spans::time("lan_packet", || {
+                            self.lan_guest_packet(&mut host, conn, *packet);
+                        });
                         if !host.commands.is_empty() {
                             self.lan = Some(host);
                             self.run_guest_commands();
@@ -1050,21 +1061,46 @@ impl Game<'_> {
                 }
             }
         }
-        self.lan_flush_effects(&mut host);
+        use horizon_client::spans::time;
+        time("lan_effects", || self.lan_flush_effects(&mut host));
         if !host.companions.is_empty() {
-            horizon_client::spans::time("companions", || self.tick_companions(&mut host));
+            time("companions", || self.tick_companions(&mut host));
         }
-        self.tick_guests(&mut host);
-        self.lan_living_flags(&mut host);
-        self.tick_server_travel(&mut host);
-        self.lan_swings(&mut host);
-        self.lan_update_streaming(&host);
-        self.lan_update_models(&mut host);
-        self.lan_update_waypoints(&mut host, state.as_ref());
+        time("lan_guests", || self.tick_guests(&mut host));
+        time("lan_living", || self.lan_living_flags(&mut host));
+        time("lan_travel", || self.tick_server_travel(&mut host));
+        time("lan_swings", || self.lan_swings(&mut host));
+        time("lan_streaming", || self.lan_update_streaming(&host));
+        time("lan_models", || self.lan_update_models(&mut host));
+        time("lan_waypoints", || {
+            self.lan_update_waypoints(&mut host, state.as_ref());
+        });
         drop(holding);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
-        if let Some(started) = metered {
-            host.cost.hub(started.elapsed());
+        if let Some((started, cpu_started, spans)) = metered {
+            let took = started.elapsed();
+            let cpu = horizon_client::spans::thread_cpu()
+                .zip(cpu_started)
+                .map(|(end, start)| end.saturating_sub(start));
+            host.cost.hub(took, cpu);
+            // HORIZON_SPIKES=MS: a companions' hub tick slower than MS, by span,
+            // with the thread's CPU time (less than the wall time: it waited).
+            if let Some(threshold) = self.options.spikes
+                && let Some(mark) = spans
+                && took.as_secs_f32() * 1000.0 > threshold
+            {
+                let cpu = cpu.map_or(f32::NAN, |c| c.as_secs_f32() * 1000.0);
+                let list: Vec<String> = horizon_client::spans::since(mark)
+                    .iter()
+                    .filter(|(_, ms)| *ms >= 0.05)
+                    .map(|(n, ms)| format!("{n} {ms:.2}"))
+                    .collect();
+                log::info!(
+                    "Horizon: slow companion hub tick {:.2} ms, cpu {cpu:.2} ms: {}",
+                    took.as_secs_f32() * 1000.0,
+                    list.join(", ")
+                );
+            }
         }
         self.lan = Some(host);
     }
