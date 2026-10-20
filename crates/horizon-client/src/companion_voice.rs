@@ -296,7 +296,8 @@ impl Speakers {
         let start = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() % 100_000);
-        let tap = std::env::var_os("HORIZON_COMPANION_VOICE_WAV").map(|dir| (dir.into(), start as u32 * 1000));
+        let tap = std::env::var_os("HORIZON_COMPANION_VOICE_WAV")
+            .map(|dir| (dir.into(), start as u32 * 1000));
         Speakers {
             client,
             talkers: Vec::new(),
@@ -409,7 +410,9 @@ impl Speakers {
                                 let rate = client.model_for(&line.speak.language).sample_rate;
                                 let path = dir.join(format!("{n:08}-{}.wav", t.name));
                                 let wav = horizon_senses::dsp::wav_pcm16(&line.recorded, rate);
-                                if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, wav)) {
+                                if let Err(e) = std::fs::create_dir_all(dir)
+                                    .and_then(|()| std::fs::write(&path, wav))
+                                {
                                     failed.push(format!("{}: {e}", path.display()));
                                 }
                             }

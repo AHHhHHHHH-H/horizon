@@ -122,7 +122,10 @@ pub enum HostEvent {
         secure: bool,
     },
     /// What a guest said in chat, for the companions to hear (game/companion_ai.rs).
-    Said { name: String, text: String },
+    Said {
+        name: String,
+        text: String,
+    },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
     /// A server log error (LOGGER.error).
@@ -2498,9 +2501,9 @@ pub fn is_companion_line(message: &Tag, sender: &Tag) -> bool {
     let insertion = matches!(message.get("insertion"), Some(Tag::String(s)) if s.to_string_lossy().starts_with('@'));
     let marked = match sender.get("extra") {
         Some(Tag::List(parts)) => parts.iter().any(|p| match p.get("extra") {
-            Some(Tag::List(inner)) => inner
-                .iter()
-                .any(|t| matches!(t.get("text"), Some(Tag::String(s)) if s.to_string_lossy() == "[AI]")),
+            Some(Tag::List(inner)) => inner.iter().any(
+                |t| matches!(t.get("text"), Some(Tag::String(s)) if s.to_string_lossy() == "[AI]"),
+            ),
             _ => matches!(p.get("text"), Some(Tag::String(s)) if s.to_string_lossy() == "[AI]"),
         }),
         _ => false,
