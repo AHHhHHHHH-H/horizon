@@ -30,6 +30,9 @@ horizon-bench = { path = "../crates/horizon-bench" }
 horizon-port-pack = { path = "../crates/horizon-port-pack" }
 # Opt-in data collection: the consent, the outbox and its upload (docs/telemetry.md).
 horizon-telemetry = { path = "../crates/horizon-telemetry" }
+# The companion's setup card: hardware plan, downloads and settings shared with the game
+# (docs/companions.md).
+horizon-companion = { path = "../crates/horizon-companion" }
 # The session file's random name.
 getrandom = "0.3"
 # Players' heads on the Servers page, from the default skins in the player's own game files (already

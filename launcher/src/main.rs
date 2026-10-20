@@ -3,6 +3,7 @@
 
 mod cli;
 mod collection;
+mod companion_card;
 mod game_tools;
 mod internet;
 mod markdown;
@@ -157,6 +158,8 @@ struct Launcher {
     args_focus: FocusHandle,
     /// Opt-in data collection: the player's answer and Settings' section (`collection`).
     collection: collection::Collection,
+    /// Settings' AI companion section (`companion_card`).
+    companion: companion_card::CompanionUi,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     _appearance: Subscription,
@@ -271,6 +274,7 @@ impl Launcher {
             friend_focus: cx.focus_handle(),
             joining: None,
             collection: collection::Collection::load(),
+            companion: companion_card::CompanionUi::new(cx),
             tx,
             rx,
             _appearance: appearance,
@@ -402,6 +406,7 @@ impl Launcher {
             Some(perf::Step::Quit) => cx.quit(),
             Some(perf::Step::Wait) | None => {}
         }
+        changed |= self.companion.poll();
         while let Ok(msg) = self.rx.try_recv() {
             changed = true;
             match msg {
@@ -417,6 +422,9 @@ impl Launcher {
                 Msg::Keychain(persistent) => self.keychain = persistent,
                 Msg::Session(session) => {
                     if let Some(tag) = self.starting_client.take() {
+                        // The game rewrites its extras file with the keys it knows: No AI again.
+                        let _ =
+                            horizon_launcher::companion::sync_no_ai(self.companion.settings.no_ai);
                         let mut cmd = backend::client_command(&tag);
                         match session {
                             Ok(Some(file)) => {
@@ -1982,8 +1990,10 @@ impl Launcher {
                         ))
                     }),
             )
+            .child(self.companion_section(cx))
             .child(self.collection_section(cx))
-            .child(agents)
+            // No AI hides every AI feature, the agents' note too.
+            .when(!self.companion.settings.no_ai, |d| d.child(agents))
     }
 
     /// Settings' Game arguments row: the extra arguments the game starts with, kept in
@@ -2680,6 +2690,7 @@ impl Render for Launcher {
         self.servers.note_focus(window);
         self.friend_focused = self.friend_focus.is_focused(window);
         self.args_focused = self.args_focus.is_focused(window);
+        self.companion.note_focus(window);
         let content = match self.page {
             Page::Play => self.play_page(cx),
             Page::Versions => self.versions_page(cx),

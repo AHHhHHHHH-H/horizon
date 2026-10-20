@@ -1,0 +1,4 @@
+0.00.001.982 I load_backend: loaded RPC backend from /opt/horizon/companion/runtime/llama-b11756/libggml-rpc.so
+0.00.008.433 I load_backend: loaded CPU backend from /opt/horizon/companion/runtime/llama-b11756/libggml-cpu-haswell.so
+Available devices:
+  (none)

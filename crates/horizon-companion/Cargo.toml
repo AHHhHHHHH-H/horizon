@@ -1,0 +1,32 @@
+[package]
+name = "horizon-companion"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The companion's brain without the game: model and runtime catalogue, hardware tiers, downloads, the llama-server supervisor, the streaming chat client, prompts and the reflex command parser (docs/companions.md)"
+
+[dependencies]
+# Downloads and the OpenAI-compatible chat API (blocking, on worker threads), as in the rest of the workspace.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+serde = { version = "1", features = ["derive"] }
+# raw_value: the reply schema is sent as written, so `say` stays the first property the model writes.
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+sha2 = "0.10"
+# The runtime's random API key.
+getrandom = "0.3"
+# llama.cpp ships .tar.gz for macOS and Linux (with library symlinks) and .zip for Windows.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+tar = { version = "0.4", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+# The runtime's process group, priority, the parent-death watchdog and free disk space.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The runtime's job object (killed with the game), priority class, free disk space and the
+# Credential Manager for a cloud key.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

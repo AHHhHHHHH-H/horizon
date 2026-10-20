@@ -1,0 +1,7 @@
+0.00.001.877 I load_backend: loaded RPC backend from /usr/local/lib/libggml-rpc.so
+0.00.214.553 I ggml_cuda_init: found 1 CUDA devices (Total VRAM: 3903 MiB):
+0.00.214.561 I   Device 0: NVIDIA GeForce GTX 1650, compute capability 7.5, VMM: yes, VRAM: 3903 MiB
+0.00.214.602 I load_backend: loaded CUDA backend from /usr/local/lib/libggml-cuda.so
+0.00.221.048 I load_backend: loaded CPU backend from /usr/local/lib/libggml-cpu-haswell.so
+Available devices:
+  CUDA0: NVIDIA GeForce GTX 1650 (3903 MiB, 3780 MiB free)
