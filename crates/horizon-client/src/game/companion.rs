@@ -77,6 +77,40 @@ pub(super) struct Body {
     pub ticks: u64,
 }
 
+/// What the hub costs per tick while companions are in it: its whole tick
+/// (their skills, bodies, pickups) and the mobs' view of them.
+#[derive(Default)]
+pub(super) struct Cost {
+    ticks: u32,
+    total: std::time::Duration,
+    max: std::time::Duration,
+    views: std::time::Duration,
+}
+
+impl Cost {
+    pub fn hub(&mut self, d: std::time::Duration) {
+        self.ticks += 1;
+        self.total += d;
+        self.max = self.max.max(d);
+    }
+    pub fn views(&mut self, d: std::time::Duration) {
+        self.total += d;
+        self.views += d;
+    }
+    /// Mean and worst milliseconds a tick, then clears.
+    fn take(&mut self) -> Value {
+        let n = self.ticks.max(1) as f64;
+        let v = json!({
+            "ticks": self.ticks,
+            "mean_ms": self.total.as_secs_f64() * 1000.0 / n,
+            "max_ms": self.max.as_secs_f64() * 1000.0,
+            "views_ms": self.views.as_secs_f64() * 1000.0 / n,
+        });
+        *self = Self::default();
+        v
+    }
+}
+
 /// Path following (game/companion_body.rs).
 #[derive(Default)]
 pub(super) struct Nav {
@@ -158,6 +192,24 @@ pub(super) struct Companions {
     pub parked: Vec<(CompanionFile, Dim)>,
     /// What the bodies told the brain: the companion's name and the report.
     pub reports: VecDeque<(String, CompanionReport)>,
+    /// Mobs a companion hit, and when: their deaths are its kills.
+    pub struck: std::collections::HashMap<u32, i64>,
+    /// A companion's body is swapped in (`enter_guest`): its advancements
+    /// are not announced.
+    pub acting: bool,
+}
+
+impl Companions {
+    /// Whether mob `id` died of a companion's blow: it hit last, after the
+    /// owner did.
+    pub fn killed(&mut self, id: u32, owner_hit: Option<(u32, i64)>) -> bool {
+        if self.struck.is_empty() {
+            return false;
+        }
+        self.struck
+            .remove(&id)
+            .is_some_and(|at| owner_hit.is_none_or(|(mob, when)| mob != id || when < at))
+    }
 }
 
 impl Game<'_> {
@@ -767,6 +819,10 @@ impl Game<'_> {
                     .companion_state_summary(words.get(1).copied())
                     .ok_or("no companion by that name")?;
                 Ok(json!({ "ok": true, "text": text, "message": text }))
+            }
+            Some("cost") => {
+                let host = self.lan.as_mut().ok_or("no companion here")?;
+                Ok(json!({ "ok": true, "cost": host.cost.take() }))
             }
             Some("reports") => {
                 let reports: Vec<Value> = self

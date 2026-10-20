@@ -77,6 +77,8 @@ pub(super) struct GuestCommand {
 /// the guest's records that live outside `Guest`.
 pub(super) struct GuestSwap {
     conn: u32,
+    /// `Companions::acting` before the turn.
+    companion: bool,
     i: usize,
     play: GuestPlay,
     player: Option<PlayerMotion>,
@@ -301,8 +303,10 @@ impl Game<'_> {
         let packets = std::mem::take(&mut self.guest_packets);
         let swings = self.swings_started;
         let projectiles = self.creatures.projectiles.len();
+        let companion = std::mem::replace(&mut self.companions.acting, g.companion);
         Some(GuestSwap {
             conn,
+            companion,
             i,
             play,
             player,
@@ -353,6 +357,7 @@ impl Game<'_> {
     pub(super) fn leave_guest(&mut self, host: &mut LanHost, swap: GuestSwap) {
         let GuestSwap {
             conn,
+            companion,
             i,
             mut play,
             mut player,
@@ -409,6 +414,7 @@ impl Game<'_> {
             host.hub.send_to(conn, &packet);
         }
         (self.lan_acting, self.lan_acting_name, self.lan_acting_uuid) = acting;
+        self.companions.acting = companion;
         play.death_cause = std::mem::replace(&mut self.ui.death_cause, death_cause);
         // An ender chest the guest opened: the menu shows their inventory
         // itself (lan_open_container), not a stand-in block entity.

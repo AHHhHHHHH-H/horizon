@@ -500,6 +500,8 @@ impl Game<'_> {
                 // PlayerList.broadcastSystemMessage: everyone hears of a
                 // network player's advancement.
                 match self.lan_acting_name.clone() {
+                    // A companion's are its own business.
+                    Some(_) if self.companions.acting => {}
                     // Player.getDisplayName.
                     Some(_) => {
                         let player = self.target_name(super::commands::Target::Player);

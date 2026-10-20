@@ -88,6 +88,7 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return Vec::new();
         };
+        let metered = (!host.companions.is_empty()).then(std::time::Instant::now);
         let conns: Vec<(u32, u128, [f64; 3])> = host
             .hub
             .guests
@@ -110,6 +111,9 @@ impl Game<'_> {
                 v.remote = true;
                 views.push((conn, v));
             }
+        }
+        if let Some(started) = metered {
+            host.cost.views(started.elapsed());
         }
         self.lan = Some(host);
         views

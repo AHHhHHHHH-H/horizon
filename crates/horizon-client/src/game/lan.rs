@@ -74,6 +74,8 @@ pub(super) struct LanHost {
     pub companions: Vec<super::companion::Body>,
     /// The player model with each default skin, as the guests wear them.
     pub skins: HashMap<&'static str, Arc<horizon_client::mobs::MobType>>,
+    /// What the hub's ticks cost while companions are in it (game/companion.rs).
+    pub cost: super::companion::Cost,
 }
 
 /// The player who owns an integrated server's world: a guest whose state is
@@ -587,6 +589,7 @@ impl Game<'_> {
             private: false,
             companions: Vec::new(),
             skins: HashMap::new(),
+            cost: Default::default(),
         });
         self.audio.capture = Some(Vec::new());
         Ok(())
@@ -906,6 +909,7 @@ impl Game<'_> {
         let Some(mut host) = self.lan.take() else {
             return;
         };
+        let metered = (!host.companions.is_empty()).then(std::time::Instant::now);
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         // The host's own commands' (and command blocks') players moving
@@ -1054,6 +1058,9 @@ impl Game<'_> {
         self.lan_update_waypoints(&mut host, state.as_ref());
         drop(holding);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
+        if let Some(started) = metered {
+            host.cost.hub(started.elapsed());
+        }
         self.lan = Some(host);
     }
 
