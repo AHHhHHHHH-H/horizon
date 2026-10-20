@@ -59,7 +59,7 @@ pub(super) struct Body {
     pub jump: bool,
     pub retreating: bool,
     /// Eating: its food level when it started, and the food.
-    pub eating: Option<(i32, String)>,
+    pub eating: Option<(u32, String)>,
     /// Ticks since it died.
     pub dead_ticks: Option<u32>,
     /// The level it is really in: the in-window hub has one level, the one
@@ -72,6 +72,10 @@ pub(super) struct Body {
     pub hurt_by: Option<(u32, i64)>,
     /// Hostiles already called out.
     pub seen: Vec<u32>,
+    /// The dropped item it is walking to, and since when; items it gave up
+    /// on (in a nook it cannot reach).
+    pub reaching: Option<(u32, u64)>,
+    pub out_of_reach: Vec<u32>,
     pub recent: VecDeque<String>,
     pub random: u64,
     pub ticks: u64,
@@ -123,6 +127,8 @@ pub(super) struct Nav {
     pub best_at: u64,
     pub jump_until: u64,
     pub fails: u32,
+    /// Plans in a row that fell short of a goal that barely moved.
+    pub misses: u32,
 }
 
 impl Nav {
@@ -133,15 +139,21 @@ impl Nav {
 
 impl Body {
     fn new(conn: u32, uuid: u128, file: CompanionFile, dim: Dim) -> Self {
+        let skill = match Skill::from_name(&file.skill) {
+            Some(s @ (Skill::Idle | Skill::Stay | Skill::Defend)) => s,
+            _ => Skill::Follow,
+        };
+        let post = file.post.filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
+        let hold_fire = file.hold_fire;
         Self {
             conn,
             uuid,
             file,
-            skill: Skill::Follow,
+            skill,
             resume: Skill::Follow,
-            hold_fire: false,
+            hold_fire,
             commands: VecDeque::new(),
-            post: None,
+            post,
             target: None,
             ordered: false,
             nav: Nav::default(),
@@ -159,10 +171,29 @@ impl Body {
             last_health: 20.0,
             hurt_by: None,
             seen: Vec::new(),
+            reaching: None,
+            out_of_reach: Vec::new(),
             recent: VecDeque::new(),
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
         }
+    }
+    /// Put what it is doing in its file: a fight or a retreat resumes what
+    /// came before; arriving somewhere it stays.
+    pub fn keep_skill(&mut self) {
+        let skill = match self.skill {
+            Skill::Attack | Skill::Retreat => self.resume,
+            Skill::Come => Skill::Follow,
+            Skill::GoTo => Skill::Stay,
+            s => s,
+        };
+        let skill = match skill {
+            s @ (Skill::Idle | Skill::Stay | Skill::Defend) => s,
+            _ => Skill::Follow,
+        };
+        self.file.skill = skill.name().to_owned();
+        self.file.post = self.post.filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
+        self.file.hold_fire = self.hold_fire;
     }
     /// xorshift64*: the body's own randomness (teleport spots, item
     /// scatter), so that a companion never draws from the level's random.
@@ -197,6 +228,8 @@ pub(super) struct Companions {
     /// A companion's body is swapped in (`enter_guest`): its advancements
     /// are not announced.
     pub acting: bool,
+    /// Path searches since the last `companion cost`, and their time.
+    pub plans: (u32, std::time::Duration, std::time::Duration),
 }
 
 impl Companions {
@@ -368,6 +401,10 @@ impl Game<'_> {
         }
         let mut b = Body::new(conn, uuid, file.clone(), self.dim);
         b.last_health = health;
+        if beside_owner {
+            // Called back by name: with its owner, whatever it did before.
+            (b.skill, b.post) = (Skill::Follow, None);
+        }
         if (beside_owner || !saved) && !self.companion_place_near(&mut host, &mut b, owner) {
             self.companion_move_to(&mut host, &mut b, owner);
         }
@@ -375,7 +412,8 @@ impl Game<'_> {
         if let Err(e) = file.save(&self.world_root) {
             log::warn!("[companion] could not save {}: {e}", file.name);
         }
-        self.companion_report(&mut b, CompanionReport::SkillStarted(Skill::Follow));
+        let skill = b.skill;
+        self.companion_report(&mut b, CompanionReport::SkillStarted(skill));
         host.companions.push(b);
         self.lan = Some(host);
         Ok(())
@@ -418,6 +456,7 @@ impl Game<'_> {
         host.play.remove(&b.conn);
         host.mob_players.retain(|_, conn| *conn != b.conn);
         b.file.active = active;
+        b.keep_skill();
         if let Err(e) = b.file.save(&self.world_root) {
             log::warn!("[companion] could not save {}: {e}", b.file.name);
         }
@@ -470,6 +509,7 @@ impl Game<'_> {
             if let Some(g) = host.hub.guest_mut(conn) {
                 g.dimension = in_place.clone();
             }
+            host.companions[bi].keep_skill();
             let file = &host.companions[bi].file;
             if let Err(e) = file.save(&self.world_root) {
                 log::warn!("[companion] could not save {}: {e}", file.name);
@@ -822,7 +862,12 @@ impl Game<'_> {
             }
             Some("cost") => {
                 let host = self.lan.as_mut().ok_or("no companion here")?;
-                Ok(json!({ "ok": true, "cost": host.cost.take() }))
+                let mut cost = host.cost.take();
+                let (plans, total, max) = std::mem::take(&mut self.companions.plans);
+                cost["plans"] = json!(plans);
+                cost["plans_ms"] = json!(total.as_secs_f64() * 1000.0);
+                cost["plan_max_ms"] = json!(max.as_secs_f64() * 1000.0);
+                Ok(json!({ "ok": true, "cost": cost }))
             }
             Some("reports") => {
                 let reports: Vec<Value> = self

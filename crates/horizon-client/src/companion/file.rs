@@ -25,6 +25,11 @@ pub struct CompanionFile {
     pub notes: Vec<String>,
     /// It was in the world when the world was saved: it comes back with it.
     pub active: bool,
+    /// What it was doing (follow, stay, defend or idle), where it stood
+    /// guard, and whether it held its fire: a reloaded world resumes them.
+    pub skill: String,
+    pub post: Option<[f64; 3]>,
+    pub hold_fire: bool,
 }
 
 impl Default for CompanionFile {
@@ -38,6 +43,9 @@ impl Default for CompanionFile {
             owner: String::new(),
             notes: Vec::new(),
             active: true,
+            skill: "follow".into(),
+            post: None,
+            hold_fire: false,
         }
     }
 }

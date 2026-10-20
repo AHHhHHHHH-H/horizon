@@ -77,6 +77,9 @@ fn distance_to_box(eye: [f64; 3], b: Aabb) -> f64 {
     c::distance(eye, p)
 }
 
+/// Ticks it tries to reach a dropped item before leaving it.
+const ITEM_PATIENCE: u64 = 100;
+
 impl Game<'_> {
     /// Per hub tick, before the guests': each companion decides what it does.
     pub(super) fn tick_companions(&mut self, host: &mut LanHost) {
@@ -169,8 +172,8 @@ impl Game<'_> {
                 .is_some();
             if !using {
                 b.eating = None;
-                let after = host.hub.guest(b.conn).map_or(food, |g| g.food);
-                if after > before {
+                let after = host.hub.guest(b.conn).map_or(before, |g| carried(&g.inventory, &item));
+                if after < before {
                     self.companion_report(b, CompanionReport::Ate { item });
                 }
                 self.companion_gear(host, b);
@@ -535,10 +538,15 @@ impl Game<'_> {
         match b.skill {
             Skill::Idle | Skill::Attack => self.companion_look_at_owner(b, pos, owner),
             Skill::Follow | Skill::Defend | Skill::Retreat => {
+                // TamableAnimal.tryToTeleportToOwner wants a floor by the
+                // owner: none while they fall or fly, when it heads for the
+                // ground below them.
+                let grounded = self.player.as_ref().is_some_and(|p| p.ground.on_ground);
+                let owner = if grounded { owner } else { self.floor_below(owner) };
                 let d = c::distance(pos, owner);
                 match c::follow_step(d, b.moving) {
                     FollowStep::Teleport => {
-                        if self.companion_place_near(host, b, owner) {
+                        if grounded && self.companion_place_near(host, b, owner) {
                             b.moving = false;
                             self.companion_report(b, CompanionReport::Teleported);
                         } else {
@@ -552,7 +560,7 @@ impl Game<'_> {
                         let sprint = step == FollowStep::Sprint || b.retreating;
                         if self.companion_steer(host, b, owner, c::FOLLOW_NEAR - 0.5, sprint) == Steer::Stuck {
                             // Like a tamed wolf that cannot reach its owner.
-                            if d > 12.0 && self.companion_place_near(host, b, owner) {
+                            if d > 12.0 && grounded && self.companion_place_near(host, b, owner) {
                                 self.companion_report(b, CompanionReport::Teleported);
                             }
                             b.nav.reset();
@@ -561,11 +569,30 @@ impl Game<'_> {
                     FollowStep::Hold => {
                         b.moving = false;
                         // Close to the owner: pick up what lies around.
-                        match self.companion_item_nearby(pos, owner) {
-                            Some(item) => {
-                                let _ = self.companion_steer(host, b, item, 0.4, false);
+                        match self.companion_item_nearby(&b.out_of_reach, pos, owner) {
+                            Some((id, item)) => {
+                                let since = match b.reaching {
+                                    Some((i, t)) if i == id => t,
+                                    _ => {
+                                        b.reaching = Some((id, b.ticks));
+                                        b.ticks
+                                    }
+                                };
+                                if b.ticks - since > ITEM_PATIENCE {
+                                    // Out of reach: it leaves that one.
+                                    if b.out_of_reach.len() >= 16 {
+                                        b.out_of_reach.remove(0);
+                                    }
+                                    b.out_of_reach.push(id);
+                                    b.reaching = None;
+                                } else {
+                                    let _ = self.companion_steer(host, b, item, 0.4, false);
+                                }
                             }
-                            None => self.companion_look_at_owner(b, pos, owner),
+                            None => {
+                                b.reaching = None;
+                                self.companion_look_at_owner(b, pos, owner);
+                            }
                         }
                     }
                 }
@@ -623,14 +650,14 @@ impl Game<'_> {
     }
 
     /// A dropped item it can take near its owner, the nearest first.
-    fn companion_item_nearby(&self, pos: [f64; 3], owner: [f64; 3]) -> Option<[f64; 3]> {
+    fn companion_item_nearby(&self, skip: &[u32], pos: [f64; 3], owner: [f64; 3]) -> Option<(u32, [f64; 3])> {
         self.dropped
             .iter()
-            .filter(|d| d.pickup_delay < 10)
-            .map(|d| [d.position.x, d.position.y, d.position.z])
-            .filter(|at| c::distance(*at, pos) <= 8.0 && c::distance(*at, owner) <= 12.0)
-            .filter(|at| (at[1] - pos[1]).abs() < 2.5)
-            .min_by(|x, y| c::distance(*x, pos).total_cmp(&c::distance(*y, pos)))
+            .filter(|d| d.pickup_delay < 10 && !skip.contains(&d.id))
+            .map(|d| (d.id, [d.position.x, d.position.y, d.position.z]))
+            .filter(|(_, at)| c::distance(*at, pos) <= 8.0 && c::distance(*at, owner) <= 12.0)
+            .filter(|(_, at)| (at[1] - pos[1]).abs() < 2.5)
+            .min_by(|(_, x), (_, y)| c::distance(*x, pos).total_cmp(&c::distance(*y, pos)))
     }
 
     /// Steer toward `goal` along a vanilla path for a player-sized walker:
@@ -678,10 +705,25 @@ impl Game<'_> {
             pos[2].floor() as i32,
         ));
         let in_water = in_water.fluid == Fluid::Water;
-        let stale = nav.path.as_ref().is_none_or(Path::is_done)
-            || c::distance(nav.goal, goal) > 2.0 && ticks - nav.planned_at >= 10;
-        if !direct && stale && (nav.path.is_none() || ticks - nav.planned_at >= 5) {
+        let stale = nav.path.as_ref().is_none_or(Path::is_done) || c::distance(nav.goal, goal) > 2.0;
+        // FollowOwnerGoal and MeleeAttackGoal plan again every 10 ticks or
+        // so; a goal out of reach (an owner in the air) costs a full search
+        // every time, so a plan that fell short waits longer.
+        if c::distance(nav.goal, goal) > 8.0 {
+            nav.misses = 0;
+        }
+        let gap = match &nav.path {
+            _ if nav.planned_at == 0 => 0,
+            Some(p) if p.reached => 10,
+            _ => 15 << nav.misses.min(2),
+        };
+        if !direct && stale && ticks - nav.planned_at >= gap {
+            let started = std::time::Instant::now();
             nav.path = self.companion_path(pos, on_ground, in_water, goal, near);
+            let took = started.elapsed();
+            let plans = &mut self.companions.plans;
+            *plans = (plans.0 + 1, plans.1 + took, plans.2.max(took));
+            nav.misses = if nav.path.as_ref().is_some_and(|p| p.reached) { 0 } else { nav.misses + 1 };
             nav.goal = goal;
             nav.planned_at = ticks;
             if nav.path.is_none() {
@@ -747,7 +789,22 @@ impl Game<'_> {
             stands_on_lava: false,
         };
         let target = goal.map(|v| v.floor() as i32);
-        Finder::new(&w, &mob, Evaluator::Walk).find(&[target], 64.0, near.floor() as i32, 1024)
+        // PathNavigation's budget for a follow range of 32.
+        Finder::new(&w, &mob, Evaluator::Walk).find(&[target], 48.0, near.floor() as i32, 512)
+    }
+
+    /// The first floor under `at` (an owner in the air), or `at` itself.
+    fn floor_below(&self, at: [f64; 3]) -> [f64; 3] {
+        let (x, z) = (at[0].floor() as i32, at[2].floor() as i32);
+        let top = at[1].floor() as i32;
+        let facts = self.res.facts();
+        (0..96)
+            .map(|dy| top - dy)
+            .find(|&y| {
+                let f = facts.get(self.world.block(x, y - 1, z));
+                f.full_collision || f.fluid != Fluid::None
+            })
+            .map_or(at, |y| [at[0], f64::from(y), at[2]])
     }
 
     /// Whether the steps ahead are safe: no lava or fire at the feet or head,
@@ -906,7 +963,7 @@ impl Game<'_> {
             8
         };
         let item = g.inventory[slot].as_ref().map(|s| s.item.to_string()).unwrap_or_default();
-        let (food, yaw, pitch) = (g.food, g.yaw, g.pitch);
+        let (count, yaw, pitch) = (carried(&g.inventory, &item), g.yaw, g.pitch);
         self.lan_guest_packet(host, b.conn, S::SetCarriedItem(play::SetCarriedItem { slot: slot as i16 }));
         self.lan_guest_packet(
             host,
@@ -924,7 +981,7 @@ impl Game<'_> {
             .and_then(super::lan_actions::GuestPlay::using)
             .is_some();
         if started {
-            b.eating = Some((food, item));
+            b.eating = Some((count, item));
         }
         started
     }
@@ -1190,4 +1247,14 @@ impl Game<'_> {
 fn look_pitch(eye: [f64; 3], to: [f64; 3]) -> f32 {
     let horizontal = c::horizontal(eye, to);
     (-(to[1] - eye[1]).atan2(horizontal)).to_degrees() as f32
+}
+
+/// How many of `item` it carries.
+fn carried(inventory: &[Option<ItemStack>], item: &str) -> u32 {
+    inventory
+        .iter()
+        .flatten()
+        .filter(|s| &*s.item == item)
+        .map(|s| s.count)
+        .sum()
 }

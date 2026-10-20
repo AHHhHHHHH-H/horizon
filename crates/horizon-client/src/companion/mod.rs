@@ -68,6 +68,20 @@ pub enum Skill {
 }
 
 impl Skill {
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Skill::Idle,
+            Skill::Follow,
+            Skill::Stay,
+            Skill::Come,
+            Skill::GoTo,
+            Skill::Attack,
+            Skill::Defend,
+            Skill::Retreat,
+        ]
+        .into_iter()
+        .find(|s| s.name() == name)
+    }
     pub fn name(self) -> &'static str {
         match self {
             Skill::Idle => "idle",
