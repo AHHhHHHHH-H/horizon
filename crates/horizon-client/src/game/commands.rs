@@ -84,7 +84,7 @@ fn format_double(v: f64) -> String {
 impl Game<'_> {
     /// Commands.performCommand for a line without its slash.
     pub(super) fn run_command(&mut self, command: &str) {
-        if self.mod_command(command) {
+        if self.mod_command(command) || self.companion_chat_command(command) {
             return;
         }
         let d = vanilla::game_dispatcher();
@@ -181,7 +181,7 @@ impl Game<'_> {
         let informs = match self.console_broadcast {
             Some(broadcast) => broadcast,
             // While a guest acts the host's LanHost is out of `self.lan`.
-            None => self.lan_acting.is_some() || self.lan.is_some(),
+            None => self.lan_acting.is_some() || self.lan.as_ref().is_some_and(|h| !h.private),
         };
         if !informs
             || message

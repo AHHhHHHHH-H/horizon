@@ -124,7 +124,14 @@ impl CameraType {
 }
 /// The player's model type (`PlayerModel` with the default skin).
 pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
-    horizon_client::mobs::load_model(root, "minecraft:player#main").map(|model| {
+    player_type_with(root, "minecraft:player#main", "entity/player/wide/steve")
+}
+/// The slim-armed player (PlayerModel with slim arms), for the slim skins.
+pub(super) fn player_slim_type(root: &Path) -> Option<Arc<MobType>> {
+    player_type_with(root, "minecraft:player_slim#main", "entity/player/slim/alex")
+}
+fn player_type_with(root: &Path, layer: &str, texture: &str) -> Option<Arc<MobType>> {
+    horizon_client::mobs::load_model(root, layer).map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.
@@ -159,7 +166,7 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
             flags: Default::default(),
             model: Arc::new(model),
             layers: Default::default(),
-            texture: "entity/player/wide/steve".into(),
+            texture: texture.into(),
             brain: Brain::Passive,
             anim: Anim::Humanoid { zombie_arms: false },
             sounds: [
@@ -172,6 +179,32 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
             tempt: Arc::from([]),
         })
     })
+}
+impl Game<'_> {
+    /// The player model wearing `skin`, a default skin's texture
+    /// (`entity/player/slim/alex`): the slim-armed model for the slim ones.
+    /// Each is made once, into `cache`.
+    pub(super) fn player_skin_type(
+        &self,
+        cache: &mut std::collections::HashMap<&'static str, Arc<MobType>>,
+        skin: &'static str,
+    ) -> Option<Arc<MobType>> {
+        if let Some(t) = cache.get(skin) {
+            return Some(t.clone());
+        }
+        let base = if skin.contains("/slim/") {
+            self.res.player_slim_type()
+        } else {
+            self.res.player_type()
+        };
+        let base = base.as_ref().or(self.res.player_type().as_ref())?;
+        let t = Arc::new(MobType {
+            texture: skin.to_owned(),
+            ..(**base).clone()
+        });
+        cache.insert(skin, t.clone());
+        Some(t)
+    }
 }
 fn wrap(d: f32) -> f32 {
     let d = d % 360.0;

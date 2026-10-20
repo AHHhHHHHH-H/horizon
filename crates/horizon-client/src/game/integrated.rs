@@ -158,7 +158,8 @@ impl Game<'_> {
     }
     /// `IntegratedServer.isPublished`: the world is open to the network.
     pub(super) fn is_published(&self) -> bool {
-        self.lan.is_some()
+        // A hub that only runs companions (game/companion.rs) is not open.
+        self.lan.as_ref().is_some_and(|h| !h.private)
             || self
                 .integrated
                 .as_ref()

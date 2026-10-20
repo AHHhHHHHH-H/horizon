@@ -55,7 +55,8 @@ impl Game<'_> {
         if self.remote.is_some() || self.title.is_some() {
             return Err("open a singleplayer world first".into());
         }
-        let opened_lan = self.lan.is_none();
+        // A hub running only companions is not open yet: opening publishes it.
+        let opened_lan = self.lan.as_ref().is_none_or(|h| h.private);
         if opened_lan {
             // ShareToLanScreen's defaults, as the world options screen offers them.
             self.lan_open(LanSettings {

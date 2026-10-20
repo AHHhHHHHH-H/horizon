@@ -52,18 +52,19 @@ impl Game<'_> {
     }
     /// The other players' models and names: the guests on a LAN host, the
     /// players a server sends on a client.
-    fn other_players(&self) -> Vec<(&Mob, String)> {
+    /// A companion's flag is set (its name tag carries the AI marker).
+    fn other_players(&self) -> Vec<(&Mob, String, bool)> {
         let mut out = Vec::new();
         if let Some(host) = &self.lan {
             for (conn, m) in &host.models {
                 if let Some(g) = host.hub.guest(*conn) {
-                    out.push((m, g.name.clone()));
+                    out.push((m, g.name.clone(), g.companion));
                 }
             }
         }
         for (id, name) in self.remote_player_names() {
             if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
-                out.push((m, name));
+                out.push((m, name, false));
             }
         }
         out
@@ -84,9 +85,11 @@ impl Game<'_> {
         let named = self
             .mobs
             .iter()
-            .filter_map(|m| Some((m, m.custom_name.clone()?, false)));
-        let players = players.into_iter().map(|(m, name)| (m, name, true));
-        for (m, name, player) in named.chain(players) {
+            .filter_map(|m| Some((m, m.custom_name.clone()?, false, false)));
+        let players = players
+            .into_iter()
+            .map(|(m, name, companion)| (m, name, true, companion));
+        for (m, name, player, companion) in named.chain(players) {
             if !m.alive() {
                 continue;
             }
@@ -144,10 +147,13 @@ impl Game<'_> {
                 continue;
             }
             // getDisplayName: the name in the team's prefix, suffix and colour.
-            let shown = match team {
+            let mut shown = match team {
                 Some(t) => t.formatted_name(Text::literal(&name)),
                 None => Text::literal(&name),
             };
+            if companion {
+                shown.push(horizon_client::companion::marker());
+            }
             let mut lines = Vec::new();
             // EntityRenderer.extractNameTags: the score shows within the
             // below-name distance (10), under the name.
