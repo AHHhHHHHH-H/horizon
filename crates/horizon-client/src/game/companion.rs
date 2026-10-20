@@ -642,7 +642,8 @@ impl Game<'_> {
             .flat_map(|i| i.modifiers.iter())
             .filter(|m| m.0 == "minecraft:armor")
             .map(|m| m.2)
-            .sum::<f64>();
+            // An empty f64 sum is -0, which prints "-0".
+            .fold(0.0, |a, b| a + b);
         let owner_at = self
             .player
             .as_ref()
