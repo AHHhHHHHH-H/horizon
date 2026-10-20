@@ -123,14 +123,24 @@ DRY_START_CANDIDATES = [(0, 0)] + [(dx * r, dz * r) for r in (48, 96, 160, 256)
 
 
 def dry(endpoint, at):
-    """Standing on solid ground with no water or lava at the feet, the head or around."""
+    """Solid ground under the owner and all around (the demo walks them a few blocks): within 4
+    blocks no water, lava or kelp from 3 below the feet to the head, and no drop of more than a
+    block."""
     x, y, z = (math.floor(v) for v in at)
+    wet = ('water', 'lava', 'seagrass', 'kelp', 'bubble_column')
+
     def name(dx, dy, dz):
         return command(endpoint, f'block {x + dx} {y + dy} {z + dz}')['block']
     if any(w in name(0, -1, 0) for w in ('water', 'lava', 'air', 'leaves')):
         return False
-    around = [name(dx, dy, dz) for dx, dz in ((0, 0), (2, 0), (-2, 0), (0, 2), (0, -2)) for dy in (0, 1)]
-    return not any(w in b for b in around for w in ('water', 'lava', 'seagrass', 'kelp', 'bubble_column'))
+    for dx in range(-4, 5):
+        for dz in range(-4, 5):
+            column = [name(dx, dy, dz) for dy in (-3, -2, -1, 0, 1)]
+            if any(w in b for b in column for w in wet):
+                return False
+            if all(b.endswith('air') for b in column[1:3]):
+                return False
+    return True
 
 
 def spawn_and_wait(endpoint, name='Kev', brain=True, timeout=300):
@@ -278,16 +288,26 @@ def scenario_demo(endpoint, shots, language, ptt_wav):
     follow, attack, wood, joke = DEMO['fr' if (language or '').startswith('fr') else 'en']
     step = 0
 
-    def shot(name):
+    def shot(name, face=True):
         nonlocal step
         step += 1
+        # The owner turns to the companion, so that it is in the picture.
+        if face:
+            kev = command(endpoint, 'companion list')['companions']
+            if kev and 'position' in kev[0]:
+                x, y, z = kev[0]['position']
+                command(endpoint, f'look-at {x} {y + 1.2} {z}')
+                time.sleep(0.5)
         if shots:
             command(endpoint, f'screenshot {shots / f"demo-{step}-{name}.png"}')
 
     shot('spawn')
     lines, _ = hear(endpoint, follow)
     print(f'> {follow}'); print_said(lines)
-    command(endpoint, 'move forward 3', timeout=30)
+    # A few blocks on, on the dry ground open_world checked (`move forward 3` held the key for 3
+    # seconds, about 13 blocks: into the sea next to the start, where the owner drowned).
+    walk_to = firm_ground(endpoint, player(endpoint)['position'])
+    command(endpoint, 'goto {} {} {} --timeout=20'.format(*walk_to), timeout=30)
     time.sleep(5)
     shot('follow')
     me = player(endpoint)['position']
@@ -317,11 +337,14 @@ def scenario_demo(endpoint, shots, language, ptt_wav):
         print(f'> push-to-talk {ptt_wav}'); print_said([s for s in heard['said'] if s['at'] >= since])
         time.sleep(6)
         shot('push-to-talk')
-    # Watch mode: its HUD shows the perception setting.
+    # Watch mode: its HUD shows the perception setting. Kev back from the trees first, where the
+    # camera behind it would be in the leaves (it comes, then holds there while watched).
+    command(endpoint, 'companion do Kev come')
+    time.sleep(6)
     watch = command(endpoint, 'companion watch')
     assert watch.get('perception') == 'Fair', watch
     time.sleep(3)
-    shot('watch')
+    shot('watch', face=False)
     command(endpoint, 'companion watch off')
     return ai(endpoint)
 
@@ -482,12 +505,17 @@ def children(pid):
 
 
 def leftovers(home, before=()):
-    """Processes still running from the home's companion runtimes, except those that ran before the
-    game started (another tool using the same models)."""
-    out = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
+    """Processes left by the game's companion runtimes once it has quit: orphans (the game was their
+    parent) running from the home's companion folder, except those from before the game started.
+    Another tool using the same models keeps its own parent and is not counted."""
+    out = subprocess.run(['ps', '-axo', 'pid=,ppid=,command='], capture_output=True, text=True).stdout
     markers = {str(Path(home).resolve() / 'companion'), str(Path(home) / 'companion')}
-    return [line.strip() for line in out.splitlines()
-            if any(m in line for m in markers) and int(line.split()[0]) not in before]
+    left = []
+    for line in out.splitlines():
+        pid, ppid, command_line = line.split(None, 2)
+        if any(m in command_line for m in markers) and ppid == '1' and int(pid) not in before:
+            left.append(f'{pid} {command_line}')
+    return left
 
 
 def start(client, resources, home, endpoint, log, offscreen, wav=None, style='classic'):
@@ -637,11 +665,11 @@ def main():
     if args.scenario == 'pages':
         scenario_pages(client, resources, home, args.shots, args.offscreen)
         return
-    if args.language:
-        options = home / 'options.txt'
-        lines = options.read_text().splitlines() if options.exists() else []
-        lines = [l for l in lines if not l.startswith('lang:')] + [f'lang:{args.language}']
-        options.write_text('\n'.join(lines) + '\n')
+    # The game language, English unless asked (a French run before leaves French in the home).
+    options = home / 'options.txt'
+    lines = options.read_text().splitlines() if options.exists() else []
+    lines = [l for l in lines if not l.startswith('lang:')] + [f'lang:{args.language or "en_us"}']
+    options.write_text('\n'.join(lines) + '\n')
     world = {'mind': 'CompanionMind', 'demo': 'CompanionDemo', 'session': 'CompanionSession',
              'cost': 'CompanionCost', 'suitup': 'CompanionSuitUp', 'salty': 'CompanionSalty',
              'latency': 'CompanionLatency'}[args.scenario]
