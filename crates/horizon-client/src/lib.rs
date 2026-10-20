@@ -37,6 +37,7 @@ pub mod clock;
 pub mod clouds;
 pub mod collisions;
 pub mod command;
+pub mod companion;
 pub mod command_block;
 pub mod command_storage;
 pub mod component;

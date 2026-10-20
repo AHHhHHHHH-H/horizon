@@ -623,6 +623,8 @@ impl Game<'_> {
     /// LivingEntity.die / dropAllDeathLoot.
     fn mob_died(&mut self, m: &Mob) {
         let by_player = self.last_hurt_by_player.remove(&m.id) || m.ai.last_hurt_by_player > 0;
+        // A companion's kill gives a player's loot, but its owner no credit.
+        let credited = by_player && !self.companions.killed(m.id, self.combat.last_hurt_mob);
         let mut dying = m.clone();
         // LivingEntity.die: the death is heard, and a sculk catalyst nearby
         // takes the experience (before the loot is dropped).
@@ -635,7 +637,7 @@ impl Game<'_> {
                     0
                 }
             });
-        if by_player {
+        if credited {
             self.stats.add("killed", &m.kind.id, 1);
             self.stats.custom("mob_kills", 1);
             self.score_player_killed(super::commands::Target::Mob(m.id));

@@ -152,6 +152,9 @@ pub struct PlayerSender {
     held: Arc<Mutex<Vec<Vec<u8>>>>,
     /// What [`flush_all`] gave the post thread and it hasn't passed on yet.
     posted: Arc<AtomicUsize>,
+    /// A player with no connection (a companion's body): what it is sent is
+    /// dropped here, before any writer or post thread sees it.
+    sink: bool,
 }
 impl PlayerSender {
     pub fn new(tx: Sender<Out>, pending: Arc<AtomicUsize>) -> Self {
@@ -160,12 +163,24 @@ impl PlayerSender {
             pending,
             held: Arc::default(),
             posted: Arc::default(),
+            sink: false,
+        }
+    }
+    /// The sender of a player with no connection: it sends nothing.
+    pub fn sink() -> Self {
+        let (tx, _) = std::sync::mpsc::channel();
+        Self {
+            sink: true,
+            ..Self::new(tx, Arc::default())
         }
     }
     fn held(&self) -> std::sync::MutexGuard<'_, Vec<Vec<u8>>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
     pub fn send(&self, body: Vec<u8>) {
+        if self.sink {
+            return;
+        }
         self.pending.fetch_add(body.len(), Ordering::Relaxed);
         if HOLDING.get() {
             self.held().push(body);
@@ -177,6 +192,9 @@ impl PlayerSender {
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
+        if self.sink {
+            return;
+        }
         if !HOLDING.get() {
             bodies.into_iter().for_each(|body| self.send(body));
             return;
@@ -196,6 +214,9 @@ impl PlayerSender {
     }
     /// Send a play disconnect with this reason after what was sent before.
     pub fn disconnect(&self, reason: horizon_world::nbt::Tag) {
+        if self.sink {
+            return;
+        }
         self.flush();
         self.deliver(Out::Disconnect(reason));
     }

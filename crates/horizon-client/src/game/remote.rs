@@ -146,6 +146,8 @@ pub(super) struct Remote {
     placing: Option<([i32; 3], u64)>,
     death_message: Option<String>,
     player_type: Option<Arc<MobType>>,
+    /// The player model with each default skin (`player_skin_type`).
+    player_skins: HashMap<&'static str, Arc<MobType>>,
     /// Inventory as last synchronised, for creative-mode slot updates.
     synced: Vec<Option<ItemStack>>,
     decode_errors: u32,
@@ -343,6 +345,7 @@ impl Game<'_> {
             placing: None,
             death_message: None,
             player_type,
+            player_skins: HashMap::new(),
             synced: vec![None; 36],
             decode_errors: 0,
             clock: None,
@@ -1067,13 +1070,30 @@ impl Game<'_> {
             }
         }
     }
+    /// A player's model: wearing the default skin their UUID picks
+    /// (`DefaultPlayerSkin.get`), as a vanilla client shows a player whose
+    /// own skin it has not downloaded.
+    fn remote_player_type(&mut self, id: i32) -> Option<Arc<MobType>> {
+        let r = self.remote.as_mut()?;
+        let base = r.player_type.clone();
+        let Some(uuid) = r.level_players.get(&id).copied() else {
+            return base;
+        };
+        let mut cache = std::mem::take(&mut r.player_skins);
+        let skin = horizon_client::tab_list::default_skin(uuid);
+        let kind = self.player_skin_type(&mut cache, skin).or(base);
+        if let Some(r) = self.remote.as_mut() {
+            r.player_skins = cache;
+        }
+        kind
+    }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
     fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
         let [yaw, pitch, head] = rotation;
         let at = Vec3::new(position[0], position[1], position[2]);
         let mob_type = if kind == "minecraft:player" {
-            self.remote.as_ref().and_then(|r| r.player_type.clone())
+            self.remote_player_type(id)
         } else {
             self.res.mob_types().get(kind).cloned()
         };

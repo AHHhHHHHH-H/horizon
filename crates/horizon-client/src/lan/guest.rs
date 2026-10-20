@@ -191,6 +191,10 @@ pub struct Guest {
     /// Recipes unlocked since the client was last told
     /// (`ServerRecipeBook.addRecipes` sends them).
     pub recipes_unlocked: Vec<String>,
+    /// A body the host's game moves and acts for, with no connection behind
+    /// it (a companion, game/companion.rs): it is sent nothing, is streamed
+    /// no chunks and tracks no entities, but the other players see it.
+    pub companion: bool,
 }
 
 impl Guest {
@@ -292,10 +296,13 @@ impl Guest {
             advancements_visible: Vec::new(),
             advancements_changed: Default::default(),
             recipes_unlocked: Vec::new(),
+            companion: false,
         }
     }
     pub fn send(&self, packet: &play::Clientbound) {
-        self.sender.send(packet.encode());
+        if !self.companion {
+            self.sender.send(packet.encode());
+        }
     }
     pub fn send_all(&self, packets: &[play::Clientbound]) {
         for p in packets {

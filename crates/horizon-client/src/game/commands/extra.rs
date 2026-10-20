@@ -622,7 +622,7 @@ impl Game<'_> {
         if host.is_empty() && guests.is_empty() {
             return Err(err("argument.entity.notfound.player", &[]));
         }
-        if self.lan.is_none() {
+        if self.lan.as_ref().is_none_or(|h| h.private) {
             return Err(err("commands.kick.singleplayer.failed", &[]));
         }
         let reason_raw = match ctx.get("reason") {
@@ -761,7 +761,10 @@ impl Game<'_> {
         let published = if self.serving() {
             self.published_port()
         } else {
-            self.lan.as_ref().map(|l| l.settings.port)
+            self.lan
+                .as_ref()
+                .filter(|l| !l.private)
+                .map(|l| l.settings.port)
         };
         if let Some(port) = published {
             return Err(err("commands.publish.alreadyPublished.lan", &[&port]));
@@ -799,7 +802,7 @@ impl Game<'_> {
             self.feedback(Text::translate("commands.unpublish.success", &[]));
             return Ok(1);
         }
-        if self.lan.is_none() {
+        if self.lan.as_ref().is_none_or(|h| h.private) {
             return Err(err("commands.unpublish.notPublished", &[]));
         }
         self.lan_close(false);

@@ -24,6 +24,8 @@ mod combat;
 mod command_blocks;
 mod command_harness;
 mod commands;
+mod companion;
+mod companion_body;
 mod composter;
 mod consume;
 mod control;
@@ -810,6 +812,7 @@ struct WorldRest {
     behaviours: Behaviours,
     player_arm: Option<horizon_client::mobs::Part>,
     player_type: Option<Arc<horizon_client::mobs::MobType>>,
+    player_slim_type: Option<Arc<horizon_client::mobs::MobType>>,
     stations: horizon_client::stations::StationData,
 }
 
@@ -884,6 +887,9 @@ impl Resources {
     }
     fn player_type(&self) -> &Option<Arc<horizon_client::mobs::MobType>> {
         &self.rest().player_type
+    }
+    fn player_slim_type(&self) -> &Option<Arc<horizon_client::mobs::MobType>> {
+        &self.rest().player_slim_type
     }
     fn stations(&self) -> &horizon_client::stations::StationData {
         &self.rest().stations
@@ -1380,6 +1386,9 @@ struct Game<'a> {
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
+    /// The world's companions not in its hub: coming back, or left in
+    /// another dimension; and their reports (game/companion.rs).
+    companions: companion::Companions,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
@@ -4016,6 +4025,7 @@ impl Game<'_> {
                 self.resolve_arrivals();
             });
         }
+        self.tick_companion_arrivals();
         horizon_client::spans::time("tick_lan", || self.tick_lan());
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
@@ -6959,6 +6969,7 @@ impl Game<'_> {
             self.level.write(&save_root)?;
         }
         self.load_world_state();
+        self.companions_world_opened();
         Ok(())
     }
     /// Streaming and region storage for one dimension of a world.
@@ -7253,6 +7264,7 @@ impl Game<'_> {
         if self.remote.is_none() {
             self.stats.custom("leave_game", 1);
         }
+        self.companions_leave_world();
         self.lan_close(false);
         self.save_game()
     }
@@ -7267,6 +7279,7 @@ impl Game<'_> {
         }
         self.finish_perf();
         self.stats.custom("leave_game", 1);
+        self.companions_leave_world();
         self.save_game()?;
         self.lan_close(false);
         // Closing the level storage: once the last writes are on disk the
@@ -9048,6 +9061,7 @@ impl Game<'_> {
         self.save_bossbars();
         self.save_schedule();
         self.save_warden_tracker();
+        self.save_companions();
         self.sync_level();
         self.store_owner();
         self.level.write(&self.world_root)?;
@@ -11094,6 +11108,7 @@ impl<'a> Game<'a> {
             lan_entity_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            companions: Default::default(),
             guest_packets: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
@@ -11575,6 +11590,7 @@ fn load_world_rest(
             .collect(),
         mob_data,
         player_type: perspective::player_type(root),
+        player_slim_type: perspective::player_slim_type(root),
         player_arm: horizon_client::mobs::load_model(root, "minecraft:player#main")
             .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm")),
     })

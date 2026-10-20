@@ -513,6 +513,15 @@ impl Lan {
     pub fn reserve(&self, uuid: u128) {
         self.shared.reserved.lock().unwrap().insert(uuid);
     }
+    /// Give a reserved uuid back (a companion that left the world).
+    pub fn unreserve(&self, uuid: u128) {
+        self.shared.reserved.lock().unwrap().remove(&uuid);
+    }
+    /// A connection id no network connection will take: for a companion's
+    /// body, which has none (game/companion.rs).
+    pub fn next_conn(&self) -> u32 {
+        self.shared.next_id()
+    }
     pub fn set_motd(&self, motd: &str) {
         *self.shared.motd.lock().unwrap() = motd.to_owned();
     }
