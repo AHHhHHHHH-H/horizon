@@ -150,10 +150,17 @@ impl Game<'_> {
             return true;
         };
         if g.dead {
+            let with_owner = c::distance(g.position, owner) <= c::COME_ALONG;
             let t = b.dead_ticks.get_or_insert(0);
             *t += 1;
             if *t >= c::RESPAWN_TICKS {
-                self.companion_respawn(host, b, owner);
+                // With its owner (where it fell) it comes back beside them;
+                // alone, where a player would.
+                if with_owner {
+                    self.companion_respawn(host, b, owner);
+                } else {
+                    return self.companion_respawn_alone(host, b);
+                }
             }
             return true;
         }
@@ -999,8 +1006,9 @@ impl Game<'_> {
     }
 
     /// Its body died (the guest tick saw it): what it carried drops where it
-    /// fell unless the world keeps inventories, and it respawns beside its
-    /// owner after `RESPAWN_TICKS`.
+    /// fell unless the world keeps inventories, and it respawns after
+    /// `RESPAWN_TICKS`: beside its owner if they are with it, else at its bed
+    /// or the world spawn.
     pub(super) fn companion_died(&mut self, host: &mut LanHost, conn: u32) {
         let Some(bi) = host.companions.iter().position(|b| b.conn == conn) else {
             return;
@@ -1043,6 +1051,27 @@ impl Game<'_> {
     fn companion_respawn(&mut self, host: &mut LanHost, b: &mut Body, owner: [f64; 3]) {
         let at = self.companion_spot(b, owner).unwrap_or(owner);
         self.guest_respawn_at(host, b.conn, Some(at));
+        self.companion_revived(host, b);
+    }
+
+    /// Back to life without its owner, as a player comes back
+    /// (`PlayerList.respawn`): at its bed, else the world spawn, in the
+    /// Overworld. False when another level is in place: its body waits there,
+    /// parked, for its owner.
+    fn companion_respawn_alone(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
+        self.guest_respawn_at(host, b.conn, None);
+        self.companion_revived(host, b);
+        if self.dim == Dim::Overworld {
+            return true;
+        }
+        // A post it held belongs to the level it left.
+        (b.dim, b.post) = (Dim::Overworld, None);
+        false
+    }
+
+    /// What a respawn leaves the body with: loaded, no pending teleport, its
+    /// fight and route forgotten.
+    fn companion_revived(&mut self, host: &mut LanHost, b: &mut Body) {
         if let Some(g) = host.hub.guest_mut(b.conn) {
             g.loaded = true;
             g.awaiting_teleport = None;
