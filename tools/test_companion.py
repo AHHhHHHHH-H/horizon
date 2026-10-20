@@ -72,6 +72,24 @@ def reports(endpoint, seen):
     return new
 
 
+SOLID_NOT = ('air', 'water', 'lava', 'grass', 'fern', 'flower', 'leaves', 'snow', 'torch', 'carpet')
+
+
+def firm_ground(endpoint, at):
+    """A spot 3 or 4 blocks from `at`, on two solid blocks with room above:
+    a mob summoned there does not fall into a well or a cave."""
+    x, y, z = (math.floor(v) for v in at)
+    def name(dx, dy, dz):
+        return command(endpoint, f'block {x + dx} {y + dy} {z + dz}')['block']
+    for dx, dz in ((3, 0), (-3, 0), (0, 3), (0, -3), (3, 3), (-3, -3), (3, -3), (-3, 3), (4, 0), (-4, 0)):
+        for dy in (0, 1, -1):
+            ground = [name(dx, dy - 1, dz), name(dx, dy - 2, dz)]
+            room = [name(dx, dy, dz), name(dx, dy + 1, dz)]
+            if all(not any(w in g for w in SOLID_NOT) for g in ground) and all(r.endswith(':air') for r in room):
+                return [x + dx + 0.5, y + dy, z + dz + 0.5]
+    return [at[0] + 3, at[1], at[2]]
+
+
 def near_owner(endpoint, limit):
     def ok(listed):
         c = listed['companions'][0] if listed['companions'] else None
@@ -96,9 +114,19 @@ def scenario(endpoint, shots, home):
     wait_for(endpoint, 'status', lambda v: v['player'] is not None and v['pending_chunks'] == 0,
              timeout=180, what='world loaded')
     command(endpoint, 'time 1000')
-    command(endpoint, 'command gamerule doDaylightCycle false')
-    command(endpoint, 'command gamerule doMobSpawning false')
+    # 26.x rule names: no clock, no natural spawns, patrols or phantoms.
+    for rule in ('advance_time', 'spawn_mobs', 'spawn_patrols', 'spawn_phantoms'):
+        out = command(endpoint, f'command gamerule {rule} false')
+        assert out['chat'][0] == f'Game rule {rule} is now set to false', (rule, out)
     command(endpoint, 'command difficulty easy')
+
+    # The same ground every run: vanilla's spawn point moves within the
+    # spawn radius, so the owner lands on a fixed column first.
+    command(endpoint, 'command gamemode creative')
+    command(endpoint, 'command tp @s 0.5 200 0.5')
+    wait_for(endpoint, 'status', lambda v: v['player'] and v['player'].get('on_ground')
+             and v['pending_chunks'] == 0, timeout=60, what='owner at the start')
+    command(endpoint, 'command gamemode survival')
 
     # Nothing runs before a companion is spawned: no hub.
     assert command(endpoint, 'lan status') == {'open': False}
@@ -108,7 +136,8 @@ def scenario(endpoint, shots, home):
     assert spawned['name'] == 'Ari', spawned
     c = companion(endpoint)
     me = player(endpoint)['position']
-    assert distance(c['position'], me) < 5, (c, me)
+    # Beside the owner, or on the nearest floor below a tree top.
+    assert distance(c['position'], me) < 8, (c, me)
     assert c['game_mode'] == 0 and c['health'] == 20, c
     # A single-player world stays closed to LAN (and pauses) with a companion.
     assert command(endpoint, 'lan status') == {'open': False}
@@ -125,7 +154,7 @@ def scenario(endpoint, shots, home):
     print(f'owner went {distance(me, walked):.1f} blocks away')
     wait_for(endpoint, 'companion list', near_owner(endpoint, 7), timeout=60, what='follow')
     reports(endpoint, log)
-    assert 'teleported to owner' not in log, log
+    assert 'teleported to owner' not in log, (log, companion(endpoint), player(endpoint))
     for yaw in (0, 90):
         command(endpoint, f'look {yaw} 0')
         command(endpoint, 'move forward 3 sprint jump', timeout=30)
@@ -133,7 +162,7 @@ def scenario(endpoint, shots, home):
     reports(endpoint, log)
     cost_follow = command(endpoint, 'companion cost')['cost']
     print(f'followed: now {distance(companion(endpoint)["position"], player(endpoint)["position"]):.1f} '
-          f'blocks from its owner; hub tick {cost_follow["mean_ms"]:.3f} ms mean')
+          f"blocks from its owner; hub tick {cost_follow['mean_ms']:.3f} ms mean ({cost_follow})")
 
     if shots:
         c = companion(endpoint)
@@ -141,12 +170,15 @@ def scenario(endpoint, shots, home):
         time.sleep(0.5)
         command(endpoint, f'screenshot {shots / "companion-follow.png"}')
 
-    # Teleport: the owner goes 80 blocks away (creative, to land safely).
+    # Teleport: the owner goes 80 blocks away (creative, to land safely)
+    # while it stays put (it would otherwise run after them as they fall).
+    command(endpoint, 'companion do stay')
     command(endpoint, 'command gamemode creative')
     here = player(endpoint)['position']
     command(endpoint, f'command tp @s {here[0] + 80:.1f} 200 {here[2]:.1f}')
     wait_for(endpoint, 'status', lambda v: v['player'] and v['player'].get('on_ground')
              and v['pending_chunks'] == 0, timeout=60, what='owner landed')
+    command(endpoint, 'companion do follow')
     wait_for(endpoint, 'companion list', near_owner(endpoint, 6), timeout=30, what='teleport to owner')
     reports(endpoint, log)
     assert any('teleported' in r for r in log), log
@@ -157,12 +189,15 @@ def scenario(endpoint, shots, home):
     for item in ('iron_sword', 'bread 4', 'iron_helmet'):
         command(endpoint, f'give {item}')
         command(endpoint, 'select 1')
-        command(endpoint, 'look 0 30')
+        # At its feet, on the ground the owner stands on.
+        command(endpoint, 'look 0 60')
         # The given item is in the first free slot: hold and drop each.
         inventory = command(endpoint, 'inventory')
         slot = next(i for i, s in enumerate(inventory['hotbar']) if s and s.get('item'))
         command(endpoint, f'select {slot + 1}')
         command(endpoint, 'drop all')
+    # The owner steps back: what lies there is the companion's to pick up.
+    command(endpoint, 'move back 0.5', timeout=30)
     try:
         wait_for(endpoint, 'companion list', lambda v: v['companions'][0]['items'] >= 5
                  and v['companions'][0]['held'] == 'minecraft:iron_sword'
@@ -186,7 +221,8 @@ def scenario(endpoint, shots, home):
     command(endpoint, 'time 18000')
     c = companion(endpoint)
     at = c['position']
-    zombie = command(endpoint, f'summon zombie {at[0] + 4:.1f} {at[1]:.1f} {at[2]:.1f}')['id']
+    spot = firm_ground(endpoint, at)
+    zombie = command(endpoint, f'summon zombie {spot[0]:.1f} {spot[1]:.1f} {spot[2]:.1f}')['id']
     command(endpoint, 'companion cost')
     command(endpoint, 'companion do attack nearest')
     wait_for(endpoint, 'mobs 64', lambda v: not any(m['id'] == zombie and m['health'] > 0
@@ -242,6 +278,7 @@ def scenario(endpoint, shots, home):
                     timeout=120, what='companion back')['companions'][0]
     assert back['uuid'] == before['uuid'], (back, before)
     assert distance(back['position'], before['position']) < 1.0, (back, before)
+    assert back['skill'] == 'stay', back
     print(f'reloaded with the world at {[round(v, 1) for v in back["position"]]}')
 
     # Dismissed, the hub it needed goes too.
