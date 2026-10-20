@@ -114,17 +114,30 @@ through three stages, and the first one that is sure wins:
    - get / collect <n> <item>, give me <n> <item>, eat, sleep, craft <item>.
 
    Negations count: "don't follow me" and "ne me suis pas" are not "follow".
-2. **Classifier (about 10–30 ms on a CPU).** A small multilingual embedding model,
-   `intfloat/multilingual-e5-small` (MIT, 118M parameters, Q8 GGUF of 132 MB), compares the line with
-   an example bank. The bank has 15–30 examples per intent in five languages, with typos and negations,
-   embedded once at setup. The nearest examples vote. The classifier returns the intent, its slots
-   ("I need wood" → collect oak_log) and a **needs-brain** flag. Below a confidence threshold, with a
-   small margin between the top two intents, or for chit-chat and questions, it passes the line on.
-   - It runs in a second `llama-server` started with `--embeddings` on one CPU thread, from the runtime
-     the brain already uses, so it needs no extra engine.
+2. **Classifier (3 ms a line on one core of an M4 Pro, 16 ms on a 2016 laptop).** A small
+   multilingual embedding model, `intfloat/multilingual-e5-small` (MIT, 118M parameters, Q8 GGUF of
+   132 MB), compares the line with an example bank (`crates/horizon-senses/data/intents.tsv`). The
+   bank has about 10 examples per intent and language (1 164 lines over 23 intents in en, fr, es, de
+   and pt), with typos, slang and negations, embedded once at setup and cached on disk. The seven
+   nearest examples vote, weighted by similarity. The classifier returns the ranked intents, slot
+   hints ("give me 3 torches" → torch, 3; item names in five languages) and a **needs-brain** flag. It
+   passes the line on below a similarity of 0.90 or a vote share of 0.6, for chit-chat, questions,
+   persona changes, insults and praise, and for collect / give / craft without an item.
+   - It runs in a second `llama-server` started with `--embeddings --pooling mean` on one CPU thread
+     (`--device none`), from the runtime the brain already uses, so it needs no extra engine. It uses
+     280 MB.
+   - The thresholds were tuned leave-one-out on the bank with a cost that counts a wrong command (−3)
+     worse than a missed one (−2) and a line sent to the brain as harmless (0).
+   - On 345 held-out lines (`intents-test.tsv`, 3 per intent and language) e5 picks the right intent
+     78.0% of the time, runs 8 lines (2.3%) as the wrong command, and sends to the brain everything it
+     should (needs-brain recall 100%, precision 42%: the brain also sees many commands it could have
+     run). `paraphrase-multilingual-MiniLM-L12-v2` (Apache 2.0), benchmarked against it at the same
+     speed (2.6 ms), got 73.0% and 24 wrong commands (7.0%), so e5 is kept. The confusions left are
+     give / craft ("toss me a pickaxe") and negated follow / stay.
+   - The GGUFs that work in llama.cpp are `TwinSunsLLC/multilingual-e5-small-gguf` and
+     `mykor/paraphrase-multilingual-MiniLM-L12-v2.gguf` (checked against sentence-transformers); the
+     `cstr/*` conversions are CrispEmbed's format, which llama.cpp refuses.
    - Kev-4B was rejected: 14 GB of GPU memory and English only.
-   - The design was: multilingual-e5-small, with `paraphrase-multilingual-MiniLM-L12-v2` (Apache 2.0)
-     benchmarked against it. Kept or swapped: whichever is more accurate on the test set at equal speed.
 3. **Brain.** Everything else goes to the brain.
 
 A matched command runs at once, with an instant acknowledgement taken from the personality's phrase bank.
@@ -259,29 +272,52 @@ server (`0xShug0/audio.cpp`, Apache 2.0). It is ggml-based like llama.cpp, has p
 CUDA and CPU builds, a C API and a streaming server, and needs no Python. It is downloaded only when voice
 is turned on. Its build and models are pinned with SHA-256, like llama.cpp's.
 
-- **Talking to it: push-to-talk.** Hold **V** (rebindable in Controls), speak, then release. The
-  microphone is opened only once voice is turned on, which is also when macOS asks for permission, and
-  only while the key is held. A small mic icon shows that it is listening.
+- **Talking to it: push-to-talk.** Hold **V** ("Talk to Companion", listed in Controls only while
+  voice is on, rebindable), speak, then release. The microphone is opened only while the key is held,
+  which is also when macOS first asks for permission (the launcher's `NSMicrophoneUsageDescription`).
+  A small mic icon at the bottom left shows that it is listening, with the level beside it, and turns
+  grey while the clip is transcribed. A clip stops by itself at 15 s.
   - **Speech to text** is NVIDIA Parakeet TDT 0.6B v3: CC-BY-4.0, 25 European languages detected
-    automatically, about 0.5 GB quantised, the newer version of the model Chasm's video used. Expected
-    time on a mid CPU is about 0.3 s for a 3 s sentence, and 1–2 s on the HD 620. That is to be measured.
-  - **Very weak PCs** get Whisper base (MIT, about 0.2 GB) instead.
+    automatically. Its Q8 GGUF is 0.92 GB, not 0.5, and it takes 2.6 GB of memory after a short clip
+    (3.3 GB after 14 s, which is why clips stop at 15 s). A 3.5 s sentence takes 0.3 s on 2 cores of an
+    M4 Pro, 0.04 s on its GPU, and 0.7 s on 2 cores of a 2016 i7-7500U. It reports no language: the
+    brain reads it from the text.
+  - **Weak PCs** get NVIDIA Canary 180M Flash (CC-BY-4.0, 249 MB, 820 MB of memory, 0.14 s for 3.5 s),
+    because audio.cpp has no Whisper. It knows en, de, es and fr, needs the game's language (otherwise
+    it translates to English), and makes more mistakes: it returned nothing for some Spanish clips.
   - What it heard shows in chat as the player's line, so mistakes are visible.
 - **Its voice (text to speech).** The brain's JSON carries a `tone` (normal, shout, whisper, laugh,
   sarcastic…), and `say` is spoken sentence by sentence while the rest is still being generated.
-  - **Natural voice (CPU, default): Kyutai Pocket TTS.** This is the official ungated
-    `kyutai/pocket-tts-without-voice-cloning` (CC-BY-4.0): 100M parameters, Q8 GGUF of about 125 MB. It
-    speaks en, fr, de, es, pt and it, with about 200 ms to the first sound and about 6× real time on 2
-    Apple M4 cores. It has no emotion control, so `tone` maps to volume and pace.
+  - **Natural voice (CPU, default): Kyutai Pocket TTS** (CC-BY-4.0, 100M parameters). audio.cpp ships
+    it as one Q8 GGUF of 128 MB per language (en, fr, de, es, pt, it), with built-in voices of about
+    6 MB each beside it. On 2 threads it starts speaking in 0.04 s and runs 4× faster than real time
+    on an M4 Pro; on a 2016 i7-7500U, 0.12 s and 1.6×. It takes about 400 MB per language loaded.
+    Parakeet understood its lines in all five languages (0–8% word errors). It has no emotion control,
+    so `tone` is only a playback gain.
   - **Expressive voice (GPU, "Best quality"): Qwen3-TTS-12Hz-1.7B-CustomVoice.** Apache 2.0, ungated,
-    Q8 GGUF of 2.8 GB, ten languages including the five above. It takes a natural-language instruction
-    for each line ("shouting, furious", "whispering", "dry and sarcastic"), which is how it shouts and
-    whispers like Kevin. It streams, at about 0.2–0.5 s to the first sound on an RTX 4090 / 4060.
-    Chasm's own project uses Qwen3-TTS as well.
+    Q8 GGUF of 2.8 GB, ten languages including the five above, nine built-in voices. It takes a
+    natural-language instruction for each line ("Shouting loudly, urgent and intense.", "Whispering
+    very softly…", "Dry and sarcastic…"). On the M4 Pro's GPU it starts speaking in 60–90 ms and runs
+    2.2× faster than real time, with 6 GB resident. It evens out loudness (a shout and a whisper came
+    out within 0.2 dB RMS), so the instruction changes the delivery (the whisper is less voiced, the
+    shout lower and tenser) and the game's tone gain makes it loud or quiet, as for Pocket TTS. There
+    is no 0.6B CustomVoice GGUF in audio.cpp (only the 0.6B Base cloning model). Chasm's own project
+    uses Qwen3-TTS as well.
   - Each personality gets its own voice and default delivery.
-- **Playback.** The voice plays positionally from the companion's head through the game's mixer, as an
-  appendable streaming channel. Past 48 blocks, or in another dimension, it comes over a "radio"
-  (band-pass filter and static). Subtitles follow the game's subtitle setting.
+- **Playback.** The voice plays positionally from the companion through the game's mixer, as an
+  appendable stream on the Voice/Speech volume: heard like a sound at volume 3 (linear to 48 blocks)
+  and panned. Over the last 8 blocks of that range, or at once in another dimension, it crossfades to
+  a "radio": 300–3 000 Hz band-pass, soft clipping, a light hiss and rare crackles, centred. The
+  sentences of a reply play back to back in one stream, after 120 ms of buffer. Subtitles (the
+  speaker's name and the start of the line) follow the game's subtitle setting. One voice costs the
+  mixer about 2 µs per 10.7 ms callback, 5 µs over the radio.
+- **The sidecar.** audio.cpp v0.9.2 (pinned per OS: Metal on macOS, Vulkan with a CPU fallback on
+  Linux and Windows, CUDA as an Advanced option on Windows) runs on 127.0.0.1 on a free port at nice
+  10 with a thread cap, loads models on first use, and dies with the game even when the game is killed
+  (a lifeline pipe on Unix, a kill-on-close job object on Windows). Linux and Windows use its
+  `portable` builds, which pick the CPU code at run time; the others are compiled for the release
+  machine's CPU. audio.cpp's server has no API key, unlike llama-server: it relies on the random
+  local port.
 - **Rejected:**
   - Breeze-TTS-2, the voice in the video: research and non-commercial licence, NVIDIA 12 GB only, English
     and Chinese.
@@ -324,10 +360,19 @@ backend and download size. The parts are the brain, the classifier, speech to te
   - the prompt builder and the JSON schema;
   - the reflex pipeline (rules → classifier → brain) and phrase banks;
   - `plan()` and `CompanionSettings` (simple and Advanced);
-  - the senses client: the audio.cpp supervisor, streaming TTS, STT, and the embedding classifier;
   - presets.
 
   Both the game and the launcher use it.
+- `crates/horizon-senses`: no game dependency either. The senses' catalogue (audio.cpp builds, speech
+  to text, voices, classifier models, with their needs and measured latency; the same `ModelFile`
+  shape as the brain's catalogue, so `plan()` can take them as more parts), the sidecar supervisor,
+  the streaming voice and push-to-talk clients, the classifier and its example bank, the radio and the
+  resampler. `examples/senses_bench.rs` measures all of it. It is a crate of its own, not part of
+  `horizon-companion`, so the senses and the brain were built side by side; the classifier runs on the
+  brain's pinned llama.cpp (the same b11756).
+- `crates/horizon-client/src/companion_voice.rs` (the microphone, push-to-talk, the speakers) and
+  `game/companion_voice.rs` (the key, the mic icon, routing what was heard); the mixer's voice streams
+  are in `audio.rs`. `HORIZON_COMPANION_VOICE=<file.json>` turns voice on without the setup screens.
 - `crates/horizon-client/src/companion/`: the virtual guest, the skills, perception (the state summary),
   the chat hook, the Companion options section and persistence. The brain is called from a std-thread
   worker over channels, polled once per tick, never blocking (the `skins::Downloader` pattern).

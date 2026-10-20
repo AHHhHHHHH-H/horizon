@@ -2,7 +2,8 @@
 //! small mixer standing in for OpenAL: one channel per source with its gain,
 //! pitch, linear distance attenuation (`AL_LINEAR_DISTANCE`, reference 0,
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
-//! (streams on a worker thread) and stereo panning.
+//! (streams on a worker thread) and stereo panning. Companions' voices play
+//! beside the sources as appendable streams (`voice_start`).
 use crate::Result;
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
@@ -12,8 +13,9 @@ use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_senses::dsp::Radio;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -46,6 +48,45 @@ struct Mixer {
     listener: [f64; 3],
     listener_yaw: f32,
     limiter_peak: f32,
+    /// Companions' voices; empty (and skipped) unless one is talking.
+    voices: HashMap<VoiceId, Voice>,
+    /// The Voice/Speech slider times the master volume.
+    voice_volume: f32,
+    voices_paused: bool,
+}
+/// A companion's voice line in the mixer.
+pub type VoiceId = u32;
+/// The companions' sound category (`SoundSource.VOICE`, "Voice/Speech").
+const VOICE: usize = 9;
+/// How far a companion is heard directly: as far as a sound at volume 3 (16 blocks per unit of
+/// volume, linear). Past it, or from another dimension, the voice comes over the radio.
+pub const VOICE_RANGE: f32 = 48.0;
+/// The radio fades in over the last blocks of the range, so walking away never switches abruptly.
+const RADIO_FADE: f32 = 8.0;
+/// The radio's level against the direct voice at full volume.
+const RADIO_GAIN: f32 = 0.8;
+/// Audio held back before a line starts, or resumes after running dry, against generation jitter.
+const VOICE_PREBUFFER: f32 = 0.12;
+/// A companion's voice: samples appended while the speech model generates them, played from the
+/// companion's position (docs/companions.md, "Playback").
+struct Voice {
+    queue: VecDeque<f32>,
+    rate: u32,
+    /// Between `previous` and the front of the queue, 0..1.
+    phase: f64,
+    previous: f32,
+    /// The tone's gain (a shout is louder, a whisper quieter).
+    gain: f32,
+    at: [f32; 3],
+    /// In another dimension than the listener: only the radio carries it.
+    elsewhere: bool,
+    /// How much of it comes over the radio, eased toward its target so it never clicks.
+    wet: f32,
+    radio: Option<Radio>,
+    /// Buffering before it plays (at the start, or after the generator fell behind).
+    waiting: bool,
+    /// No more samples will come: it ends when the queue runs out.
+    finished: bool,
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -157,6 +198,11 @@ pub struct Audio {
     /// Positional sounds played since the last drain, kept while the world
     /// is open to the network so guests hear them too.
     pub capture: Option<Vec<(String, [f64; 3], f32, f32)>>,
+    /// The voice volume the mixer has (`Mixer::voice_volume`).
+    voice_volume: f32,
+    next_voice: VoiceId,
+    /// Companions' lines for the subtitle overlay, since the last `take_heard`.
+    voice_heard: Vec<Heard>,
 }
 fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     use symphonia::core::{
@@ -340,6 +386,78 @@ fn distance_gain(linear: Option<f32>, distance: f32) -> f32 {
         Some(_) => 0.0,
     }
 }
+/// Mix the companions' voices into `data`: direct and panned within `VOICE_RANGE`, then over the
+/// radio, centred. A voice that runs dry waits for `VOICE_PREBUFFER` more, and one that is
+/// finished leaves when it has played everything.
+fn mix_voices(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
+    let listener = mixer.listener;
+    let yaw = mixer.listener_yaw.to_radians();
+    let volume = mixer.voice_volume;
+    // The radio eases in and out over about 150 ms.
+    let ease = 1.0 - (-1.0 / (0.15 * rate as f32)).exp();
+    mixer.voices.retain(|_, v| {
+        if v.waiting {
+            let ready = v.queue.len() as f32 >= VOICE_PREBUFFER * v.rate as f32;
+            if !ready && !v.finished {
+                return true;
+            }
+            v.waiting = false;
+        }
+        let d = [
+            f64::from(v.at[0]) - listener[0],
+            f64::from(v.at[1]) - listener[1],
+            f64::from(v.at[2]) - listener[2],
+        ];
+        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
+        let target = if v.elsewhere {
+            1.0
+        } else {
+            ((distance - (VOICE_RANGE - RADIO_FADE)) / RADIO_FADE).clamp(0.0, 1.0)
+        };
+        let gain = v.gain.clamp(0.0, 2.0) * volume;
+        let direct = gain * distance_gain(Some(VOICE_RANGE), distance);
+        let side =
+            (-(yaw.cos()) as f64 * d[0] - (yaw.sin()) as f64 * d[2]) as f32 / distance.max(0.001);
+        let pan = side.clamp(-1.0, 1.0);
+        let left = direct * (1.0 - pan.max(0.0) * 0.6);
+        let right = direct * (1.0 + pan.min(0.0) * 0.6);
+        let step = f64::from(v.rate) / f64::from(rate);
+        for frame in data.chunks_mut(channels) {
+            while v.phase >= 1.0 {
+                let Some(x) = v.queue.pop_front() else {
+                    break;
+                };
+                v.previous = x;
+                v.phase -= 1.0;
+            }
+            let Some(&next) = v.queue.front().filter(|_| v.phase < 1.0) else {
+                if v.finished {
+                    return false;
+                }
+                v.waiting = true;
+                break;
+            };
+            let x = v.previous + (next - v.previous) * v.phase as f32;
+            v.phase += step;
+            v.wet += (target - v.wet) * ease;
+            let dry = 1.0 - v.wet;
+            let (mut l, mut r) = (x * left * dry, x * right * dry);
+            if v.wet > 0.001 {
+                let radio = v.radio.get_or_insert_with(|| Radio::new(rate));
+                let y = radio.process(x) * v.wet * gain * RADIO_GAIN;
+                l += y;
+                r += y;
+            }
+            if channels >= 2 {
+                frame[0] += l;
+                frame[1] += r;
+            } else {
+                frame[0] += (l + r) / 2.0;
+            }
+        }
+        true
+    });
+}
 // Only the output stream mixes; a build without one (no `audio` feature) never does.
 #[cfg_attr(not(feature = "audio"), allow(dead_code))]
 fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
@@ -406,6 +524,9 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             }
             c.position += step;
         }
+    }
+    if !mixer.voices.is_empty() && !mixer.voices_paused {
+        mix_voices(mixer, data, channels, rate);
     }
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 50 ms.
@@ -533,6 +654,9 @@ impl Audio {
             random: LegacyRandom::new(crate::sound_engine::unique_seed()),
             source_override: None,
             capture: None,
+            voice_volume: 0.0,
+            next_voice: 0,
+            voice_heard: Vec::new(),
         }
     }
     #[cfg(not(feature = "audio"))]
@@ -606,6 +730,13 @@ impl Audio {
             }
         }
         self.engine.listening = self.record_heard;
+        let voice = self.master * volumes[VOICE];
+        if voice != self.voice_volume
+            && let Ok(mut m) = self.backend.mixer.lock()
+        {
+            m.voice_volume = voice;
+            self.voice_volume = voice;
+        }
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
@@ -618,14 +749,24 @@ impl Audio {
             &[crate::sound_engine::MUSIC, crate::sound_engine::UI],
             &mut self.backend,
         );
+        self.pause_voices(true);
     }
     /// `SoundManager.resume`.
     pub fn resume(&mut self) {
         self.engine.resume(&mut self.backend);
+        self.pause_voices(false);
+    }
+    fn pause_voices(&mut self, paused: bool) {
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.voices_paused = paused;
+        }
     }
     /// `SoundManager.stop()`: every sound.
     pub fn stop_all(&mut self) {
         self.engine.stop_all(&mut self.backend);
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.voices.clear();
+        }
     }
     /// `SoundManager.reload` (resource packs changed): stop every sound, then
     /// read sound events and sound files from the new resource root.
@@ -766,7 +907,93 @@ impl Audio {
                     looping: n.looping,
                 })
             })
+            .chain(self.voice_heard.drain(..))
             .collect()
+    }
+    /// Start a companion's line: samples at `rate` come with `voice_push`, from `at` (in another
+    /// dimension when `elsewhere`), louder or quieter by `gain` (the tone). `None` without an output.
+    pub fn voice_start(
+        &mut self,
+        rate: u32,
+        gain: f32,
+        at: [f64; 3],
+        elsewhere: bool,
+    ) -> Option<VoiceId> {
+        if !self.backend.live {
+            return None;
+        }
+        self.sync_volumes();
+        self.next_voice += 1;
+        let id = self.next_voice;
+        self.backend.mixer.lock().ok()?.voices.insert(
+            id,
+            Voice {
+                queue: VecDeque::new(),
+                rate: rate.max(1),
+                phase: 0.0,
+                previous: 0.0,
+                gain,
+                at: at.map(|c| c as f32),
+                elsewhere,
+                wet: if elsewhere { 1.0 } else { 0.0 },
+                radio: None,
+                waiting: true,
+                finished: false,
+            },
+        );
+        Some(id)
+    }
+    fn with_voice(&self, id: VoiceId, f: impl FnOnce(&mut Voice)) {
+        if let Ok(mut m) = self.backend.mixer.lock()
+            && let Some(v) = m.voices.get_mut(&id)
+        {
+            f(v);
+        }
+    }
+    /// More of a line, as the speech model generates it.
+    pub fn voice_push(&mut self, id: VoiceId, samples: &[f32]) {
+        self.with_voice(id, |v| v.queue.extend(samples));
+    }
+    /// Where the speaker is now (each tick while it talks).
+    pub fn voice_place(&mut self, id: VoiceId, at: [f64; 3], elsewhere: bool) {
+        self.with_voice(id, |v| {
+            v.at = at.map(|c| c as f32);
+            v.elsewhere = elsewhere;
+        });
+    }
+    /// No more samples will come: the line ends when it has played them.
+    pub fn voice_finish(&mut self, id: VoiceId) {
+        self.with_voice(id, |v| v.finished = true);
+    }
+    /// Cut a line off.
+    pub fn voice_stop(&mut self, id: VoiceId) {
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.voices.remove(&id);
+        }
+    }
+    /// Whether a line is still buffering or playing.
+    pub fn voice_playing(&self, id: VoiceId) -> bool {
+        self.backend
+            .mixer
+            .lock()
+            .is_ok_and(|m| m.voices.contains_key(&id))
+    }
+    /// Show a companion's line in the subtitles while the overlay listens: at the speaker within
+    /// `VOICE_RANGE`, everywhere over the radio (`at` none).
+    pub fn voice_subtitle(&mut self, text: &str, at: Option<[f64; 3]>) {
+        if self.record_heard {
+            self.voice_heard.push(Heard {
+                // The overlay reads it as a translation key: `%` would start an argument.
+                subtitle: text.replace('%', "%%"),
+                at: Some(at.unwrap_or(self.listener)),
+                range: if at.is_some() {
+                    VOICE_RANGE
+                } else {
+                    f32::INFINITY
+                },
+                looping: false,
+            });
+        }
     }
 }
 impl Sounds for Audio {
@@ -927,6 +1154,128 @@ mod tests {
         assert!(recovery[0] > 0.0 && recovery[0] < 0.1);
         assert!(recovery.windows(2).all(|w| w[1] >= w[0]));
         assert_eq!(*recovery.last().unwrap(), 0.25);
+    }
+
+    fn voice(at: [f32; 3], elsewhere: bool) -> Voice {
+        Voice {
+            queue: VecDeque::new(),
+            rate: 24_000,
+            phase: 0.0,
+            previous: 0.0,
+            gain: 1.0,
+            at,
+            elsewhere,
+            wet: if elsewhere { 1.0 } else { 0.0 },
+            radio: None,
+            waiting: true,
+            finished: false,
+        }
+    }
+
+    fn voice_mixer() -> Mixer {
+        Mixer {
+            voice_volume: 1.0,
+            ..Mixer::default()
+        }
+    }
+
+    fn sine(freq: f32, rate: u32, seconds: f32) -> Vec<f32> {
+        (0..(rate as f32 * seconds) as usize)
+            .map(|i| (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin() * 0.5)
+            .collect()
+    }
+
+    fn rms(data: &[f32]) -> f32 {
+        (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_voice_waits_for_its_prebuffer_plays_appended_samples_and_ends_when_finished() {
+        let mut m = voice_mixer();
+        m.voices.insert(1, voice([0.0; 3], false));
+        let mut out = vec![0.0f32; 2 * 4800];
+        // 50 ms is less than the prebuffer: silence.
+        m.voices.get_mut(&1).unwrap().queue.extend(vec![0.25; 1200]);
+        mix(&mut m, &mut out, 2, 48_000);
+        assert!(out.iter().all(|s| *s == 0.0));
+        // 150 ms more: it plays (at 24 kHz into 48 kHz, 0.1 s of output takes 2 400 samples).
+        m.voices.get_mut(&1).unwrap().queue.extend(vec![0.25; 3600]);
+        mix(&mut m, &mut out, 2, 48_000);
+        assert!((out[2 * 4000] - 0.25).abs() < 1e-4, "{}", out[2 * 4000]);
+        assert!(m.voices.contains_key(&1));
+        // It ran dry while the generator is behind: it waits again, then ends once finished.
+        mix(&mut m, &mut out, 2, 48_000);
+        mix(&mut m, &mut out, 2, 48_000);
+        assert!(m.voices[&1].waiting);
+        m.voices.get_mut(&1).unwrap().finished = true;
+        m.voices.get_mut(&1).unwrap().queue.extend(vec![0.25; 100]);
+        mix(&mut m, &mut out, 2, 48_000);
+        assert!(!m.voices.contains_key(&1));
+    }
+
+    #[test]
+    fn a_voice_is_heard_directly_nearby_and_over_the_radio_far_away_or_elsewhere() {
+        let speech = sine(1000.0, 24_000, 0.5);
+        let hum = sine(100.0, 24_000, 0.5);
+        let play = |at: [f32; 3], elsewhere: bool, samples: &[f32]| {
+            let mut m = voice_mixer();
+            let mut v = voice(at, elsewhere);
+            v.queue.extend(samples);
+            v.finished = true;
+            m.voices.insert(1, v);
+            let mut out = vec![0.0f32; 2 * 24_000];
+            mix_voices(&mut m, &mut out, 2, 48_000);
+            out
+        };
+        // On the listener's right (yaw 0 faces +z, so -x is right): louder in the right ear.
+        let near = play([-8.0, 0.0, 0.0], false, &speech);
+        let (left, right): (Vec<f32>, Vec<f32>) =
+            near.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
+        assert!(rms(&right) > rms(&left) * 1.5);
+        // Linear over VOICE_RANGE: at 24 blocks, half as loud as at the listener.
+        let close = play([0.0; 3], false, &speech);
+        let mid = play([0.0, 0.0, 24.0], false, &speech);
+        assert!((rms(&mid) / rms(&close) - 0.5).abs() < 0.02);
+        // Past the range, the radio: the voice band stays, a 100 Hz hum is cut, centred.
+        let far = play([0.0, 0.0, 100.0], false, &speech);
+        assert!(rms(&far) > 0.1, "{}", rms(&far));
+        let far_hum = play([0.0, 0.0, 100.0], false, &hum);
+        assert!(rms(&far_hum) < rms(&far) * 0.3);
+        let (l, r): (Vec<f32>, Vec<f32>) =
+            far.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
+        assert_eq!(l, r);
+        // Another dimension, right beside: the radio too.
+        let elsewhere = play([1.0, 0.0, 0.0], true, &hum);
+        assert!(rms(&elsewhere) < rms(&close) * 0.3);
+    }
+
+    /// The mixer's cost for one voice (run with `--ignored --nocapture`, in release).
+    #[test]
+    #[ignore]
+    fn voice_mixing_cost() {
+        let rounds = 2000;
+        let time = |voices: usize, at: [f32; 3]| {
+            let mut m = voice_mixer();
+            for id in 0..voices as u32 {
+                let mut v = voice(at, false);
+                v.queue.extend(sine(300.0, 24_000, 30.0));
+                v.waiting = false;
+                m.voices.insert(id, v);
+            }
+            let mut out = vec![0.0f32; 2 * 512];
+            let start = std::time::Instant::now();
+            for _ in 0..rounds {
+                mix(&mut m, &mut out, 2, 48_000);
+            }
+            start.elapsed().as_secs_f64() * 1e6 / f64::from(rounds)
+        };
+        let none = time(0, [0.0; 3]);
+        let direct = time(1, [4.0, 0.0, 4.0]);
+        let radio = time(1, [0.0, 0.0, 100.0]);
+        eprintln!(
+            "512-frame stereo callback at 48 kHz (10.7 ms of audio): no voice {none:.2} µs, \
+             a voice nearby {direct:.2} µs, over the radio {radio:.2} µs"
+        );
     }
 
     #[test]

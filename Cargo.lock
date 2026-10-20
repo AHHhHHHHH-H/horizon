@@ -1426,6 +1426,7 @@ dependencies = [
  "horizon-friends",
  "horizon-mods",
  "horizon-protocol",
+ "horizon-senses",
  "horizon-server-files",
  "horizon-shaderpack",
  "horizon-telemetry",

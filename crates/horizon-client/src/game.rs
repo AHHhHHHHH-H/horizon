@@ -24,6 +24,7 @@ mod combat;
 mod command_blocks;
 mod command_harness;
 mod commands;
+mod companion_voice;
 mod composter;
 mod consume;
 mod control;
@@ -1414,6 +1415,7 @@ struct Game<'a> {
     /// `Hud.tabList`: the player list's header, footer and heart states.
     tab_list: horizon_client::tab_list::TabList,
     subtitles: subtitle_hud::SubtitleState,
+    companion_voice: companion_voice::VoiceState,
     adv: advancements::AdvState,
     restore_player_state: bool,
     stats_ui: stats_screen::StatsUi,
@@ -4509,6 +4511,7 @@ impl Game<'_> {
             self.draw_titles(&mut batch);
             self.draw_scoreboard(&mut batch);
             self.draw_subtitles(&mut batch);
+            self.draw_companion_mic(&mut batch);
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -6626,6 +6629,7 @@ impl Game<'_> {
         self.load_bossbars();
         self.tick_functions();
         self.tick_worldborder();
+        self.tick_companion_voice();
         self.tick_subtitles();
         self.spawn_phantoms();
         self.tick_advancements();
@@ -10523,6 +10527,11 @@ impl ApplicationHandler for Game<'_> {
                         return Ok(());
                     };
                     self.extras_key(key, event.state == ElementState::Pressed, event.repeat);
+                    self.companion_voice_key(
+                        key,
+                        event.state == ElementState::Pressed,
+                        event.repeat,
+                    );
                     // key.smoothCamera toggles the cinematic camera.
                     if self.screen == Screen::Playing
                         && event.state == ElementState::Pressed
@@ -11115,6 +11124,7 @@ impl<'a> Game<'a> {
             border_state: Default::default(),
             tab_list: Default::default(),
             subtitles: Default::default(),
+            companion_voice: Default::default(),
             adv: Default::default(),
             restore_player_state: true,
             stats_ui: Default::default(),

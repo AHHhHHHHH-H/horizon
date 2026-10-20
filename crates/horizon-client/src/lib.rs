@@ -39,6 +39,7 @@ pub mod collisions;
 pub mod command;
 pub mod command_block;
 pub mod command_storage;
+pub mod companion_voice;
 pub mod component;
 pub mod container_screen;
 pub mod containers;
