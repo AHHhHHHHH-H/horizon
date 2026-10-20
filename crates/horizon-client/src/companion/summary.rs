@@ -83,12 +83,7 @@ fn nearby(list: &[Nearby], max: usize) -> String {
         .take(max)
         .map(|n| {
             let tag = if n.hostile { "!" } else { "" };
-            format!(
-                "{tag}{} {}h {:.0}m",
-                short_id(&n.id),
-                n.bearing,
-                n.distance
-            )
+            format!("{tag}{} {}h {:.0}m", short_id(&n.id), n.bearing, n.distance)
         })
         .collect();
     let more = list.len().saturating_sub(max);
@@ -206,10 +201,24 @@ mod tests {
                 looking_at: Some(("minecraft:oak_log".into(), 7.9)),
             }),
             entities: (0..9)
-                .map(|i| near("minecraft:zombie_villager", i % 2 == 0, (i % 12 + 1) as u8, 3.0 + f64::from(i)))
+                .map(|i| {
+                    near(
+                        "minecraft:zombie_villager",
+                        i % 2 == 0,
+                        (i % 12 + 1) as u8,
+                        3.0 + f64::from(i),
+                    )
+                })
                 .collect(),
             blocks: (0..8)
-                .map(|i| near("minecraft:deepslate_diamond_ore", false, 2, 8.0 + f64::from(i)))
+                .map(|i| {
+                    near(
+                        "minecraft:deepslate_diamond_ore",
+                        false,
+                        2,
+                        8.0 + f64::from(i),
+                    )
+                })
                 .collect(),
             skill: "follow".into(),
             hold_fire: true,
@@ -222,8 +231,12 @@ mod tests {
         let text = state_summary(&busy());
         // About 250 tokens: four characters a token is generous for this text.
         assert!(text.len() < 1000, "{} chars:\n{text}", text.len());
-        assert!(text.contains("You: Ari at 12 64 -4, overworld, old_growth_birch_forest, 19:00 dusk, rain."));
-        assert!(text.contains("Owner Ludovic111: health 9/20, food 12/20, you are at 5h 4m. Looking at oak_log 8m."));
+        assert!(text.contains(
+            "You: Ari at 12 64 -4, overworld, old_growth_birch_forest, 19:00 dusk, rain."
+        ));
+        assert!(text.contains(
+            "Owner Ludovic111: health 9/20, food 12/20, you are at 5h 4m. Looking at oak_log 8m."
+        ));
         assert!(text.contains("!zombie_villager 1h 3m"));
         assert!(text.contains("(+3)"));
         assert!(text.contains("(+4 kinds)"));

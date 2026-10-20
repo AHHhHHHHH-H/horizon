@@ -36,6 +36,9 @@ pub struct CompanionFile {
     pub skill: String,
     pub post: Option<[f64; 3]>,
     pub hold_fire: bool,
+    /// The work it had on (collect, give, craft, smelt), as command words
+    /// with what is left to do: a reloaded world takes it up again.
+    pub task: Option<String>,
 }
 
 impl Default for CompanionFile {
@@ -53,6 +56,7 @@ impl Default for CompanionFile {
             skill: "follow".into(),
             post: None,
             hold_fire: false,
+            task: None,
         }
     }
 }
@@ -118,15 +122,25 @@ mod tests {
             name: "Ari".into(),
             owner: horizon_protocol::crypto::uuid_string(7),
             notes: vec!["likes oak".into()],
+            task: Some("collect 3 oak_log".into()),
             ..Default::default()
         };
         file.save(&world).unwrap();
-        assert!(world.join("companions").join(format!("{}.json", file.uuid)).is_file());
+        assert!(
+            world
+                .join("companions")
+                .join(format!("{}.json", file.uuid))
+                .is_file()
+        );
         let all = CompanionFile::load_all(&world);
         assert_eq!(all, vec![file.clone()]);
         assert_eq!(all[0].uuid(), Some(uuid));
         // Fields a later version adds or drops don't break loading.
-        std::fs::write(file.path(&world), r#"{"uuid":"00000000-0000-4000-8000-000000000001","name":"Zed","mood":1}"#).unwrap();
+        std::fs::write(
+            file.path(&world),
+            r#"{"uuid":"00000000-0000-4000-8000-000000000001","name":"Zed","mood":1}"#,
+        )
+        .unwrap();
         let all = CompanionFile::load_all(&world);
         assert_eq!(all[0].name, "Zed");
         assert_eq!(all[0].role, "");

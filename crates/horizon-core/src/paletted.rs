@@ -312,6 +312,16 @@ impl PalettedContainer {
             }
         }
     }
+    /// Whether some entry may be a value `wanted` accepts: one in the
+    /// palette (which can keep values no entry uses any more); the global
+    /// palette may hold any.
+    pub fn may_contain(&self, mut wanted: impl FnMut(u32) -> bool) -> bool {
+        match &self.palette {
+            Palette::Single(value) => wanted(*value),
+            Palette::List(list) => list.iter().any(|&v| wanted(v)),
+            Palette::Global => true,
+        }
+    }
     /// Whether all entries equal `value`.
     pub fn is_uniform(&self, value: u32) -> bool {
         match &self.palette {

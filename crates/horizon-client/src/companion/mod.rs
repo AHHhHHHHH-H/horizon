@@ -8,6 +8,7 @@
 pub mod file;
 pub mod gear;
 pub mod summary;
+pub mod work;
 
 use crate::text::{self, Text};
 
@@ -36,6 +37,102 @@ pub enum CompanionCommand {
     Crouch(bool),
     /// Eat the best food it carries, whatever its hunger.
     Eat,
+    /// Get `count` more of an item, an item tag or a block: mined in the
+    /// loaded chunks within 48 blocks, picked up, or taken from mobs.
+    Collect {
+        what: Want,
+        count: u32,
+    },
+    /// Throw `count` of an item to the owner.
+    Give {
+        what: Want,
+        count: u32,
+    },
+    /// Craft `count` of an item, in its 2x2 grid or at a crafting table;
+    /// `gather` ("make") collects the basic materials it lacks first.
+    Craft {
+        item: String,
+        count: u32,
+        gather: bool,
+    },
+    /// Smelt `count` of an item in a furnace (the input, or the result wanted).
+    Smelt {
+        item: String,
+        count: u32,
+    },
+    /// Sleep in a bed within 16 blocks (it also does when its owner sleeps).
+    Sleep,
+}
+
+/// What [`CompanionCommand::Collect`] and [`CompanionCommand::Give`] are
+/// about: an item (`minecraft:oak_log`), an item tag (`minecraft:logs`) or a
+/// block mined for its own sake, whatever it drops.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Want {
+    Item(String),
+    Tag(String),
+    Block(String),
+}
+
+impl Want {
+    /// `oak_log`, `#logs`, `block:stone` as an item, tag or block id.
+    pub fn parse(word: &str) -> Self {
+        if let Some(tag) = word.strip_prefix('#') {
+            Want::Tag(namespaced(tag))
+        } else if let Some(block) = word.strip_prefix("block:") {
+            Want::Block(namespaced(block))
+        } else {
+            Want::Item(namespaced(word))
+        }
+    }
+    /// The id without `minecraft:` (tags with `#`, blocks with `block:`).
+    pub fn words(&self) -> String {
+        match self {
+            Want::Item(i) => short_id(i).to_owned(),
+            Want::Tag(t) => format!("#{}", short_id(t)),
+            Want::Block(b) => format!("block:{}", short_id(b)),
+        }
+    }
+    pub fn id(&self) -> &str {
+        match self {
+            Want::Item(i) | Want::Tag(i) | Want::Block(i) => i,
+        }
+    }
+}
+
+/// `oak_log` as `minecraft:oak_log`.
+pub fn namespaced(id: &str) -> String {
+    let id = id.to_ascii_lowercase();
+    if id.contains(':') {
+        id
+    } else {
+        format!("minecraft:{id}")
+    }
+}
+
+impl CompanionCommand {
+    /// The words [`parse_command`] reads back: a work skill is saved this way
+    /// with the world (its count is what is left to do).
+    pub fn words(&self) -> Option<String> {
+        Some(match self {
+            Self::Collect { what, count } => format!("collect {count} {}", what.words()),
+            Self::Give { what, count } => format!("give {count} {}", what.words()),
+            Self::Craft {
+                item,
+                count,
+                gather,
+            } => {
+                format!(
+                    "{} {count} {}",
+                    if *gather { "make" } else { "craft" },
+                    short_id(item)
+                )
+            }
+            Self::Smelt { item, count } => format!("smelt {count} {}", short_id(item)),
+            Self::Sleep => "sleep".into(),
+            _ => return None,
+        })
+    }
 }
 
 /// Where [`CompanionCommand::GoTo`] goes.
@@ -65,6 +162,11 @@ pub enum Skill {
     Attack,
     Defend,
     Retreat,
+    Collect,
+    Give,
+    Craft,
+    Smelt,
+    Sleep,
 }
 
 impl Skill {
@@ -78,6 +180,11 @@ impl Skill {
             Skill::Attack,
             Skill::Defend,
             Skill::Retreat,
+            Skill::Collect,
+            Skill::Give,
+            Skill::Craft,
+            Skill::Smelt,
+            Skill::Sleep,
         ]
         .into_iter()
         .find(|s| s.name() == name)
@@ -92,6 +199,11 @@ impl Skill {
             Skill::Attack => "attack",
             Skill::Defend => "defend",
             Skill::Retreat => "retreat",
+            Skill::Collect => "collect",
+            Skill::Give => "give",
+            Skill::Craft => "craft",
+            Skill::Smelt => "smelt",
+            Skill::Sleep => "sleep",
         }
     }
 }
@@ -101,22 +213,53 @@ impl Skill {
 pub enum CompanionReport {
     SkillStarted(Skill),
     SkillFinished(Skill),
-    SkillFailed { skill: Skill, reason: String },
+    SkillFailed {
+        skill: Skill,
+        reason: String,
+    },
     /// It lost health; `by` names the entity type that hit it, when one did.
-    Hurt { amount: f32, by: Option<String> },
-    Died { cause: String },
+    Hurt {
+        amount: f32,
+        by: Option<String>,
+    },
+    Died {
+        cause: String,
+    },
     Respawned,
     /// A hostile came into view: its type, the clock bearing from the
     /// owner's facing (12 ahead, 3 right) and its distance from the owner.
-    SawHostile { kind: String, bearing: u8, distance: f32 },
+    SawHostile {
+        kind: String,
+        bearing: u8,
+        distance: f32,
+    },
     /// It was too far behind and teleported beside the owner.
     Teleported,
-    Ate { item: String },
-    Equipped { item: String },
-    PickedUp { item: String, count: u32 },
+    Ate {
+        item: String,
+    },
+    Equipped {
+        item: String,
+    },
+    PickedUp {
+        item: String,
+        count: u32,
+    },
     /// It came along when the owner changed dimension, or stayed behind.
-    ChangedDimension { dimension: String },
-    StayedBehind { dimension: String },
+    ChangedDimension {
+        dimension: String,
+    },
+    StayedBehind {
+        dimension: String,
+    },
+    /// A work skill moved on: `done` of `total` items collected, given,
+    /// crafted or smelted.
+    Progress {
+        skill: Skill,
+        item: String,
+        done: u32,
+        total: u32,
+    },
 }
 
 impl CompanionReport {
@@ -141,8 +284,16 @@ impl CompanionReport {
             Self::Ate { item } => format!("ate {}", short_id(item)),
             Self::Equipped { item } => format!("equipped {}", short_id(item)),
             Self::PickedUp { item, count } => format!("picked up {count} {}", short_id(item)),
-            Self::ChangedDimension { dimension } => format!("came along to {}", short_id(dimension)),
+            Self::ChangedDimension { dimension } => {
+                format!("came along to {}", short_id(dimension))
+            }
             Self::StayedBehind { dimension } => format!("stayed in {}", short_id(dimension)),
+            Self::Progress {
+                skill,
+                item,
+                done,
+                total,
+            } => format!("{} {done}/{total} {}", skill.name(), short_id(item)),
         }
     }
 }
@@ -151,7 +302,10 @@ impl CompanionReport {
 /// `follow`, `stay` (`guard`), `come`, `goto <x> <y> <z>`, `goto there`
 /// (the owner's crosshair), `stop`, `attack [<entity id>|nearest]`,
 /// `defend`, `hold` / `fire` (`holdfire on|off`), `jump`, `crouch [on|off]`,
-/// `eat`.
+/// `eat`; the work skills `collect|get|mine <n> <item>` (`#tag`,
+/// `block:<id>`), `give [me] <n> <item>`, `craft <n> <item>`, `make <n>
+/// <item>` (gathering what it lacks), `smelt <n> <item>` and `sleep`. Item
+/// names may be words (`oak log`) and the count may come after them.
 pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
     let on_off = |w: Option<&&str>, default: bool| match w.copied() {
         None => Ok(default),
@@ -169,7 +323,10 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
         "goto" | "go" => match &words[1..] {
             [] | ["there"] | ["crosshair"] => CompanionCommand::GoTo(GoTarget::Crosshair),
             [x, y, z] => {
-                let n = |v: &str| v.parse::<i32>().map_err(|_| format!("not a block coordinate: {v}"));
+                let n = |v: &str| {
+                    v.parse::<i32>()
+                        .map_err(|_| format!("not a block coordinate: {v}"))
+                };
                 CompanionCommand::GoTo(GoTarget::Block([n(x)?, n(y)?, n(z)?]))
             }
             _ => return Err("goto <x> <y> <z>, or goto there".into()),
@@ -189,8 +346,65 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
         "crouch" | "sneak" => CompanionCommand::Crouch(on_off(words.get(1), true)?),
         "uncrouch" | "stand" => CompanionCommand::Crouch(false),
         "eat" => CompanionCommand::Eat,
+        "collect" | "get" | "mine" | "gather" | "chop" => {
+            let (count, item) = count_and_item(&words[1..])?;
+            CompanionCommand::Collect {
+                what: Want::parse(&item),
+                count,
+            }
+        }
+        "give" | "toss" | "throw" => {
+            let rest = match words.get(1) {
+                Some(w) if w.eq_ignore_ascii_case("me") => &words[2..],
+                _ => &words[1..],
+            };
+            let (count, item) = count_and_item(rest)?;
+            CompanionCommand::Give {
+                what: Want::parse(&item),
+                count,
+            }
+        }
+        verb @ ("craft" | "make") => {
+            let (count, item) = count_and_item(&words[1..])?;
+            CompanionCommand::Craft {
+                item: namespaced(&item),
+                count,
+                gather: verb == "make",
+            }
+        }
+        "smelt" | "cook" => {
+            let (count, item) = count_and_item(&words[1..])?;
+            CompanionCommand::Smelt {
+                item: namespaced(&item),
+                count,
+            }
+        }
+        "sleep" | "bed" => CompanionCommand::Sleep,
         other => return Err(format!("unknown companion command: {other}")),
     })
+}
+
+/// A count (1 when none is given; `a` and `an` are 1) and an item named by
+/// the other words, joined with `_`: `3 oak log`, `oak_log 3`, `a wooden pickaxe`.
+fn count_and_item(words: &[&str]) -> Result<(u32, String), String> {
+    let mut count = None;
+    let mut name: Vec<String> = Vec::new();
+    for w in words {
+        match w.parse::<u32>() {
+            Ok(n) if count.is_none() => count = Some(n),
+            _ if name.is_empty()
+                && matches!(w.to_ascii_lowercase().as_str(), "a" | "an" | "some" | "the") => {}
+            _ => name.push(w.to_ascii_lowercase()),
+        }
+    }
+    let count = count.unwrap_or(1);
+    if name.is_empty() {
+        return Err("which item?".into());
+    }
+    if count == 0 || count > 64 * 36 {
+        return Err(format!("a count from 1 to {}, not {count}", 64 * 36));
+    }
+    Ok((count, name.join("_")))
 }
 
 /// `minecraft:zombie` as `zombie`.
@@ -394,12 +608,74 @@ mod tests {
         let p = |line: &str| parse_command(&line.split(' ').collect::<Vec<_>>());
         assert_eq!(p("follow"), Ok(CompanionCommand::Follow));
         assert_eq!(p("guard"), Ok(CompanionCommand::Stay));
-        assert_eq!(p("goto 1 64 -3"), Ok(CompanionCommand::GoTo(GoTarget::Block([1, 64, -3]))));
-        assert_eq!(p("goto there"), Ok(CompanionCommand::GoTo(GoTarget::Crosshair)));
-        assert_eq!(p("attack 42"), Ok(CompanionCommand::Attack(AttackTarget::Entity(42))));
-        assert_eq!(p("attack"), Ok(CompanionCommand::Attack(AttackTarget::NearestHostile)));
+        assert_eq!(
+            p("goto 1 64 -3"),
+            Ok(CompanionCommand::GoTo(GoTarget::Block([1, 64, -3])))
+        );
+        assert_eq!(
+            p("goto there"),
+            Ok(CompanionCommand::GoTo(GoTarget::Crosshair))
+        );
+        assert_eq!(
+            p("attack 42"),
+            Ok(CompanionCommand::Attack(AttackTarget::Entity(42)))
+        );
+        assert_eq!(
+            p("attack"),
+            Ok(CompanionCommand::Attack(AttackTarget::NearestHostile))
+        );
         assert_eq!(p("holdfire off"), Ok(CompanionCommand::HoldFire(false)));
         assert_eq!(p("crouch"), Ok(CompanionCommand::Crouch(true)));
+        assert_eq!(
+            p("collect 8 oak log"),
+            Ok(CompanionCommand::Collect {
+                what: Want::Item("minecraft:oak_log".into()),
+                count: 8
+            })
+        );
+        assert_eq!(
+            p("get #logs 3"),
+            Ok(CompanionCommand::Collect {
+                what: Want::Tag("minecraft:logs".into()),
+                count: 3
+            })
+        );
+        assert_eq!(
+            p("give me 4 oak_planks"),
+            Ok(CompanionCommand::Give {
+                what: Want::Item("minecraft:oak_planks".into()),
+                count: 4
+            })
+        );
+        assert_eq!(
+            p("make a wooden pickaxe"),
+            Ok(CompanionCommand::Craft {
+                item: "minecraft:wooden_pickaxe".into(),
+                count: 1,
+                gather: true
+            })
+        );
+        assert_eq!(
+            p("smelt 3 raw_iron"),
+            Ok(CompanionCommand::Smelt {
+                item: "minecraft:raw_iron".into(),
+                count: 3
+            })
+        );
+        assert_eq!(p("sleep"), Ok(CompanionCommand::Sleep));
+        assert!(p("collect").is_err());
+        assert!(p("collect 0 dirt").is_err());
+        // A work skill saved as words reads back the same.
+        for line in [
+            "collect 5 block:stone",
+            "give 2 #planks",
+            "make 1 torch",
+            "smelt 3 raw_iron",
+            "sleep",
+        ] {
+            let command = p(line).unwrap();
+            assert_eq!(command.words().as_deref(), Some(line));
+        }
         assert!(p("dance").is_err());
         assert!(p("goto 1 2").is_err());
     }

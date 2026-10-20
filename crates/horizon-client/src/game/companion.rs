@@ -79,6 +79,9 @@ pub(super) struct Body {
     pub recent: VecDeque<String>,
     pub random: u64,
     pub ticks: u64,
+    /// Its work skills: the task stack, the dig, the bow, the open menu
+    /// (game/companion_work.rs).
+    pub work: super::companion_work::Work,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -143,8 +146,19 @@ impl Body {
             Some(s @ (Skill::Idle | Skill::Stay | Skill::Defend)) => s,
             _ => Skill::Follow,
         };
-        let post = file.post.filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
+        let post = file
+            .post
+            .filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
         let hold_fire = file.hold_fire;
+        // The work it had on when the world was saved, taken up again.
+        let words: Vec<&str> = file
+            .task
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        let commands: VecDeque<CompanionCommand> =
+            c::parse_command(&words).ok().into_iter().collect();
         Self {
             conn,
             uuid,
@@ -152,7 +166,7 @@ impl Body {
             skill,
             resume: Skill::Follow,
             hold_fire,
-            commands: VecDeque::new(),
+            commands,
             post,
             target: None,
             ordered: false,
@@ -176,6 +190,7 @@ impl Body {
             recent: VecDeque::new(),
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
+            work: Default::default(),
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -192,8 +207,11 @@ impl Body {
             _ => Skill::Follow,
         };
         self.file.skill = skill.name().to_owned();
-        self.file.post = self.post.filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
+        self.file.post = self
+            .post
+            .filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
         self.file.hold_fire = self.hold_fire;
+        self.file.task = self.work.saved();
     }
     /// xorshift64*: the body's own randomness (teleport spots, item
     /// scatter), so that a companion never draws from the level's random.
@@ -230,6 +248,8 @@ pub(super) struct Companions {
     pub acting: bool,
     /// Path searches since the last `companion cost`, and their time.
     pub plans: (u32, std::time::Duration, std::time::Duration),
+    /// What the work skills cache: recipes, drops, their cost.
+    pub work: super::companion_work::WorkCache,
 }
 
 impl Companions {
@@ -258,7 +278,9 @@ impl Game<'_> {
         if self.companions.reports.len() == REPORTS {
             self.companions.reports.pop_front();
         }
-        self.companions.reports.push_back((b.file.name.clone(), report));
+        self.companions
+            .reports
+            .push_back((b.file.name.clone(), report));
     }
 
     /// Whether companions can play here: a world this window runs in its
@@ -278,7 +300,10 @@ impl Game<'_> {
 
     /// `/companion spawn [name]`: a companion joins beside its owner. A name
     /// this world's companions already have brings that one back.
-    pub(super) fn companion_spawn(&mut self, name: Option<&str>) -> std::result::Result<String, String> {
+    pub(super) fn companion_spawn(
+        &mut self,
+        name: Option<&str>,
+    ) -> std::result::Result<String, String> {
         self.companions_supported()?;
         let wanted = match name {
             Some(n) => Some(c::valid_name(n).ok_or("a name is 3 to 16 letters, digits or _")?),
@@ -294,7 +319,10 @@ impl Game<'_> {
         }
         let host = self.lan.as_ref().ok_or("no hub")?;
         let taken = |n: &str| {
-            host.hub.guests.iter().any(|g| g.name.eq_ignore_ascii_case(n))
+            host.hub
+                .guests
+                .iter()
+                .any(|g| g.name.eq_ignore_ascii_case(n))
                 || host.host_name.eq_ignore_ascii_case(n)
         };
         let file = match known {
@@ -320,7 +348,9 @@ impl Game<'_> {
                         let base = skin.rsplit('/').next().unwrap_or("Ari");
                         let mut name = format!("{}{}", base[..1].to_uppercase(), &base[1..]);
                         let mut n = 2;
-                        while taken(&name) || files.iter().any(|f| f.name.eq_ignore_ascii_case(&name)) {
+                        while taken(&name)
+                            || files.iter().any(|f| f.name.eq_ignore_ascii_case(&name))
+                        {
                             name = format!("{}{n}", &name[..base.len()]);
                             n += 1;
                         }
@@ -346,9 +376,17 @@ impl Game<'_> {
     /// Bring a companion's body into the hub: admitted and placed like a
     /// network player (its saved body loaded), then, `beside_owner`, moved
     /// next to its owner.
-    fn companion_join(&mut self, mut file: CompanionFile, beside_owner: bool) -> std::result::Result<(), String> {
+    fn companion_join(
+        &mut self,
+        mut file: CompanionFile,
+        beside_owner: bool,
+    ) -> std::result::Result<(), String> {
         let uuid = file.uuid().ok_or("the companion's file has no UUID")?;
-        let Some(owner) = self.player.as_ref().map(|p| [p.position.x, p.position.y, p.position.z]) else {
+        let Some(owner) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        else {
             return Err("you are not in the world yet".into());
         };
         let mut host = self.lan.take().ok_or("no hub")?;
@@ -423,7 +461,10 @@ impl Game<'_> {
     /// `/companion dismiss [name]`: the body leaves the world (saved, so the
     /// same name brings it back). The hub goes with the last companion when
     /// the world is not open to LAN.
-    pub(super) fn companion_dismiss(&mut self, name: Option<&str>) -> std::result::Result<String, String> {
+    pub(super) fn companion_dismiss(
+        &mut self,
+        name: Option<&str>,
+    ) -> std::result::Result<String, String> {
         let Some(mut host) = self.lan.take() else {
             return Err("no companion here".into());
         };
@@ -619,7 +660,8 @@ impl Game<'_> {
 
     /// The compact state text the brain reads (`summary::state_summary`).
     pub(super) fn companion_state_summary(&self, name: Option<&str>) -> Option<String> {
-        self.companion_perception(name).map(|p| summary::state_summary(&p))
+        self.companion_perception(name)
+            .map(|p| summary::state_summary(&p))
     }
 
     fn companion_perception(&self, name: Option<&str>) -> Option<Perception> {
@@ -628,7 +670,13 @@ impl Game<'_> {
         let g = host.hub.guest(b.conn)?;
         let items = self.res.items();
         let mut inventory: Vec<(String, u32)> = Vec::new();
-        for s in g.inventory.iter().chain(g.armor.iter()).chain([&g.offhand]).flatten() {
+        for s in g
+            .inventory
+            .iter()
+            .chain(g.armor.iter())
+            .chain([&g.offhand])
+            .flatten()
+        {
             match inventory.iter_mut().find(|(id, _)| **id == *s.item) {
                 Some(e) => e.1 += s.count,
                 None => inventory.push((s.item.to_string(), s.count)),
@@ -664,7 +712,12 @@ impl Game<'_> {
                 distance: c::distance(from, at),
             })
             .collect();
-        for other in host.hub.guests.iter().filter(|o| o.conn != b.conn && o.placed && !o.dead) {
+        for other in host
+            .hub
+            .guests
+            .iter()
+            .filter(|o| o.conn != b.conn && o.placed && !o.dead)
+        {
             if c::distance(from, other.position) <= 24.0 {
                 entities.push(Nearby {
                     id: format!("player {}", other.name),
@@ -695,7 +748,11 @@ impl Game<'_> {
             health: g.health,
             food: g.food,
             armor: armor as f32,
-            held: g.inventory.get(g.selected).and_then(|s| s.as_ref()).map(|s| s.item.to_string()),
+            held: g
+                .inventory
+                .get(g.selected)
+                .and_then(|s| s.as_ref())
+                .map(|s| s.item.to_string()),
             inventory,
             owner,
             entities,
@@ -707,10 +764,18 @@ impl Game<'_> {
     }
 
     fn companion_biome(&self, p: [f64; 3]) -> String {
-        let (x, y, z) = (p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32);
+        let (x, y, z) = (
+            p[0].floor() as i32,
+            p[1].floor() as i32,
+            p[2].floor() as i32,
+        );
         self.world.chunks.get(&(x >> 4, z >> 4)).map_or_else(
             || "unknown".to_owned(),
-            |ch| self.res.biomes().list[ch.biome(x, y, z) as usize].name.clone(),
+            |ch| {
+                self.res.biomes().list[ch.biome(x, y, z) as usize]
+                    .name
+                    .clone()
+            },
         )
     }
 
@@ -744,7 +809,11 @@ impl Game<'_> {
                     if !notable(&f.name) {
                         continue;
                     }
-                    let at = [f64::from(p[0]) + 0.5, f64::from(p[1]) + 0.5, f64::from(p[2]) + 0.5];
+                    let at = [
+                        f64::from(p[0]) + 0.5,
+                        f64::from(p[1]) + 0.5,
+                        f64::from(p[2]) + 0.5,
+                    ];
                     let d = c::distance(from, at);
                     match found.iter_mut().find(|n| *n.id == *f.name) {
                         Some(n) if n.distance <= d => {}
@@ -773,7 +842,12 @@ impl Game<'_> {
         let dir = super::view_vector(self.yaw, self.pitch);
         let block = self.clip_ray(eye, dir, range).map(|h| {
             let d = c::distance(eye, h.point);
-            let name = self.res.facts().get(self.world.block(h.pos[0], h.pos[1], h.pos[2])).name.to_string();
+            let name = self
+                .res
+                .facts()
+                .get(self.world.block(h.pos[0], h.pos[1], h.pos[2]))
+                .name
+                .to_string();
             (name, d)
         });
         let limit = block.as_ref().map_or(range, |b| b.1);
@@ -781,7 +855,9 @@ impl Game<'_> {
             .mobs
             .iter()
             .filter(|m| m.alive())
-            .filter_map(|m| super::ray_box(eye, dir, limit, m.bounds()).map(|d| (m.kind.id.to_string(), d)))
+            .filter_map(|m| {
+                super::ray_box(eye, dir, limit, m.bounds()).map(|d| (m.kind.id.to_string(), d))
+            })
             .min_by(|a, b| a.1.total_cmp(&b.1));
         mob.or(block)
     }
@@ -809,7 +885,10 @@ impl Game<'_> {
     }
 
     /// The control socket's `companion ...`.
-    pub(super) fn companion_control(&mut self, words: &[&str]) -> horizon_client::Result<Option<Value>> {
+    pub(super) fn companion_control(
+        &mut self,
+        words: &[&str],
+    ) -> horizon_client::Result<Option<Value>> {
         if words.first() != Some(&"companion") {
             return Ok(None);
         }
@@ -837,15 +916,19 @@ impl Game<'_> {
                 let rest = &words[1..];
                 // An optional companion name first.
                 let named = rest.first().copied().filter(|n| {
-                    self.lan
-                        .as_ref()
-                        .is_some_and(|h| h.companions.iter().any(|b| b.file.name.eq_ignore_ascii_case(n)))
+                    self.lan.as_ref().is_some_and(|h| {
+                        h.companions
+                            .iter()
+                            .any(|b| b.file.name.eq_ignore_ascii_case(n))
+                    })
                 });
                 let rest = &rest[usize::from(named.is_some())..];
                 let command = c::parse_command(rest)?;
                 let text = format!("{command:?}");
                 let name = self.companion_command(named, command)?;
-                Ok(json!({ "ok": true, "name": name, "command": text, "message": format!("{name}: {}", rest.join(" ")) }))
+                Ok(
+                    json!({ "ok": true, "name": name, "command": text, "message": format!("{name}: {}", rest.join(" ")) }),
+                )
             }
             Some("list" | "status") => {
                 let list = self.companion_list();
@@ -853,7 +936,13 @@ impl Game<'_> {
                     "no companions".to_owned()
                 } else {
                     list.iter()
-                        .map(|v| format!("{} ({})", v["name"].as_str().unwrap_or("?"), v["skill"].as_str().unwrap_or("?")))
+                        .map(|v| {
+                            format!(
+                                "{} ({})",
+                                v["name"].as_str().unwrap_or("?"),
+                                v["skill"].as_str().unwrap_or("?")
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
@@ -872,6 +961,11 @@ impl Game<'_> {
                 cost["plans"] = json!(plans);
                 cost["plans_ms"] = json!(total.as_secs_f64() * 1000.0);
                 cost["plan_max_ms"] = json!(max.as_secs_f64() * 1000.0);
+                if let Value::Object(work) = self.companion_work_cost() {
+                    for (k, v) in work {
+                        cost[k] = v;
+                    }
+                }
                 Ok(json!({ "ok": true, "cost": cost }))
             }
             Some("reports") => {
@@ -902,6 +996,11 @@ impl Game<'_> {
             .filter_map(|b| {
                 let g = host.hub.guest(b.conn)?;
                 let items: u32 = g.inventory.iter().flatten().map(|s| s.count).sum();
+                let mut counts = serde_json::Map::new();
+                for s in g.inventory.iter().chain([&g.offhand]).flatten() {
+                    let n = counts.get(&*s.item).and_then(Value::as_u64).unwrap_or(0);
+                    counts.insert(s.item.to_string(), json!(n + u64::from(s.count)));
+                }
                 Some(json!({
                     "name": b.file.name,
                     "uuid": b.file.uuid,
@@ -921,6 +1020,9 @@ impl Game<'_> {
                     "held": g.inventory.get(g.selected).and_then(|s| s.as_ref()).map(|s| s.item.to_string()),
                     "armor": g.armor.iter().map(|s| s.as_ref().map(|s| s.item.to_string())).collect::<Vec<_>>(),
                     "game_mode": g.game_mode,
+                    "sleeping": g.bed.is_some(),
+                    "inventory": counts,
+                    "task": b.work.status(),
                 }))
             })
             .collect();

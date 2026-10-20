@@ -136,6 +136,10 @@ impl GuestPlay {
     pub(super) fn using(&self) -> Option<(usize, u32)> {
         self.using
     }
+    /// The block being dug, as the client's START gave it.
+    pub(super) fn digging(&self) -> Option<[i32; 3]> {
+        self.digging.map(|(pos, _)| pos)
+    }
 }
 
 struct ItemRules<'a>(&'a horizon_client::items::Items);

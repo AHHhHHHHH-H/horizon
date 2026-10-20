@@ -327,7 +327,8 @@ pub const COMMANDS: &[Cmd] = &[
         &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], p("block", Ty::Str, "block state such as oak_stairs[facing=east]")], mcp: true, local: false),
     cmd!("companion", World, "companion spawn [NAME] | dismiss [NAME] | do [NAME] COMMAND | list | summary | reports | cost",
         "spawn, command and inspect AI companions (virtual players in the world)",
-        "do takes follow, stay, come, goto X Y Z | goto there, stop, attack [ID|nearest], defend, holdfire on|off, jump, crouch, eat. \
+        "do takes follow, stay, come, goto X Y Z | goto there, stop, attack [ID|nearest], defend, holdfire on|off, jump, crouch, eat, \
+         collect N ITEM (#tag, block:ID), give [me] N ITEM, craft N ITEM, make N ITEM (gathers what it lacks), smelt N ITEM, sleep. \
          list is each body's state, summary what its brain reads, reports what it did, cost the hub's tick time.",
         ["horizon-ctl companion spawn Ari", "horizon-ctl companion do Ari attack nearest", "horizon-ctl companion list"],
         &[p("action", Ty::Enum(&["spawn", "dismiss", "do", "list", "status", "summary", "reports", "cost"]), "what to do"),

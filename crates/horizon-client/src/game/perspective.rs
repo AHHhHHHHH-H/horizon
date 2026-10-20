@@ -128,7 +128,11 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
 }
 /// The slim-armed player (PlayerModel with slim arms), for the slim skins.
 pub(super) fn player_slim_type(root: &Path) -> Option<Arc<MobType>> {
-    player_type_with(root, "minecraft:player_slim#main", "entity/player/slim/alex")
+    player_type_with(
+        root,
+        "minecraft:player_slim#main",
+        "entity/player/slim/alex",
+    )
 }
 fn player_type_with(root: &Path, layer: &str, texture: &str) -> Option<Arc<MobType>> {
     horizon_client::mobs::load_model(root, layer).map(|model| {

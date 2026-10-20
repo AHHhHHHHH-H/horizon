@@ -75,3 +75,83 @@ pub fn best<T: PartialOrd + Copy>(
     }
     best
 }
+
+/// The tools a companion knows to ask for, cheapest first within each kind.
+pub const TOOLS: [&str; 25] = [
+    "minecraft:wooden_pickaxe",
+    "minecraft:stone_pickaxe",
+    "minecraft:copper_pickaxe",
+    "minecraft:iron_pickaxe",
+    "minecraft:diamond_pickaxe",
+    "minecraft:netherite_pickaxe",
+    "minecraft:wooden_shovel",
+    "minecraft:stone_shovel",
+    "minecraft:copper_shovel",
+    "minecraft:iron_shovel",
+    "minecraft:diamond_shovel",
+    "minecraft:netherite_shovel",
+    "minecraft:wooden_axe",
+    "minecraft:stone_axe",
+    "minecraft:copper_axe",
+    "minecraft:iron_axe",
+    "minecraft:diamond_axe",
+    "minecraft:netherite_axe",
+    "minecraft:wooden_hoe",
+    "minecraft:stone_hoe",
+    "minecraft:copper_hoe",
+    "minecraft:iron_hoe",
+    "minecraft:diamond_hoe",
+    "minecraft:netherite_hoe",
+    "minecraft:shears",
+];
+
+/// How well a stack digs `block` (`Tool.getMiningSpeed`), and whether the
+/// block drops with it (`Tool.isCorrectForDrops`, or the block needs no tool).
+pub fn dig_score(
+    items: &Items,
+    stack: Option<&ItemStack>,
+    block: &str,
+    requires_tool: bool,
+) -> (bool, f32) {
+    let speed = items.mining_speed(stack, block);
+    let drops = !requires_tool || items.correct_for_drops(stack, block);
+    (drops, speed)
+}
+
+/// The best stack of `stacks` to dig `block` with: one it drops with first,
+/// then the fastest; a slot with no tool (or an empty hand) when nothing
+/// beats the hand, so that a sword or a pickaxe isn't worn for nothing. None
+/// when the hand is as good and no slot is free of tools.
+pub fn best_tool(
+    items: &Items,
+    stacks: &[Option<ItemStack>],
+    block: &str,
+    requires_tool: bool,
+) -> Option<usize> {
+    let hand = dig_score(items, None, block, requires_tool);
+    let mut best: Option<(usize, (bool, f32))> = None;
+    for (i, s) in stacks.iter().enumerate() {
+        let Some(s) = s else { continue };
+        let score = dig_score(items, Some(s), block, requires_tool);
+        let better = |a: (bool, f32), b: (bool, f32)| a.0 && !b.0 || a.0 == b.0 && a.1 > b.1;
+        if better(score, hand) && best.is_none_or(|(_, b)| better(score, b)) {
+            best = Some((i, score));
+        }
+    }
+    best.map(|(i, _)| i).or_else(|| {
+        // Bare hands: an empty slot, else something that takes no wear.
+        stacks.iter().take(9).position(Option::is_none).or_else(|| {
+            stacks.iter().take(9).position(|s| {
+                s.as_ref()
+                    .is_some_and(|s| items.get(&s.item).is_none_or(|i| i.max_damage == 0))
+            })
+        })
+    })
+}
+
+/// The cheapest tool that makes `block` drop (`needs a stone pickaxe`).
+pub fn tool_needed(items: &Items, block: &str) -> Option<&'static str> {
+    TOOLS
+        .into_iter()
+        .find(|t| items.correct_for_drops(Some(&ItemStack::new(t, 1)), block))
+}

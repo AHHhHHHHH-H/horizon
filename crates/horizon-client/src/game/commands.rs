@@ -2415,26 +2415,15 @@ impl Game<'_> {
             .filter(|t| !t.trim().is_empty())
             .all(|term| split_top_level(term, '|').iter().any(|alt| test(alt)))
     }
-    fn cmd_clear(&mut self, ctx: &Context) -> R<i32> {
-        let targets = if ctx.get("targets").is_some() {
-            self.entities(ctx, "targets", true)?
-        } else {
-            vec![Target::Player]
-        };
-        let predicate = match ctx.get("item") {
-            Some(Arg::Item(i)) => i.clone(),
-            _ => ItemInput {
-                id: "*".into(),
-                tag: false,
-                any: true,
-                components: None,
-            },
-        };
-        let max = Self::int(ctx, "maxCount").unwrap_or(-1);
-        let counting = max == 0;
-        // Inventory.clearOrCountMatchingItems: main, armor, crafting grid, carried.
-        let mut removed = 0i32;
-        let mut budget = if max < 0 { i32::MAX } else { max };
+    /// Removes (or, when `counting`, only counts) up to `budget` items matching
+    /// `predicate` from the acting player's inventory; returns what it took and
+    /// the budget left.
+    fn clear_matching(
+        &mut self,
+        predicate: &ItemInput,
+        mut budget: i32,
+        counting: bool,
+    ) -> (i32, i32) {
         let all = |g: &Self| -> Vec<Option<ItemStack>> {
             let mut v: Vec<Option<ItemStack>> = g.inventory.clone();
             v.extend(g.armor.iter().cloned());
@@ -2444,11 +2433,9 @@ impl Game<'_> {
         };
         let matching: Vec<bool> = all(self)
             .iter()
-            .map(|s| {
-                s.as_ref()
-                    .is_some_and(|s| self.stack_matches(&predicate, s))
-            })
+            .map(|s| s.as_ref().is_some_and(|s| self.stack_matches(predicate, s)))
             .collect();
+        let mut removed = 0i32;
         let mut slots: Vec<&mut Option<ItemStack>> = Vec::new();
         slots.extend(self.inventory.iter_mut());
         slots.extend(self.armor.iter_mut());
@@ -2476,11 +2463,39 @@ impl Game<'_> {
                 }
             }
         }
+        (removed, budget)
+    }
+    fn cmd_clear(&mut self, ctx: &Context) -> R<i32> {
+        let targets = if ctx.get("targets").is_some() {
+            self.entities(ctx, "targets", true)?
+        } else {
+            vec![Target::Player]
+        };
+        let predicate = match ctx.get("item") {
+            Some(Arg::Item(i)) => i.clone(),
+            _ => ItemInput {
+                id: "*".into(),
+                tag: false,
+                any: true,
+                components: None,
+            },
+        };
+        let max = Self::int(ctx, "maxCount").unwrap_or(-1);
+        let counting = max == 0;
+        // Inventory.clearOrCountMatchingItems: main, armor, crafting grid, carried,
+        // for each target's own inventory (a guest's, not the host's), each up to maxCount.
+        let budget = if max < 0 { i32::MAX } else { max };
+        let mut removed = 0i32;
+        for &t in &targets {
+            removed += self
+                .for_player(t, |g| g.clear_matching(&predicate, budget, counting).0)
+                .unwrap_or(0);
+        }
         if removed == 0 {
             return Err(if targets.len() == 1 {
                 CommandError::new(Text::translate(
                     "clear.failed.single",
-                    &[Text::literal(self.acting_player_name())],
+                    &[self.target_name(targets[0])],
                 ))
             } else {
                 err("clear.failed.multiple", &[&targets.len()])
@@ -2491,7 +2506,7 @@ impl Game<'_> {
             &format!("commands.clear.{kind}.single"),
             &[
                 Text::literal(removed.to_string()),
-                Text::literal(self.acting_player_name()),
+                self.target_name(targets[0]),
             ],
         ));
         Ok(removed)
