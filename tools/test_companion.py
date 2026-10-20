@@ -304,7 +304,7 @@ def frame_cost(client, resources, work, offscreen):
             wait_for(endpoint, 'status', lambda v: v['player'] is not None and v['pending_chunks'] == 0,
                      timeout=180)
             command(endpoint, 'time 1000')
-            command(endpoint, 'command gamerule doDaylightCycle false')
+            command(endpoint, 'command gamerule advance_time false')
             command(endpoint, 'look 0 10')
             time.sleep(3)
             without = command(endpoint, 'bench 8', timeout=30)
