@@ -7,6 +7,7 @@
 //! whether the line needs the brain: chat, questions, persona changes, insults and praise always do,
 //! and so does anything the vote is unsure about.
 use crate::sidecar::{Launch, Sidecar};
+use horizon_companion::reflex;
 use serde_json::{Value, json};
 use std::{
     fs, io,
@@ -838,6 +839,84 @@ impl Embed for EmbedClient {
     }
 }
 
+/// The classifier as the reflexes' second stage (`horizon_companion::reflex::IntentClassifier`): a
+/// line is embedded by the server and voted on here. Its verdict is final: this classifier's own
+/// thresholds were tuned on the bank, so give it a `Pipeline` with a zero threshold and margin
+/// ([`ReflexClassifier::pipeline`]).
+pub struct ReflexClassifier {
+    pub classifier: Classifier,
+    pub client: EmbedClient,
+}
+
+impl ReflexClassifier {
+    /// The reflex pipeline over this classifier.
+    pub fn pipeline(self) -> reflex::Pipeline<ReflexClassifier> {
+        let mut pipeline = reflex::Pipeline::new(self);
+        pipeline.threshold = 0.0;
+        pipeline.margin = 0.0;
+        pipeline
+    }
+}
+
+impl reflex::IntentClassifier for ReflexClassifier {
+    fn classify(&self, utterance: &str, _language: &str) -> Option<reflex::Classification> {
+        let verdict = self.classifier.classify(&self.client, utterance).ok()?;
+        Some(to_reflex(&verdict))
+    }
+}
+
+/// A verdict in the reflexes' terms: a command with its slots, or a line for the brain.
+pub fn to_reflex(verdict: &Verdict) -> reflex::Classification {
+    let to_brain = reflex::Classification {
+        ranked: Vec::new(),
+        needs_brain: true,
+    };
+    let Some(intent) = verdict.command() else {
+        return to_brain;
+    };
+    let item = verdict.slots.item.clone();
+    let count = verdict.slots.count;
+    let intent = match intent {
+        Intent::Follow => reflex::Intent::Follow,
+        Intent::Stay => reflex::Intent::Stay,
+        Intent::Come => reflex::Intent::Come,
+        Intent::Stop => reflex::Intent::Stop,
+        Intent::GoTo => reflex::Intent::GoTo {
+            target: reflex::Target::Crosshair { kind: None },
+        },
+        Intent::Attack => reflex::Intent::Attack { target: None },
+        Intent::Defend => reflex::Intent::Defend,
+        Intent::HoldFire => reflex::Intent::HoldFire(true),
+        Intent::Fire => reflex::Intent::HoldFire(false),
+        Intent::Jump => reflex::Intent::Jump,
+        Intent::Crouch => reflex::Intent::Crouch(true),
+        Intent::Stand => reflex::Intent::Crouch(false),
+        Intent::Eat => reflex::Intent::Eat,
+        Intent::Sleep => reflex::Intent::Sleep,
+        Intent::Collect | Intent::Give | Intent::Craft => {
+            let Some(item) = item else {
+                return to_brain;
+            };
+            match intent {
+                Intent::Collect => reflex::Intent::Collect { item, count },
+                Intent::Give => reflex::Intent::Give { item, count },
+                _ => reflex::Intent::Craft { item, count },
+            }
+        }
+        Intent::ChitChat
+        | Intent::Question
+        | Intent::PersonaChange
+        | Intent::Insult
+        | Intent::Praise
+        | Intent::NotAddressed => return to_brain,
+    };
+    let share = verdict.ranked.first().map_or(1.0, |r| r.1);
+    reflex::Classification {
+        ranked: vec![(intent, share)],
+        needs_brain: false,
+    }
+}
+
 /// Where the bank's vectors are cached for a model.
 pub fn cache_dir(companion: &Path) -> PathBuf {
     companion.join("cache")
@@ -847,6 +926,42 @@ pub fn cache_dir(companion: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    fn verdict(intent: Intent, item: Option<&str>, needs_brain: bool) -> Verdict {
+        Verdict {
+            ranked: vec![(intent, 0.8)],
+            best_similarity: 0.95,
+            slots: Slots {
+                item: item.map(str::to_owned),
+                count: Some(3),
+            },
+            needs_brain,
+        }
+    }
+
+    #[test]
+    fn verdicts_become_reflex_commands_or_go_to_the_brain() {
+        let c = to_reflex(&verdict(Intent::Give, Some("torch"), false));
+        assert!(!c.needs_brain);
+        assert_eq!(
+            c.ranked,
+            vec![(
+                reflex::Intent::Give {
+                    item: "torch".into(),
+                    count: Some(3)
+                },
+                0.8
+            )]
+        );
+        assert_eq!(
+            to_reflex(&verdict(Intent::Fire, None, false)).ranked[0].0,
+            reflex::Intent::HoldFire(false)
+        );
+        // Talk, an unsure vote and an order without its item are the brain's.
+        assert!(to_reflex(&verdict(Intent::ChitChat, None, false)).needs_brain);
+        assert!(to_reflex(&verdict(Intent::Follow, None, true)).needs_brain);
+        assert!(to_reflex(&verdict(Intent::Collect, None, false)).needs_brain);
+    }
 
     /// A toy embedder: character trigram hashes. Enough to check the vote, the cache and the
     /// rules without a model.

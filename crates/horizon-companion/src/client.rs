@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use crate::reply::{self, Reply, SayStream, Sentences};
+use crate::reply::{self, Reply, SayStream, Sentences, Tone};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,10 +123,11 @@ pub struct Stats {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// A complete sentence of `say`, for chat and the voice.
+    /// A complete sentence of `say`, for chat and the voice, and the reply's tone so far.
     Sentence {
         id: u64,
         text: String,
+        tone: Tone,
     },
     /// The whole reply, parsed.
     Done {
@@ -183,8 +184,8 @@ impl Brain {
                         &agent,
                         &worker_endpoint,
                         &job.request,
-                        &mut |text| {
-                            let _ = event_tx.send(Event::Sentence { id, text });
+                        &mut |text, tone| {
+                            let _ = event_tx.send(Event::Sentence { id, text, tone });
                         },
                         &|| id <= worker_cancelled.load(Ordering::Relaxed),
                     );
@@ -297,7 +298,7 @@ pub fn stream_chat(
     agent: &ureq::Agent,
     endpoint: &Endpoint,
     request: &ChatRequest,
-    sentence: &mut dyn FnMut(String),
+    sentence: &mut dyn FnMut(String, Tone),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Reply, String, Stats), String> {
     let started = Instant::now();
@@ -322,9 +323,10 @@ pub fn stream_chat(
     let mut stats = Stats::default();
     let (mut raw, mut say, mut sentences) = (String::new(), SayStream::new(), Sentences::new());
     let mut chunks = 0u64;
-    let mut emit = |text: String, stats: &mut Stats| {
+    let mut tone = None;
+    let mut emit = |text: String, tone: Option<Tone>, stats: &mut Stats| {
         stats.first_sentence.get_or_insert(started.elapsed());
-        sentence(text);
+        sentence(text, tone.unwrap_or_default());
     };
     for line in BufReader::new(response.into_reader()).lines() {
         if cancelled() {
@@ -360,14 +362,17 @@ pub fn stream_chat(
         chunks += 1;
         stats.first_token.get_or_insert(started.elapsed());
         raw.push_str(delta);
+        if tone.is_none() {
+            tone = reply::tone_so_far(&raw);
+        }
         let text = say.push(delta);
         for s in sentences.push(&text) {
-            emit(s, &mut stats);
+            emit(s, tone, &mut stats);
         }
         if say.finished()
             && let Some(rest) = sentences.finish()
         {
-            emit(rest, &mut stats);
+            emit(rest, tone, &mut stats);
         }
     }
     stats.total = started.elapsed();
@@ -381,7 +386,7 @@ pub fn stream_chat(
             cut_all(&reply.say)
         };
         for s in pieces {
-            emit(s, &mut stats);
+            emit(s, Some(reply.tone), &mut stats);
         }
     }
     stats.completion_tokens.get_or_insert(chunks);
@@ -594,8 +599,14 @@ mod tests {
         let mut sentences = Vec::new();
         let done = loop {
             match brain.try_recv() {
-                Some(Event::Sentence { id: got, text }) => {
+                Some(Event::Sentence {
+                    id: got,
+                    text,
+                    tone,
+                }) => {
                     assert_eq!(got, id);
+                    // Known from the first sentence on: the voice starts in the right delivery.
+                    assert_eq!(tone, Tone::Sarcastic);
                     sentences.push(text);
                 }
                 Some(Event::Done {
@@ -662,7 +673,7 @@ mod tests {
             &agent,
             &endpoint,
             &ChatRequest::turn(vec![]),
-            &mut |s| said.push(s),
+            &mut |s, _| said.push(s),
             &|| false,
         )
         .unwrap();

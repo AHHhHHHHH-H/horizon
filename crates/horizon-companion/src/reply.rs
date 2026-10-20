@@ -76,6 +76,23 @@ impl Skill {
     pub fn from_name(name: &str) -> Option<Skill> {
         Skill::ALL.into_iter().find(|s| s.name() == name)
     }
+
+    /// The skills a brain of this tier may run (`None`: a brain outside the catalogue, all of them).
+    ///
+    /// The Light brain (Qwen3.5 2B) writes valid JSON every time but picks poorly. Over its 100
+    /// benchmark answers (five runs: Metal en/fr/long, two CPU threads en/fr), running every action
+    /// it wrote made 60 % of turns sensible and ran a wrong skill in 40 %. Keeping only
+    /// follow/stay/attack/defend: 68 % sensible, 15 % wrong. Running none: 70 % sensible, 0 % wrong,
+    /// 30 % missing a skill the turn needed. Craft was the one skill it used well (11 of 12 uses fit
+    /// the turn): with craft alone, 74 % sensible and 1 % wrong. Commands reach the rules and the
+    /// classifier first anyway, so on Light those carry the orders and the brain mostly talks.
+    /// Standard (87 % sensible, 13 % wrong with every action) and the bigger tiers keep them all.
+    pub fn allowed_for(tier: Option<crate::catalogue::Tier>) -> Option<&'static [Skill]> {
+        match tier {
+            Some(crate::catalogue::Tier::Light) => Some(&[Skill::Craft]),
+            _ => None,
+        }
+    }
 }
 
 /// How `say` is delivered by the voice (Qwen3-TTS takes it as an instruction; Pocket TTS maps it to
@@ -154,6 +171,19 @@ pub const SCHEMA: &str = r#"{"type":"object","properties":{"tone":{"type":"strin
 
 /// OpenAI's strict mode: every property required (optional ones nullable), no length or range limits.
 pub const SCHEMA_STRICT: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string"},"actions":{"type":"array","items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft"]},"item":{"type":["string","null"]},"count":{"type":["integer","null"]},"target":{"type":["string","null"]}},"required":["skill","item","count","target"],"additionalProperties":false}},"remember":{"type":["string","null"]}},"required":["tone","say","actions","remember"],"additionalProperties":false}"#;
+
+/// The tone of a reply still being written, once its `"tone"` value is complete (it comes first, so
+/// the voice knows it before the first sentence of `say`).
+pub fn tone_so_far(raw: &str) -> Option<Tone> {
+    let rest = &raw[raw.find("\"tone\"")? + 6..];
+    let rest = rest
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Tone::from_name(&rest[..end])
+}
 
 /// Parses a whole reply. Models without a schema sometimes wrap the JSON in a code fence, think aloud
 /// first, or answer in plain text; plain text becomes `say` with no actions.
@@ -521,6 +551,31 @@ fn is_closer(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tone_is_known_before_say_ends() {
+        assert_eq!(tone_so_far(r#"{"tone":"sho"#), None);
+        assert_eq!(
+            tone_so_far(r#"{"tone": "shout", "say": "Zom"#),
+            Some(Tone::Shout)
+        );
+        assert_eq!(
+            tone_so_far(r#"{"say":"hi","tone":"whisper"}"#),
+            Some(Tone::Whisper)
+        );
+        assert_eq!(tone_so_far(r#"{"tone":"singing""#), None);
+    }
+
+    #[test]
+    fn light_keeps_only_craft() {
+        use crate::catalogue::Tier;
+        assert_eq!(
+            Skill::allowed_for(Some(Tier::Light)),
+            Some(&[Skill::Craft][..])
+        );
+        assert_eq!(Skill::allowed_for(Some(Tier::Standard)), None);
+        assert_eq!(Skill::allowed_for(None), None);
+    }
 
     #[test]
     fn schemas_are_json_with_tone_then_say_first() {

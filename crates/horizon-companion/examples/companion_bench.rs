@@ -427,7 +427,7 @@ fn main() {
         let mut sentences = Vec::new();
         let (reply, raw, stats) = loop {
             match brain.try_recv() {
-                Some(Event::Sentence { id: got, text }) if got == id => {
+                Some(Event::Sentence { id: got, text, .. }) if got == id => {
                     sentences.push((asked.elapsed(), text))
                 }
                 Some(Event::Done {
