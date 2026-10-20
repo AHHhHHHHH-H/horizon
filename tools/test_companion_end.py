@@ -2,7 +2,7 @@
 """The companion's End route, end to end (docs/companion-speedrun.md, "The
 End"): a companion stands in a stronghold-like portal room with some frames
 filled, carrying what a speedrunner brings (iron armour or none, an iron
-sword and pickaxe, a bow and about 30 arrows, blocks, food, the missing
+sword and pickaxe, a bow and a stack of arrows, blocks, food, the missing
 eyes, beds for the bed variant). Its owner watches (Watch mode, a spectator
 camera), the game runs under `/tick sprint` at difficulty Normal, and the
 companion is told `companion do end <level> [beds]`: it fills the frames,
@@ -224,7 +224,7 @@ def main():
     parser.add_argument('--levels', nargs='+', default=['all', 'fair'])
     parser.add_argument('--beds', action='store_true', help='the bed one-cycle at perches')
     parser.add_argument('--armour', choices=('iron', 'none'), default='iron')
-    parser.add_argument('--arrows', type=int, default=30)
+    parser.add_argument('--arrows', type=int, default=64)
     parser.add_argument('--jobs', type=int, default=2, help='clients at a time')
     parser.add_argument('--timeout', type=int, default=1800, help='wall seconds a run may take')
     parser.add_argument('--keep', type=Path, help='keep each run\'s log and status trail here')
