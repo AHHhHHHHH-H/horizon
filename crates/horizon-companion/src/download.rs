@@ -60,9 +60,20 @@ pub enum Error {
     /// The server answered with an error or the connection failed `RETRIES` times.
     Http(String),
     Io(io::Error),
-    Checksum { file: String, expected: String, actual: String },
-    Size { file: String, expected: u64, actual: u64 },
-    NoSpace { needed: u64, free: u64 },
+    Checksum {
+        file: String,
+        expected: String,
+        actual: String,
+    },
+    Size {
+        file: String,
+        expected: u64,
+        actual: u64,
+    },
+    NoSpace {
+        needed: u64,
+        free: u64,
+    },
     Archive(String),
 }
 
@@ -73,9 +84,16 @@ impl std::fmt::Display for Error {
             Error::Http(e) => write!(f, "Download failed: {e}"),
             Error::Io(e) => write!(f, "Disk error: {e}"),
             Error::Checksum { file, .. } => {
-                write!(f, "{file} is damaged (its SHA-256 doesn't match); it will download again")
+                write!(
+                    f,
+                    "{file} is damaged (its SHA-256 doesn't match); it will download again"
+                )
             }
-            Error::Size { file, expected, actual } => {
+            Error::Size {
+                file,
+                expected,
+                actual,
+            } => {
                 write!(f, "{file} has {actual} bytes instead of {expected}")
             }
             Error::NoSpace { needed, free } => write!(
@@ -213,7 +231,9 @@ fn remove_all(path: &Path) -> io::Result<()> {
 
 /// `models/qwen` → `models/.qwen.partial`: beside it, so the final rename stays on one disk.
 fn partial_dir(dir: &Path) -> PathBuf {
-    let name = dir.file_name().map_or_else(Default::default, |n| n.to_string_lossy().into_owned());
+    let name = dir
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy().into_owned());
     dir.with_file_name(format!(".{name}.partial"))
 }
 
@@ -234,7 +254,12 @@ pub fn install_files(
         if let Some(parent) = part.parent() {
             fs::create_dir_all(parent)?;
         }
-        fetch(file, &part, &mut |p| progress(offset(p, base, total)), cancel)?;
+        fetch(
+            file,
+            &part,
+            &mut |p| progress(offset(p, base, total)),
+            cancel,
+        )?;
         base += file.size;
     }
     for file in files {
@@ -339,13 +364,19 @@ pub fn fetch(
     }
     let mut hasher = Sha256::new();
     if have > 0 {
-        hash_prefix(&mut out, have, &mut hasher, &mut |done| {
-            progress(Progress {
-                phase: Phase::Resuming,
-                done,
-                total: file.size,
-            })
-        }, cancel)?;
+        hash_prefix(
+            &mut out,
+            have,
+            &mut hasher,
+            &mut |done| {
+                progress(Progress {
+                    phase: Phase::Resuming,
+                    done,
+                    total: file.size,
+                })
+            },
+            cancel,
+        )?;
     }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(15))
@@ -354,7 +385,15 @@ pub fn fetch(
         .build();
     let mut failures = 0;
     while have < file.size {
-        match fetch_from(&agent, file, &mut out, &mut have, &mut hasher, progress, cancel) {
+        match fetch_from(
+            &agent,
+            file,
+            &mut out,
+            &mut have,
+            &mut hasher,
+            progress,
+            cancel,
+        ) {
             Ok(()) => {}
             Err(Error::Http(e)) if failures < RETRIES => {
                 failures += 1;
@@ -403,7 +442,11 @@ fn fetch_from(
             return Err(Error::Http("the server refused to resume".into()));
         }
         Err(ureq::Error::Status(code, r)) => {
-            return Err(Error::Http(format!("{} answered {code} {}", host(&file.url), r.status_text())));
+            return Err(Error::Http(format!(
+                "{} answered {code} {}",
+                host(&file.url),
+                r.status_text()
+            )));
         }
         Err(e) => return Err(Error::Http(e.to_string())),
     };
@@ -484,7 +527,10 @@ fn hash_prefix(
 }
 
 fn host(url: &str) -> &str {
-    url.split("//").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url)
+    url.split("//")
+        .nth(1)
+        .and_then(|r| r.split('/').next())
+        .unwrap_or(url)
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -531,7 +577,9 @@ fn find_dir_with(dir: &Path, file: &str, depth: u32) -> Option<PathBuf> {
         .filter(|p| p.is_dir())
         .collect();
     subdirs.sort();
-    subdirs.into_iter().find_map(|d| find_dir_with(&d, file, depth - 1))
+    subdirs
+        .into_iter()
+        .find_map(|d| find_dir_with(&d, file, depth - 1))
 }
 
 /// Free bytes on the disk holding `dir`.
@@ -585,7 +633,12 @@ pub(crate) mod tests {
         pub ranges: Arc<Mutex<Vec<Option<String>>>>,
     }
 
-    pub(crate) fn serve(body: Vec<u8>, ignore_range: bool, drops: usize, drop_after: usize) -> Server {
+    pub(crate) fn serve(
+        body: Vec<u8>,
+        ignore_range: bool,
+        drops: usize,
+        drop_after: usize,
+    ) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
         let ranges = Arc::new(Mutex::new(Vec::new()));
@@ -619,7 +672,10 @@ pub(crate) mod tests {
                         body.len()
                     )
                 } else {
-                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len())
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        part.len()
+                    )
                 };
                 let _ = stream.write_all(head.as_bytes());
                 if drops > 0 {
@@ -634,7 +690,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("horizon-companion-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("horizon-companion-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -660,10 +717,19 @@ pub(crate) mod tests {
         let dir = scratch("plain");
         let part = dir.join("file.bin.part");
         let mut last = None;
-        fetch(&fetch_of(&server, &data), &part, &mut |p| last = Some(p), &AtomicBool::new(false)).unwrap();
+        fetch(
+            &fetch_of(&server, &data),
+            &part,
+            &mut |p| last = Some(p),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(&part).unwrap(), data);
         let last = last.unwrap();
-        assert_eq!((last.phase, last.done, last.total), (Phase::Downloading, 300_000, 300_000));
+        assert_eq!(
+            (last.phase, last.done, last.total),
+            (Phase::Downloading, 300_000, 300_000)
+        );
         assert_eq!(*server.ranges.lock().unwrap(), [None]);
     }
 
@@ -675,7 +741,13 @@ pub(crate) mod tests {
         let part = dir.join("file.bin.part");
         fs::write(&part, &data[..123_456]).unwrap();
         let mut phases = Vec::new();
-        fetch(&fetch_of(&server, &data), &part, &mut |p| phases.push(p.phase), &AtomicBool::new(false)).unwrap();
+        fetch(
+            &fetch_of(&server, &data),
+            &part,
+            &mut |p| phases.push(p.phase),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(&part).unwrap(), data);
         assert_eq!(*server.ranges.lock().unwrap(), [Some("123456-".to_owned())]);
         assert_eq!(phases.first(), Some(&Phase::Resuming));
@@ -688,7 +760,13 @@ pub(crate) mod tests {
         let dir = scratch("norange");
         let part = dir.join("file.bin.part");
         fs::write(&part, &data[..10_000]).unwrap();
-        fetch(&fetch_of(&server, &data), &part, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        fetch(
+            &fetch_of(&server, &data),
+            &part,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(&part).unwrap(), data);
     }
 
@@ -698,7 +776,13 @@ pub(crate) mod tests {
         let server = serve(data.clone(), false, 2, 100_000);
         let dir = scratch("dropped");
         let part = dir.join("file.bin.part");
-        fetch(&fetch_of(&server, &data), &part, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        fetch(
+            &fetch_of(&server, &data),
+            &part,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(&part).unwrap(), data);
         assert_eq!(
             *server.ranges.lock().unwrap(),
@@ -726,7 +810,13 @@ pub(crate) mod tests {
         let dir = scratch("cancel");
         let part = dir.join("file.bin.part");
         fs::write(&part, &data[..5_000]).unwrap();
-        let err = fetch(&fetch_of(&server, &data), &part, &mut |_| {}, &AtomicBool::new(true)).unwrap_err();
+        let err = fetch(
+            &fetch_of(&server, &data),
+            &part,
+            &mut |_| {},
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
         assert_eq!(fs::metadata(&part).unwrap().len(), 5_000);
     }
@@ -740,7 +830,13 @@ pub(crate) mod tests {
             size: 1 << 60,
             sha256: "0".repeat(64),
         };
-        let err = install_files(&[huge], &dir.join("models/huge"), &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
+        let err = install_files(
+            &[huge],
+            &dir.join("models/huge"),
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::NoSpace { .. }), "{err}");
     }
 
@@ -752,17 +848,29 @@ pub(crate) mod tests {
         let target = dir.join("companion/models/test-model");
         let file = fetch_of(&server, &data);
         let mut fractions = Vec::new();
-        install_files(&[file], &target, &mut |p| fractions.push(p.fraction()), &AtomicBool::new(false)).unwrap();
+        install_files(
+            &[file],
+            &target,
+            &mut |p| fractions.push(p.fraction()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(target.join("file.bin")).unwrap(), data);
         assert!(target.join(INSTALLED).exists());
-        assert!(!partial_dir(&target).exists() || fs::read_dir(partial_dir(&target)).unwrap().next().is_none());
+        assert!(
+            !partial_dir(&target).exists()
+                || fs::read_dir(partial_dir(&target)).unwrap().next().is_none()
+        );
         assert_eq!(fractions.last(), Some(&1.0));
         remove_all(&target).unwrap();
         assert!(!target.exists());
     }
 
     fn tar_gz(entries: &[(&str, &[u8])], links: &[(&str, &str)]) -> Vec<u8> {
-        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
         for (path, data) in entries {
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
@@ -783,7 +891,10 @@ pub(crate) mod tests {
     #[test]
     fn installs_a_tar_gz_runtime_with_its_symlinks() {
         let archive = tar_gz(
-            &[("llama-b1/llama-server", b"#!/bin/sh\n"), ("llama-b1/libllama.0.1.dylib", b"lib")],
+            &[
+                ("llama-b1/llama-server", b"#!/bin/sh\n"),
+                ("llama-b1/libllama.0.1.dylib", b"lib"),
+            ],
             &[("llama-b1/libllama.dylib", "libllama.0.1.dylib")],
         );
         let server = serve(archive.clone(), false, 0, 0);
@@ -791,16 +902,29 @@ pub(crate) mod tests {
         let target = dir.join("companion/runtime/b1-test");
         let mut fetch = fetch_of(&server, &archive);
         fetch.path = "llama-b1-bin-macos-arm64.tar.gz".into();
-        install_archive(&fetch, "llama-server", &target, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        install_archive(
+            &fetch,
+            "llama-server",
+            &target,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert!(target.join("llama-server").is_file());
         assert!(target.join(INSTALLED).exists());
         assert!(!partial_dir(&target).exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(target.join("llama-server")).unwrap().permissions().mode();
+            let mode = fs::metadata(target.join("llama-server"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o111, 0o111);
-            assert_eq!(fs::read_link(target.join("libllama.dylib")).unwrap(), Path::new("libllama.0.1.dylib"));
+            assert_eq!(
+                fs::read_link(target.join("libllama.dylib")).unwrap(),
+                Path::new("libllama.0.1.dylib")
+            );
             assert_eq!(fs::read(target.join("libllama.dylib")).unwrap(), b"lib");
         }
     }
@@ -808,8 +932,12 @@ pub(crate) mod tests {
     #[test]
     fn installs_a_flat_zip_runtime() {
         let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
-        for (name, data) in [("llama-server.exe", &b"MZ"[..]), ("ggml-vulkan.dll", b"dll")] {
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        for (name, data) in [
+            ("llama-server.exe", &b"MZ"[..]),
+            ("ggml-vulkan.dll", b"dll"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             zip.write_all(data).unwrap();
         }
         let archive = zip.finish().unwrap().into_inner();
@@ -818,7 +946,14 @@ pub(crate) mod tests {
         let target = dir.join("companion/runtime/b1-win");
         let mut fetch = fetch_of(&server, &archive);
         fetch.path = "llama-b1-bin-win-vulkan-x64.zip".into();
-        install_archive(&fetch, "llama-server.exe", &target, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        install_archive(
+            &fetch,
+            "llama-server.exe",
+            &target,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(target.join("ggml-vulkan.dll")).unwrap(), b"dll");
         assert!(target.join(INSTALLED).exists());
     }
@@ -831,7 +966,14 @@ pub(crate) mod tests {
         let target = dir.join("companion/runtime/b1");
         let mut fetch = fetch_of(&server, &archive);
         fetch.path = "a.tar.gz".into();
-        let err = install_archive(&fetch, "llama-server", &target, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
+        let err = install_archive(
+            &fetch,
+            "llama-server",
+            &target,
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Archive(_)), "{err}");
         assert!(!target.exists());
     }
@@ -840,9 +982,15 @@ pub(crate) mod tests {
     fn layout_paths() {
         let layout = Layout::new(Path::new("/data"));
         let build = crate::catalogue::runtime_builds("macos", "aarch64")[0];
-        assert_eq!(layout.runtime_dir(build), Path::new("/data/companion/runtime/b11756-macos-aarch64-metal"));
+        assert_eq!(
+            layout.runtime_dir(build),
+            Path::new("/data/companion/runtime/b11756-macos-aarch64-metal")
+        );
         let light = crate::catalogue::Tier::Light.model();
-        assert_eq!(layout.model_dir(light), Path::new("/data/companion/models/qwen3.5-2b-q4_k_m"));
+        assert_eq!(
+            layout.model_dir(light),
+            Path::new("/data/companion/models/qwen3.5-2b-q4_k_m")
+        );
         assert_eq!(layout.installed_model(light), None);
         assert!(free_space(&std::env::temp_dir()).unwrap() > 0);
     }

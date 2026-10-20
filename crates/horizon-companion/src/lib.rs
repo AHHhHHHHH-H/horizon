@@ -6,10 +6,11 @@
 //! threads and report over channels the game polls once per tick.
 
 pub mod catalogue;
+pub mod client;
 pub mod download;
 pub mod hardware;
-pub mod client;
-pub mod reply;
-pub mod runtime;
+pub mod phrases;
 pub mod prompt;
 pub mod reflex;
+pub mod reply;
+pub mod runtime;

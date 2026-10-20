@@ -10,9 +10,9 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::catalogue::Family;
@@ -53,7 +53,13 @@ pub struct LaunchConfig {
 impl LaunchConfig {
     /// The brain, by the design's rules for this PC: threads from the physical cores, GPU offload from
     /// the devices.
-    pub fn for_hardware(server: &Path, model: &Path, family: Family, hw: &Hardware, log: &Path) -> LaunchConfig {
+    pub fn for_hardware(
+        server: &Path,
+        model: &Path,
+        family: Family,
+        hw: &Hardware,
+        log: &Path,
+    ) -> LaunchConfig {
         let model_bytes = fs::metadata(model).map_or(0, |m| m.len());
         LaunchConfig {
             server: server.to_owned(),
@@ -68,7 +74,13 @@ impl LaunchConfig {
     }
 
     /// An embedding model on `threads` CPU threads, leaving the GPU to the game and the brain.
-    pub fn embeddings(server: &Path, model: &Path, threads: usize, context: u32, log: &Path) -> LaunchConfig {
+    pub fn embeddings(
+        server: &Path,
+        model: &Path,
+        threads: usize,
+        context: u32,
+        log: &Path,
+    ) -> LaunchConfig {
         LaunchConfig {
             server: server.to_owned(),
             model: model.to_owned(),
@@ -124,14 +136,22 @@ impl LaunchConfig {
                     .map(String::from),
                 );
                 if family == Family::Qwen35 {
-                    args.extend(["--chat-template-kwargs".into(), r#"{"enable_thinking":false}"#.into()]);
+                    args.extend([
+                        "--chat-template-kwargs".into(),
+                        r#"{"enable_thinking":false}"#.into(),
+                    ]);
                 }
             }
             Mode::Embeddings => args.push("--embeddings".into()),
         }
         match &self.offload {
             Offload::All { device } => {
-                args.extend(["--device".into(), device.clone(), "--gpu-layers".into(), "all".into()]);
+                args.extend([
+                    "--device".into(),
+                    device.clone(),
+                    "--gpu-layers".into(),
+                    "all".into(),
+                ]);
             }
             Offload::Fit { device } => args.extend([
                 "--device".into(),
@@ -142,7 +162,12 @@ impl LaunchConfig {
                 hardware::GAME_VRAM_MB.to_string(),
             ]),
             Offload::None => {
-                args.extend(["--device".into(), "none".into(), "--gpu-layers".into(), "0".into()]);
+                args.extend([
+                    "--device".into(),
+                    "none".into(),
+                    "--gpu-layers".into(),
+                    "0".into(),
+                ]);
             }
         }
         args.extend(self.extra_args.iter().cloned());
@@ -159,7 +184,9 @@ pub fn extra_vram_mb(model_bytes: u64) -> u64 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
     Loading,
-    Ready { load_time: Duration },
+    Ready {
+        load_time: Duration,
+    },
     /// It exited or never answered; the text has the reason and the end of its log.
     Failed(String),
 }
@@ -318,7 +345,9 @@ impl Drop for Runtime {
 
 fn free_port() -> io::Result<u16> {
     // The OS picks a free port; it stays free for the moment the runtime takes to bind it.
-    Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
 }
 
 fn random_key() -> io::Result<String> {
@@ -342,7 +371,10 @@ pub fn log_tail(path: &Path, lines: usize) -> String {
 
 #[cfg(unix)]
 fn process_rss_mb(pid: u32) -> Option<u64> {
-    let out = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().ok()?;
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
     let kb: u64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
     Some(kb / 1024)
 }
@@ -350,7 +382,11 @@ fn process_rss_mb(pid: u32) -> Option<u64> {
 #[cfg(windows)]
 fn process_rss_mb(pid: u32) -> Option<u64> {
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &format!("(Get-Process -Id {pid}).WorkingSet64")])
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-Process -Id {pid}).WorkingSet64"),
+        ])
         .output()
         .ok()?;
     let bytes: u64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
@@ -383,10 +419,8 @@ fn spawn_guarded(command: &mut Command) -> io::Result<(Child, Guard)> {
         });
     }
     let child = command.spawn()?;
-    let watchdog = match watchdog(child.id() as libc::pid_t) {
-        Ok(w) => Some(w),
-        Err(_) => None,
-    };
+    // Without a watchdog (fork failed) the runtime still stops with the world, just not with a crash.
+    let watchdog = watchdog(child.id() as libc::pid_t).ok();
     Ok((child, Guard { watchdog }))
 }
 
@@ -404,7 +438,10 @@ fn watchdog(group: libc::pid_t) -> io::Result<(libc::pid_t, std::os::fd::OwnedFd
         // other program the game starts, so only the game holds the write end.
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: `limit` is a writable rlimit.
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
     let max_fd = (limit.rlim_cur as i64).clamp(256, 65536) as libc::c_int;
@@ -445,12 +482,18 @@ fn watchdog(group: libc::pid_t) -> io::Result<(libc::pid_t, std::os::fd::OwnedFd
     Ok((pid, unsafe { OwnedFd::from_raw_fd(write) }))
 }
 
-#[cfg(all(unix, any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
+))]
 unsafe fn errno() -> *mut libc::c_int {
     unsafe { libc::__error() }
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))
+))]
 unsafe fn errno() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
@@ -494,8 +537,9 @@ fn spawn_guarded(command: &mut Command) -> io::Result<(Child, Guard)> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW};
     command.creation_flags(BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW);
@@ -566,7 +610,9 @@ mod tests {
     }
 
     fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-        args.iter().position(|a| a == name).map(|i| args[i + 1].as_str())
+        args.iter()
+            .position(|a| a == name)
+            .map(|i| args[i + 1].as_str())
     }
 
     #[test]
@@ -595,7 +641,10 @@ mod tests {
         assert_eq!(flag(&args, "--gpu-layers"), Some("all"));
         assert_eq!(flag(&args, "--device"), Some("MTL0"));
         assert_eq!(flag(&args, "--reasoning"), Some("off"));
-        assert_eq!(flag(&args, "--chat-template-kwargs"), Some(r#"{"enable_thinking":false}"#));
+        assert_eq!(
+            flag(&args, "--chat-template-kwargs"),
+            Some(r#"{"enable_thinking":false}"#)
+        );
         assert!(args.iter().any(|a| a == "--no-webui"));
 
         config.offload = Offload::None;
@@ -605,7 +654,13 @@ mod tests {
         assert_eq!(flag(&args, "--gpu-layers"), Some("0"));
         assert_eq!(flag(&args, "--chat-template-kwargs"), None);
 
-        let embed = LaunchConfig::embeddings(Path::new("s"), Path::new("e5.gguf"), 1, 512, Path::new("e.log"));
+        let embed = LaunchConfig::embeddings(
+            Path::new("s"),
+            Path::new("e5.gguf"),
+            1,
+            512,
+            Path::new("e.log"),
+        );
         let args = embed.args(2, "k");
         assert!(args.iter().any(|a| a == "--embeddings"));
         assert_eq!(flag(&args, "--threads"), Some("1"));
@@ -686,7 +741,11 @@ mod tests {
         // SAFETY: reads the scheduling priority of the child just started.
         let nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as _) };
         assert_eq!(nice, 10);
-        wait_for("the log", || fs::read_to_string(&config.log).unwrap_or_default().contains("started --model"));
+        wait_for("the log", || {
+            fs::read_to_string(&config.log)
+                .unwrap_or_default()
+                .contains("started --model")
+        });
         let started = Instant::now();
         runtime.stop();
         assert!(started.elapsed() < Duration::from_secs(4));
@@ -704,7 +763,11 @@ mod tests {
         let config = fake_server(Path::new(&dir));
         let runtime = Runtime::start(&config).unwrap();
         println!("runtime-pid={}", runtime.pid());
-        wait_for("the log", || fs::read_to_string(&config.log).unwrap_or_default().contains("started"));
+        wait_for("the log", || {
+            fs::read_to_string(&config.log)
+                .unwrap_or_default()
+                .contains("started")
+        });
         std::mem::forget(runtime);
         // SAFETY: ends the process at once, like a crash: no destructor runs.
         unsafe { libc::_exit(3) };
@@ -715,7 +778,12 @@ mod tests {
     fn a_runtime_dies_with_the_game() {
         let dir = crate::download::tests::scratch("runtime-crash");
         let out = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "runtime::tests::game_that_crashes", "--ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "runtime::tests::game_that_crashes",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("HORIZON_COMPANION_CRASH_DIR", &dir)
             .output()
             .unwrap();
@@ -735,7 +803,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = crate::download::tests::scratch("runtime-exit");
         let server = dir.join("llama-server");
-        fs::write(&server, "#!/bin/sh\necho 'error: failed to load model' >&2\nexit 1\n").unwrap();
+        fs::write(
+            &server,
+            "#!/bin/sh\necho 'error: failed to load model' >&2\nexit 1\n",
+        )
+        .unwrap();
         fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
         let config = LaunchConfig {
             server,

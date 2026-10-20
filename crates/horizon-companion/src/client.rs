@@ -7,9 +7,9 @@
 //! `say` the moment they are complete, then the parsed reply with its timings.
 
 use std::io::{BufRead, BufReader};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -111,10 +111,21 @@ pub struct Stats {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// A complete sentence of `say`, for chat and the voice.
-    Sentence { id: u64, text: String },
+    Sentence {
+        id: u64,
+        text: String,
+    },
     /// The whole reply, parsed.
-    Done { id: u64, reply: Reply, raw: String, stats: Stats },
-    Failed { id: u64, error: String },
+    Done {
+        id: u64,
+        reply: Reply,
+        raw: String,
+        stats: Stats,
+    },
+    Failed {
+        id: u64,
+        error: String,
+    },
 }
 
 impl Event {
@@ -155,11 +166,22 @@ impl Brain {
                         continue;
                     }
                     let id = job.id;
-                    let result = stream_chat(&agent, &worker_endpoint, &job.request, &mut |text| {
-                        let _ = event_tx.send(Event::Sentence { id, text });
-                    }, &|| id <= worker_cancelled.load(Ordering::Relaxed));
+                    let result = stream_chat(
+                        &agent,
+                        &worker_endpoint,
+                        &job.request,
+                        &mut |text| {
+                            let _ = event_tx.send(Event::Sentence { id, text });
+                        },
+                        &|| id <= worker_cancelled.load(Ordering::Relaxed),
+                    );
                     let event = match result {
-                        Ok((reply, raw, stats)) => Event::Done { id, reply, raw, stats },
+                        Ok((reply, raw, stats)) => Event::Done {
+                            id,
+                            reply,
+                            raw,
+                            stats,
+                        },
                         Err(error) => Event::Failed { id, error },
                     };
                     if event_tx.send(event).is_err() {
@@ -267,7 +289,10 @@ pub fn stream_chat(
 ) -> Result<(Reply, String, Stats), String> {
     let started = Instant::now();
     let mut call = agent
-        .post(&format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/')))
+        .post(&format!(
+            "{}/chat/completions",
+            endpoint.base_url.trim_end_matches('/')
+        ))
         .set("Content-Type", "application/json")
         .set("Accept", "text/event-stream");
     if let Some(key) = &endpoint.api_key {
@@ -303,11 +328,17 @@ pub fn stream_chat(
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
             continue;
         };
-        if let Some(message) = chunk.get("error").and_then(|e| e.get("message").and_then(Value::as_str)) {
+        if let Some(message) = chunk
+            .get("error")
+            .and_then(|e| e.get("message").and_then(Value::as_str))
+        {
             return Err(message.to_owned());
         }
         read_stats(&chunk, &mut stats);
-        let Some(delta) = chunk.pointer("/choices/0/delta/content").and_then(Value::as_str) else {
+        let Some(delta) = chunk
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+        else {
             continue;
         };
         if delta.is_empty() {
@@ -331,7 +362,11 @@ pub fn stream_chat(
     // A plain-text answer (no schema support) never went through `say`: send it whole.
     if !say.finished() {
         let rest = sentences.finish();
-        let pieces = if reply.valid_json { rest.into_iter().collect() } else { cut_all(&reply.say) };
+        let pieces = if reply.valid_json {
+            rest.into_iter().collect()
+        } else {
+            cut_all(&reply.say)
+        };
         for s in pieces {
             emit(s, &mut stats);
         }
@@ -356,21 +391,42 @@ fn cut_all(text: &str) -> Vec<String> {
 /// llama.cpp's `timings` (last chunk) and the OpenAI `usage` (Ollama, LM Studio, cloud).
 fn read_stats(chunk: &Value, stats: &mut Stats) {
     if let Some(t) = chunk.get("timings") {
-        stats.prompt_tokens = t.get("prompt_n").and_then(Value::as_u64).or(stats.prompt_tokens);
-        stats.cached_tokens = t.get("cache_n").and_then(Value::as_u64).or(stats.cached_tokens);
-        stats.completion_tokens = t.get("predicted_n").and_then(Value::as_u64).or(stats.completion_tokens);
-        stats.tokens_per_second = t.get("predicted_per_second").and_then(Value::as_f64).or(stats.tokens_per_second);
-        stats.prompt_ms = t.get("prompt_ms").and_then(Value::as_f64).or(stats.prompt_ms);
+        stats.prompt_tokens = t
+            .get("prompt_n")
+            .and_then(Value::as_u64)
+            .or(stats.prompt_tokens);
+        stats.cached_tokens = t
+            .get("cache_n")
+            .and_then(Value::as_u64)
+            .or(stats.cached_tokens);
+        stats.completion_tokens = t
+            .get("predicted_n")
+            .and_then(Value::as_u64)
+            .or(stats.completion_tokens);
+        stats.tokens_per_second = t
+            .get("predicted_per_second")
+            .and_then(Value::as_f64)
+            .or(stats.tokens_per_second);
+        stats.prompt_ms = t
+            .get("prompt_ms")
+            .and_then(Value::as_f64)
+            .or(stats.prompt_ms);
     }
     if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
-        stats.prompt_tokens = stats.prompt_tokens.or(u.get("prompt_tokens").and_then(Value::as_u64));
-        stats.completion_tokens = stats.completion_tokens.or(u.get("completion_tokens").and_then(Value::as_u64));
+        stats.prompt_tokens = stats
+            .prompt_tokens
+            .or(u.get("prompt_tokens").and_then(Value::as_u64));
+        stats.completion_tokens = stats
+            .completion_tokens
+            .or(u.get("completion_tokens").and_then(Value::as_u64));
     }
 }
 
 fn error_message(body: &str) -> Option<String> {
     let v: Value = serde_json::from_str(body).ok()?;
-    v.pointer("/error/message").and_then(Value::as_str).map(String::from)
+    v.pointer("/error/message")
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 /// Another AI program already running on this PC.
@@ -408,7 +464,11 @@ pub fn detect_in_background() -> Receiver<Vec<Detected>> {
 }
 
 /// `GET /models`: the ids an OpenAI-compatible server offers.
-pub fn list_models(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Result<Vec<String>, String> {
+pub fn list_models(
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout(timeout * 3)
@@ -467,11 +527,19 @@ mod tests {
                 std::io::Read::read_exact(&mut reader, &mut body).unwrap();
                 seen.lock().unwrap().push(String::from_utf8(body).unwrap());
                 if path.starts_with("GET /v1/models") {
-                    let json = r#"{"object":"list","data":[{"id":"qwen3.5:4b"},{"id":"gemma4:12b"}]}"#;
-                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json}", json.len());
+                    let json =
+                        r#"{"object":"list","data":[{"id":"qwen3.5:4b"},{"id":"gemma4:12b"}]}"#;
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json}",
+                        json.len()
+                    );
                     continue;
                 }
-                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                );
                 for e in &events {
                     let _ = write!(stream, "data: {e}\n\n");
                     let _ = stream.flush();
@@ -517,16 +585,28 @@ mod tests {
                     assert_eq!(got, id);
                     sentences.push(text);
                 }
-                Some(Event::Done { reply, stats, raw, .. }) => break (reply, stats, raw),
+                Some(Event::Done {
+                    reply, stats, raw, ..
+                }) => break (reply, stats, raw),
                 Some(Event::Failed { error, .. }) => panic!("{error}"),
                 None => std::thread::sleep(Duration::from_millis(2)),
             }
         };
-        assert_eq!(sentences, ["Oh great, a creeper.", "Lovely.", "I'll handle it."]);
+        assert_eq!(
+            sentences,
+            ["Oh great, a creeper.", "Lovely.", "I'll handle it."]
+        );
         let (reply, stats, raw) = done;
         assert_eq!(raw, json);
         assert_eq!(reply.actions[0].skill, reply::Skill::Attack);
-        assert_eq!((stats.prompt_tokens, stats.cached_tokens, stats.completion_tokens), (Some(42), Some(900), Some(31)));
+        assert_eq!(
+            (
+                stats.prompt_tokens,
+                stats.cached_tokens,
+                stats.completion_tokens
+            ),
+            (Some(42), Some(900), Some(31))
+        );
         assert!(stats.first_token.unwrap() <= stats.first_sentence.unwrap());
         let body: Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
         assert_eq!(body["stream"], true);
@@ -537,21 +617,42 @@ mod tests {
     #[test]
     fn the_schema_reaches_the_server_in_its_written_order() {
         let body = request_body(&local("http://x/v1".into()), &ChatRequest::turn(vec![]));
-        let (tone, say, actions) = (body.find("\"tone\":{").unwrap(), body.find("\"say\":{").unwrap(), body.find("\"actions\":{").unwrap());
+        let (tone, say, actions) = (
+            body.find("\"tone\":{").unwrap(),
+            body.find("\"say\":{").unwrap(),
+            body.find("\"actions\":{").unwrap(),
+        );
         assert!(tone < say && say < actions, "{body}");
-        let cloud = Endpoint { provider: Provider::Cloud, ..local("https://api.example.com/v1".into()) };
-        let body: Value = serde_json::from_str(&request_body(&cloud, &ChatRequest::turn(vec![]))).unwrap();
+        let cloud = Endpoint {
+            provider: Provider::Cloud,
+            ..local("https://api.example.com/v1".into())
+        };
+        let body: Value =
+            serde_json::from_str(&request_body(&cloud, &ChatRequest::turn(vec![]))).unwrap();
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
-        assert!(body.get("chat_template_kwargs").is_none(), "cloud APIs reject unknown fields");
+        assert!(
+            body.get("chat_template_kwargs").is_none(),
+            "cloud APIs reject unknown fields"
+        );
     }
 
     #[test]
     fn plain_text_answers_still_reach_chat() {
         let (url, _) = sse_server(deltas("Sure thing! Following you.", 4));
-        let endpoint = Endpoint { provider: Provider::Ollama, ..local(url) };
+        let endpoint = Endpoint {
+            provider: Provider::Ollama,
+            ..local(url)
+        };
         let agent = agent_for(&endpoint);
         let mut said = Vec::new();
-        let (reply, _, _) = stream_chat(&agent, &endpoint, &ChatRequest::turn(vec![]), &mut |s| said.push(s), &|| false).unwrap();
+        let (reply, _, _) = stream_chat(
+            &agent,
+            &endpoint,
+            &ChatRequest::turn(vec![]),
+            &mut |s| said.push(s),
+            &|| false,
+        )
+        .unwrap();
         assert!(!reply.valid_json);
         assert_eq!(said, ["Sure thing!", "Following you."]);
     }
@@ -570,7 +671,10 @@ mod tests {
         };
         assert_eq!(error, "context full");
 
-        let (url, _) = sse_server(deltas(r#"{"tone":"normal","say":"one. two.","actions":[]}"#, 1));
+        let (url, _) = sse_server(deltas(
+            r#"{"tone":"normal","say":"one. two.","actions":[]}"#,
+            1,
+        ));
         let mut brain = Brain::new(local(url));
         let first = brain.ask(ChatRequest::turn(vec![]));
         brain.cancel_up_to(first);
@@ -588,7 +692,10 @@ mod tests {
     #[test]
     fn lists_models_like_ollama_and_lm_studio() {
         let (url, _) = sse_server(vec![]);
-        assert_eq!(list_models(&url, None, Duration::from_secs(1)).unwrap(), ["qwen3.5:4b", "gemma4:12b"]);
+        assert_eq!(
+            list_models(&url, None, Duration::from_secs(1)).unwrap(),
+            ["qwen3.5:4b", "gemma4:12b"]
+        );
         assert!(list_models("http://127.0.0.1:9/v1", None, Duration::from_millis(200)).is_err());
     }
 }

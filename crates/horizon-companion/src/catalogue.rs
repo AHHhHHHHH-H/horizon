@@ -85,26 +85,86 @@ macro_rules! build {
 /// Every archive, the preferred one first for each OS and architecture. The Vulkan builds also hold the
 /// CPU backend; the CPU builds are the fallback when the Vulkan one can't start (no Vulkan loader).
 pub const RUNTIME_BUILDS: &[RuntimeBuild] = &[
-    build!("macos", "aarch64", Metal, "llama-b11756-bin-macos-arm64.tar.gz", 16103382,
-        "f86b5eb838b985a17587e794dee9c6b34193aca6dceec018031a4ba7951fb7e6"),
-    build!("macos", "x86_64", Cpu, "llama-b11756-bin-macos-x64.tar.gz", 11809449,
-        "6d71968268a01ae975acde18441a70b2c7ba128b7a127f46b5ced4e8c5dd4eca"),
-    build!("linux", "x86_64", Vulkan, "llama-b11756-bin-ubuntu-vulkan-x64.tar.gz", 34877974,
-        "7b23a9192e013ee8cf2011c192fd6a6197a41b562ff1b1a8e41f523a933d75cf"),
-    build!("linux", "x86_64", Cpu, "llama-b11756-bin-ubuntu-x64.tar.gz", 22240705,
-        "9def57d9e9b0149979a9ceba40896a4e2bf88c94734069a5567d2f487ceab551"),
-    build!("linux", "aarch64", Vulkan, "llama-b11756-bin-ubuntu-vulkan-arm64.tar.gz", 28322778,
-        "bbaacf9fbe9e565bb3a2c437a91de49bc02305cebc58bb8898a3cd1d80b86910"),
-    build!("linux", "aarch64", Cpu, "llama-b11756-bin-ubuntu-arm64.tar.gz", 18034586,
-        "42bb5ef275743e0183fa53e3c93b2b54796997d49a9d0d540d0a8cc945f1ed43"),
-    build!("windows", "x86_64", Vulkan, "llama-b11756-bin-win-vulkan-x64.zip", 36751610,
-        "75ce69fdda503c3d6d3b3401f61369bd072194746ec65fbbc5fd7e749edd2914"),
-    build!("windows", "x86_64", Cpu, "llama-b11756-bin-win-cpu-x64.zip", 23959301,
-        "d164195b8f3e92f8fd92bc3a5c0eeaef8707b2f1a979e36360ce8192ebf4fbb3"),
-    build!("windows", "aarch64", Vulkan, "llama-b11756-bin-win-vulkan-arm64.zip", 24993785,
-        "3ea056e7f3f0eee0a58c9ea1b4e3ecba259e8433afb902bf9862f45e0eb4fda7"),
-    build!("windows", "aarch64", Cpu, "llama-b11756-bin-win-cpu-arm64.zip", 12609658,
-        "ba47a12a87d45a3a717d717e81334e65b725df051c8adf8f68accd824d05a126"),
+    build!(
+        "macos",
+        "aarch64",
+        Metal,
+        "llama-b11756-bin-macos-arm64.tar.gz",
+        16103382,
+        "f86b5eb838b985a17587e794dee9c6b34193aca6dceec018031a4ba7951fb7e6"
+    ),
+    build!(
+        "macos",
+        "x86_64",
+        Cpu,
+        "llama-b11756-bin-macos-x64.tar.gz",
+        11809449,
+        "6d71968268a01ae975acde18441a70b2c7ba128b7a127f46b5ced4e8c5dd4eca"
+    ),
+    build!(
+        "linux",
+        "x86_64",
+        Vulkan,
+        "llama-b11756-bin-ubuntu-vulkan-x64.tar.gz",
+        34877974,
+        "7b23a9192e013ee8cf2011c192fd6a6197a41b562ff1b1a8e41f523a933d75cf"
+    ),
+    build!(
+        "linux",
+        "x86_64",
+        Cpu,
+        "llama-b11756-bin-ubuntu-x64.tar.gz",
+        22240705,
+        "9def57d9e9b0149979a9ceba40896a4e2bf88c94734069a5567d2f487ceab551"
+    ),
+    build!(
+        "linux",
+        "aarch64",
+        Vulkan,
+        "llama-b11756-bin-ubuntu-vulkan-arm64.tar.gz",
+        28322778,
+        "bbaacf9fbe9e565bb3a2c437a91de49bc02305cebc58bb8898a3cd1d80b86910"
+    ),
+    build!(
+        "linux",
+        "aarch64",
+        Cpu,
+        "llama-b11756-bin-ubuntu-arm64.tar.gz",
+        18034586,
+        "42bb5ef275743e0183fa53e3c93b2b54796997d49a9d0d540d0a8cc945f1ed43"
+    ),
+    build!(
+        "windows",
+        "x86_64",
+        Vulkan,
+        "llama-b11756-bin-win-vulkan-x64.zip",
+        36751610,
+        "75ce69fdda503c3d6d3b3401f61369bd072194746ec65fbbc5fd7e749edd2914"
+    ),
+    build!(
+        "windows",
+        "x86_64",
+        Cpu,
+        "llama-b11756-bin-win-cpu-x64.zip",
+        23959301,
+        "d164195b8f3e92f8fd92bc3a5c0eeaef8707b2f1a979e36360ce8192ebf4fbb3"
+    ),
+    build!(
+        "windows",
+        "aarch64",
+        Vulkan,
+        "llama-b11756-bin-win-vulkan-arm64.zip",
+        24993785,
+        "3ea056e7f3f0eee0a58c9ea1b4e3ecba259e8433afb902bf9862f45e0eb4fda7"
+    ),
+    build!(
+        "windows",
+        "aarch64",
+        Cpu,
+        "llama-b11756-bin-win-cpu-arm64.zip",
+        12609658,
+        "ba47a12a87d45a3a717d717e81334e65b725df051c8adf8f68accd824d05a126"
+    ),
 ];
 
 /// The builds for an OS and architecture, the one to try first first.
@@ -312,7 +372,12 @@ mod tests {
                 assert!(f.sha256.bytes().all(|c| c.is_ascii_hexdigit()));
                 assert!(m.url(f).ends_with(f.path));
             }
-            assert_eq!(MODELS.iter().filter(|o| o.id == m.id).count(), 1, "{}", m.id);
+            assert_eq!(
+                MODELS.iter().filter(|o| o.id == m.id).count(),
+                1,
+                "{}",
+                m.id
+            );
         }
         for tier in Tier::ALL {
             assert_eq!(tier.model().kind, ModelKind::Chat(tier));
@@ -322,7 +387,10 @@ mod tests {
 
     #[test]
     fn every_desktop_platform_has_a_build_with_a_fallback() {
-        assert_eq!(runtime_builds("macos", "aarch64")[0].backend, Backend::Metal);
+        assert_eq!(
+            runtime_builds("macos", "aarch64")[0].backend,
+            Backend::Metal
+        );
         assert_eq!(runtime_builds("macos", "x86_64")[0].backend, Backend::Cpu);
         for os in ["linux", "windows"] {
             for arch in ["x86_64", "aarch64"] {
@@ -332,7 +400,13 @@ mod tests {
                 assert_eq!(builds[1].backend, Backend::Cpu);
             }
         }
-        assert_eq!(runtime_builds("windows", "x86_64")[0].server_exe(), "llama-server.exe");
-        assert_eq!(runtime_builds("macos", "aarch64")[0].key(), "b11756-macos-aarch64-metal");
+        assert_eq!(
+            runtime_builds("windows", "x86_64")[0].server_exe(),
+            "llama-server.exe"
+        );
+        assert_eq!(
+            runtime_builds("macos", "aarch64")[0].key(),
+            "b11756-macos-aarch64-metal"
+        );
     }
 }

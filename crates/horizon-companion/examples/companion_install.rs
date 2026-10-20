@@ -54,7 +54,12 @@ fn main() {
             .install_runtime(build, &mut reporter(build.file.into()), &cancel)
             .unwrap_or_else(|e| panic!("{e}")),
     };
-    println!("runtime {} at {} ({:.1} s)", build.key(), server.display(), started.elapsed().as_secs_f64());
+    println!(
+        "runtime {} at {} ({:.1} s)",
+        build.key(),
+        server.display(),
+        started.elapsed().as_secs_f64()
+    );
     let mut hw = Hardware::detect();
     let devices = hardware::list_devices(&server).expect("list devices");
     hw.gpus = hardware::parse_devices(&devices);
@@ -69,6 +74,11 @@ fn main() {
                 .install_model(model, &mut reporter(model.id.into()), &cancel)
                 .unwrap_or_else(|e| panic!("{e}")),
         };
-        println!("model {} at {} ({:.1} s)", model.id, path.display(), started.elapsed().as_secs_f64());
+        println!(
+            "model {} at {} ({:.1} s)",
+            model.id,
+            path.display(),
+            started.elapsed().as_secs_f64()
+        );
     }
 }

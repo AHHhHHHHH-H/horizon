@@ -142,7 +142,9 @@ pub fn plan_offload(hw: &Hardware, model_bytes: u64, need_extra_mb: u64) -> Offl
 /// stdout; the Vulkan backend's per-device details, which say whether a GPU is integrated, to stderr).
 pub fn list_devices(server: &Path) -> std::io::Result<String> {
     // -v adds the Vulkan backend's per-device line with `uma:` (shared memory) on it.
-    let out = Command::new(server).args(["-v", "--list-devices"]).output()?;
+    let out = Command::new(server)
+        .args(["-v", "--list-devices"])
+        .output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -240,16 +242,21 @@ fn is_software(name: &str) -> bool {
 fn looks_integrated(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     if n.contains("intel") {
-        let discrete_arc = n
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|w| w.len() >= 4 && (w.starts_with('a') || w.starts_with('b')) && w[1..].bytes().all(|c| c.is_ascii_digit()));
+        let discrete_arc = n.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
+            w.len() >= 4
+                && (w.starts_with('a') || w.starts_with('b'))
+                && w[1..].bytes().all(|c| c.is_ascii_digit())
+        });
         return !discrete_arc;
     }
     if n.contains("amd") || n.contains("radeon") {
         let apu_model = n.split_whitespace().any(|w| {
             w.len() == 4 && w.ends_with('m') && w[..3].bytes().all(|c| c.is_ascii_digit())
         });
-        return apu_model || n.contains("radeon(tm) graphics") || n.contains("radeon graphics") || n.contains("vega");
+        return apu_model
+            || n.contains("radeon(tm) graphics")
+            || n.contains("radeon graphics")
+            || n.contains("vega");
     }
     false
 }
@@ -285,7 +292,10 @@ fn ram_bytes() -> Option<u64> {
 #[cfg(any(target_os = "linux", test))]
 fn meminfo_total(info: &str) -> Option<u64> {
     let line = info.lines().find(|l| l.starts_with("MemTotal:"))?;
-    let kb = line["MemTotal:".len()..].trim().trim_end_matches("kB").trim();
+    let kb = line["MemTotal:".len()..]
+        .trim()
+        .trim_end_matches("kB")
+        .trim();
     kb.parse::<u64>().ok().map(|kb| kb * 1024)
 }
 
@@ -328,7 +338,11 @@ fn apple_silicon() -> bool {
 fn ram_bytes() -> Option<u64> {
     output(
         "powershell",
-        &["-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"],
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ],
     )?
     .parse()
     .ok()
@@ -378,7 +392,10 @@ mod tests {
     // (the ThinkPad, CPU build). Written by hand in the same format, for want of the GPUs:
     // vulkan-nvidia-rtx3060, vulkan-amd-rx7800xt-and-igpu and cuda-gtx1650.
     fn fixture(name: &str) -> String {
-        let path = format!("{}/tests/fixtures/devices/{name}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/tests/fixtures/devices/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
     }
 
@@ -410,7 +427,9 @@ mod tests {
         assert_eq!(pick_tier(&mac), Tier::Best);
         assert_eq!(
             plan_offload(&mac, Tier::Best.model().size(), 1024),
-            Offload::All { device: "MTL0".into() }
+            Offload::All {
+                device: "MTL0".into()
+            }
         );
     }
 
@@ -439,7 +458,9 @@ mod tests {
         assert_eq!(pick_tier(&hw), Tier::Strong);
         assert_eq!(
             plan_offload(&hw, Tier::Strong.model().size(), 1024),
-            Offload::All { device: "Vulkan0".into() }
+            Offload::All {
+                device: "Vulkan0".into()
+            }
         );
     }
 
@@ -449,9 +470,15 @@ mod tests {
         let kinds: Vec<_> = hw.gpus.iter().map(|g| (g.id.as_str(), g.kind)).collect();
         assert_eq!(
             kinds,
-            [("Vulkan0", GpuKind::Discrete), ("Vulkan1", GpuKind::Integrated)]
+            [
+                ("Vulkan0", GpuKind::Discrete),
+                ("Vulkan1", GpuKind::Integrated)
+            ]
         );
-        assert_eq!(hw.best_gpu().unwrap().name, "AMD Radeon RX 7800 XT (RADV NAVI32)");
+        assert_eq!(
+            hw.best_gpu().unwrap().name,
+            "AMD Radeon RX 7800 XT (RADV NAVI32)"
+        );
         assert_eq!(pick_tier(&hw), Tier::Best);
     }
 
@@ -461,8 +488,15 @@ mod tests {
         let hw = pc(32, 2, "vulkan-intel-hd620.txt");
         assert_eq!(hw.gpus[0].kind, GpuKind::Integrated);
         assert_eq!(hw.usable_vram_mb(), 0);
-        assert_eq!(pick_tier(&hw), Tier::Light, "2 cores is below the CPU path's 6");
-        assert_eq!(plan_offload(&hw, Tier::Light.model().size(), 512), Offload::None);
+        assert_eq!(
+            pick_tier(&hw),
+            Tier::Light,
+            "2 cores is below the CPU path's 6"
+        );
+        assert_eq!(
+            plan_offload(&hw, Tier::Light.model().size(), 512),
+            Offload::None
+        );
         assert_eq!(runtime_threads(hw.physical_cores), 2);
     }
 
@@ -485,16 +519,28 @@ mod tests {
         let standard = Tier::Standard.model().size();
         assert_eq!(
             plan_offload(&hw, Tier::Light.model().size(), 512),
-            Offload::All { device: "CUDA0".into() }
+            Offload::All {
+                device: "CUDA0".into()
+            }
         );
-        assert_eq!(plan_offload(&hw, standard, 512), Offload::Fit { device: "CUDA0".into() });
+        assert_eq!(
+            plan_offload(&hw, standard, 512),
+            Offload::Fit {
+                device: "CUDA0".into()
+            }
+        );
     }
 
     #[test]
     fn software_renderers_are_not_gpus() {
-        let gpus = parse_devices("Available devices:\n  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (32000 MiB, 32000 MiB free)\n");
+        let gpus = parse_devices(
+            "Available devices:\n  Vulkan0: llvmpipe (LLVM 19.1.7, 256 bits) (32000 MiB, 32000 MiB free)\n",
+        );
         assert_eq!(gpus[0].kind, GpuKind::Software);
-        let hw = Hardware { gpus, ..pc(8, 4, "cpu-only-linux.txt") };
+        let hw = Hardware {
+            gpus,
+            ..pc(8, 4, "cpu-only-linux.txt")
+        };
         assert_eq!(plan_offload(&hw, 1 << 30, 0), Offload::None);
     }
 
@@ -521,14 +567,20 @@ mod tests {
 
     #[test]
     fn linux_proc_files() {
-        assert_eq!(meminfo_total("MemTotal:       32788148 kB\nMemFree: 1 kB\n"), Some(32788148 * 1024));
+        assert_eq!(
+            meminfo_total("MemTotal:       32788148 kB\nMemFree: 1 kB\n"),
+            Some(32788148 * 1024)
+        );
         // Two cores with two threads each, as /proc/cpuinfo prints the i7-7500U.
         let mut info = String::new();
         for (cpu, core) in [(0, 0), (1, 1), (2, 0), (3, 1)] {
             info += &format!("processor\t: {cpu}\nphysical id\t: 0\ncore id\t\t: {core}\n\n");
         }
         assert_eq!(cpuinfo_physical_cores(&info), Some(2));
-        assert_eq!(cpuinfo_physical_cores("processor\t: 0\nBogoMIPS\t: 48.00\n\n"), None);
+        assert_eq!(
+            cpuinfo_physical_cores("processor\t: 0\nBogoMIPS\t: 48.00\n\n"),
+            None
+        );
     }
 
     #[test]
@@ -536,6 +588,9 @@ mod tests {
         let hw = Hardware::detect();
         assert!(hw.ram_mb > 1024);
         assert!(hw.physical_cores >= 1 && hw.physical_cores <= hw.logical_cores);
-        assert_eq!(hw.apple_silicon, cfg!(all(target_os = "macos", target_arch = "aarch64")));
+        assert_eq!(
+            hw.apple_silicon,
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        );
     }
 }

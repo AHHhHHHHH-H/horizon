@@ -164,14 +164,23 @@ pub fn parse_reply(text: &str) -> Reply {
         _ => None,
     };
     let Some(Value::Object(map)) = json else {
-        let say: String = text.trim_matches('`').trim().chars().take(MAX_SAY_CHARS).collect();
+        let say: String = text
+            .trim_matches('`')
+            .trim()
+            .chars()
+            .take(MAX_SAY_CHARS)
+            .collect();
         return Reply {
             say,
             ..Reply::default()
         };
     };
     let mut reply = Reply {
-        tone: map.get("tone").and_then(Value::as_str).and_then(Tone::from_name).unwrap_or_default(),
+        tone: map
+            .get("tone")
+            .and_then(Value::as_str)
+            .and_then(Tone::from_name)
+            .unwrap_or_default(),
         say: map
             .get("say")
             .and_then(Value::as_str)
@@ -189,14 +198,28 @@ pub fn parse_reply(text: &str) -> Reply {
         valid_json: true,
         ..Reply::default()
     };
-    for action in map.get("actions").and_then(Value::as_array).into_iter().flatten() {
-        let name = action.get("skill").and_then(Value::as_str).unwrap_or_default();
+    for action in map
+        .get("actions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = action
+            .get("skill")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let Some(skill) = Skill::from_name(name) else {
-            reply.rejected.push(if name.is_empty() { action.to_string() } else { name.to_owned() });
+            reply.rejected.push(if name.is_empty() {
+                action.to_string()
+            } else {
+                name.to_owned()
+            });
             continue;
         };
         if reply.actions.len() == MAX_ACTIONS {
-            reply.rejected.push(format!("{name} (more than {MAX_ACTIONS} actions)"));
+            reply
+                .rejected
+                .push(format!("{name} (more than {MAX_ACTIONS} actions)"));
             continue;
         }
         let text = |key| {
@@ -368,7 +391,9 @@ fn unescape(esc: &str, high: &mut Option<u32>) -> Option<Option<char>> {
         return Some(None);
     }
     if (0xdc00..0xe000).contains(&code) {
-        let pair = high.take().map(|h| 0x10000 + ((h - 0xd800) << 10) + (code - 0xdc00));
+        let pair = high
+            .take()
+            .map(|h| 0x10000 + ((h - 0xd800) << 10) + (code - 0xdc00));
         return Some(Some(pair.and_then(char::from_u32).unwrap_or('\u{fffd}')));
     }
     Some(Some(char::from_u32(code).unwrap_or('\u{fffd}')))
@@ -384,9 +409,9 @@ pub struct Sentences {
 }
 
 const ABBREVIATIONS: &[&str] = &[
-    "mr", "mrs", "ms", "dr", "st", "vs", "etc", "e.g", "i.e", "approx", "m", "mme", "mlle", "env", "p.ex",
-    "sr", "sra", "srta", "dra", "ud", "uds", "z.b", "bzw", "ca", "nr", "usw", "dh", "d.h", "u.a", "sto",
-    "no", "n.º",
+    "mr", "mrs", "ms", "dr", "st", "vs", "etc", "e.g", "i.e", "approx", "m", "mme", "mlle", "env",
+    "p.ex", "sr", "sra", "srta", "dra", "ud", "uds", "z.b", "bzw", "ca", "nr", "usw", "dh", "d.h",
+    "u.a", "sto", "no", "n.º",
 ];
 
 impl Sentences {
@@ -469,7 +494,10 @@ impl Sentences {
             .iter()
             .rposition(|(_, c)| c.is_whitespace() || *c == '(' || *c == '"')
             .map_or(0, |p| p + 1);
-        let word: String = chars[start..dot].iter().map(|(_, c)| c.to_lowercase().to_string()).collect();
+        let word: String = chars[start..dot]
+            .iter()
+            .map(|(_, c)| c.to_lowercase().to_string())
+            .collect();
         let single_initial = word.chars().count() == 1 && word.chars().all(char::is_alphabetic);
         single_initial && chars[start].1.is_uppercase() || ABBREVIATIONS.contains(&word.as_str())
     }
@@ -484,7 +512,10 @@ fn is_cjk_terminal(c: char) -> bool {
 }
 
 fn is_closer(c: char) -> bool {
-    matches!(c, '"' | '\'' | '»' | '”' | '’' | ')' | ']' | '」' | '』' | '）')
+    matches!(
+        c,
+        '"' | '\'' | '»' | '”' | '’' | ')' | ']' | '」' | '』' | '）'
+    )
 }
 
 #[cfg(test)]
@@ -495,15 +526,21 @@ mod tests {
     fn schemas_are_json_with_tone_then_say_first() {
         for schema in [SCHEMA, SCHEMA_STRICT] {
             let v: Value = serde_json::from_str(schema).unwrap();
-            let names: Vec<&str> = v["properties"]["actions"]["items"]["properties"]["skill"]["enum"]
+            let names: Vec<&str> =
+                v["properties"]["actions"]["items"]["properties"]["skill"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.as_str().unwrap())
+                    .collect();
+            let all: Vec<&str> = Skill::ALL.iter().map(|s| s.name()).collect();
+            assert_eq!(names, all);
+            let tones: Vec<&str> = v["properties"]["tone"]["enum"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|s| s.as_str().unwrap())
                 .collect();
-            let all: Vec<&str> = Skill::ALL.iter().map(|s| s.name()).collect();
-            assert_eq!(names, all);
-            let tones: Vec<&str> = v["properties"]["tone"]["enum"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
             assert_eq!(tones, Tone::ALL.map(Tone::name));
             let tone = schema.find("\"tone\"").unwrap();
             let say = schema.find("\"say\"").unwrap();
@@ -537,8 +574,13 @@ mod tests {
     #[test]
     fn tolerates_fences_thinking_and_plain_text() {
         let fenced = parse_reply("```json\n{\"say\":\"hi\",\"actions\":[]}\n```");
-        assert_eq!((fenced.say.as_str(), fenced.valid_json, fenced.tone), ("hi", true, Tone::Normal));
-        let thought = parse_reply("<think>they want {wood}</think>\n{\"say\":\"On it\",\"actions\":[{\"skill\":\"collect\",\"item\":\"oak_log\"}]}");
+        assert_eq!(
+            (fenced.say.as_str(), fenced.valid_json, fenced.tone),
+            ("hi", true, Tone::Normal)
+        );
+        let thought = parse_reply(
+            "<think>they want {wood}</think>\n{\"say\":\"On it\",\"actions\":[{\"skill\":\"collect\",\"item\":\"oak_log\"}]}",
+        );
         assert_eq!(thought.say, "On it");
         assert_eq!(thought.actions[0].skill, Skill::Collect);
         let plain = parse_reply("Sure, I'll follow you!");
@@ -562,7 +604,11 @@ mod tests {
     fn say_streams_out_of_partial_json() {
         let json = r#"{"tone":"shout","say":"Creeper! Run, \"now\"\n\u00e9\ud83d\ude00 \\o/","actions":[{"skill":"say","item":"say"}],"remember":"x"}"#;
         for size in [1, 2, 3, 7, 1000] {
-            assert_eq!(stream_in_pieces(json, size), "Creeper! Run, \"now\"\né😀 \\o/", "pieces of {size}");
+            assert_eq!(
+                stream_in_pieces(json, size),
+                "Creeper! Run, \"now\"\né😀 \\o/",
+                "pieces of {size}"
+            );
         }
     }
 
@@ -586,17 +632,38 @@ mod tests {
 
     #[test]
     fn sentences_in_five_languages() {
-        assert_eq!(cut("Creeper, 2 o'clock! Back off. Now?"), ["Creeper, 2 o'clock!", "Back off.", "Now?"]);
-        assert_eq!(cut("Attention ! Un creeper à 2 heures. On recule ?"), ["Attention !", "Un creeper à 2 heures.", "On recule ?"]);
-        assert_eq!(cut("¡Cuidado! ¿Lo ves? Vamos."), ["¡Cuidado!", "¿Lo ves?", "Vamos."]);
-        assert_eq!(cut("Achtung, z.B. ein Creeper! Lauf."), ["Achtung, z.B. ein Creeper!", "Lauf."]);
-        assert_eq!(cut("Olha só... um creeper. Corre!"), ["Olha só...", "um creeper.", "Corre!"]);
+        assert_eq!(
+            cut("Creeper, 2 o'clock! Back off. Now?"),
+            ["Creeper, 2 o'clock!", "Back off.", "Now?"]
+        );
+        assert_eq!(
+            cut("Attention ! Un creeper à 2 heures. On recule ?"),
+            ["Attention !", "Un creeper à 2 heures.", "On recule ?"]
+        );
+        assert_eq!(
+            cut("¡Cuidado! ¿Lo ves? Vamos."),
+            ["¡Cuidado!", "¿Lo ves?", "Vamos."]
+        );
+        assert_eq!(
+            cut("Achtung, z.B. ein Creeper! Lauf."),
+            ["Achtung, z.B. ein Creeper!", "Lauf."]
+        );
+        assert_eq!(
+            cut("Olha só... um creeper. Corre!"),
+            ["Olha só...", "um creeper.", "Corre!"]
+        );
     }
 
     #[test]
     fn numbers_initials_quotes_and_cjk() {
-        assert_eq!(cut("Version 3.5 is out. Mr. Steve agrees."), ["Version 3.5 is out.", "Mr. Steve agrees."]);
-        assert_eq!(cut("He said \"run!\" and ran."), ["He said \"run!\"", "and ran."]);
+        assert_eq!(
+            cut("Version 3.5 is out. Mr. Steve agrees."),
+            ["Version 3.5 is out.", "Mr. Steve agrees."]
+        );
+        assert_eq!(
+            cut("He said \"run!\" and ran."),
+            ["He said \"run!\"", "and ran."]
+        );
         assert_eq!(cut("J. R. is here. Go."), ["J. R. is here.", "Go."]);
         assert_eq!(cut("小心！苦力怕。"), ["小心！", "苦力怕。"]);
         assert_eq!(cut("Line one\nLine two"), ["Line one", "Line two"]);
@@ -605,7 +672,10 @@ mod tests {
     #[test]
     fn a_sentence_is_emitted_as_soon_as_the_next_word_starts() {
         let mut s = Sentences::new();
-        assert!(s.push("Creeper!").is_empty(), "could still be \"Creeper!!\"");
+        assert!(
+            s.push("Creeper!").is_empty(),
+            "could still be \"Creeper!!\""
+        );
         assert_eq!(s.push(" R"), ["Creeper!"]);
         assert_eq!(s.finish().as_deref(), Some("R"));
     }
