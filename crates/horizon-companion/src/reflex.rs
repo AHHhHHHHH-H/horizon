@@ -435,13 +435,16 @@ fn match_intents(
     None
 }
 
-/// A negated command: "don't shoot" holds fire and "don't follow me" stays; any other negated command
-/// ("don't attack the villager", "don't eat") is for the brain.
+/// A negated command: "don't shoot" holds fire, "don't attack the villager" stops the fight (only that
+/// one: other mobs may still be fought) and "don't follow me" stays. Any other negated command ("don't
+/// eat", "don't get wood") is for the brain. The benchmark showed the small brain attacking a villager
+/// right after being told not to, so a rule that cannot get this wrong takes it.
 fn negate(intent: Intent) -> Parse {
     match intent {
         Intent::Attack { target: None } | Intent::HoldFire(_) => {
             Parse::Intent(Intent::HoldFire(true))
         }
+        Intent::Attack { target: Some(_) } => Parse::Intent(Intent::Stop),
         Intent::Follow => Parse::Intent(Intent::Stay),
         _ => Parse::Unclear,
     }
@@ -825,6 +828,9 @@ static EN: Grammar = Grammar {
         "plz",
         "ok",
         "okay",
+        // "no, follow me" corrects the last order; "no, don't shoot" still has its own negation.
+        "no",
+        "nope",
         "alright",
         "hey",
         "yo",
@@ -960,6 +966,7 @@ static FR: Grammar = Grammar {
         "stp",
         "svp",
         "bon",
+        "non",
         "ok",
         "hey",
         "he",
@@ -1535,6 +1542,16 @@ mod tests {
                 "spider",
                 &["Spider", "Araignée", "Araña", "Spinne", "Aranha"],
             ),
+            (
+                "villager",
+                &[
+                    "Villager",
+                    "Villageois",
+                    "Aldeano",
+                    "Dorfbewohner",
+                    "Aldeão",
+                ],
+            ),
         ] {
             for name in names {
                 n.add_mob(id, name);
@@ -1876,7 +1893,16 @@ mod tests {
         unclear("move", "en_us");
         unclear("don't get wood", "en_us");
         unclear("ne mange pas", "fr_fr");
-        unclear("don't attack the zombie", "en_us");
+        assert_eq!(intent("don't attack the zombie", "en_us"), Intent::Stop);
+        assert_eq!(
+            intent("NO, don't attack the villager!", "en_us"),
+            Intent::Stop
+        );
+        assert_eq!(
+            intent("NON, attaque pas le villageois !", "fr_fr"),
+            Intent::Stop
+        );
+        assert_eq!(intent("no ataques al aldeano", "es_es"), Intent::Stop);
     }
 
     #[test]

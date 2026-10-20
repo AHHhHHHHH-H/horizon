@@ -129,9 +129,10 @@ Answer with one JSON object and nothing else: {{\"tone\": ..., \"say\": ..., \"a
 - say: your chat line, in {lang}. One or two short sentences, 25 words at most. It is also read aloud, so no \
 emoji, no lists, no markdown.
 - tone: how you say it: normal, excited, shout (danger, hurry), whisper, laugh, sarcastic or worried.
-- actions: up to 3 skills to run now, in order, or [] when you only talk. Use only the skills below.
-- remember: only when you learn something worth keeping: a name {owner} gives something, a promise, where the \
-base is, a new role {owner} gives you. Leave it out otherwise.
+- actions: the skills that do what {owner} asked, in order: usually one, at most 3. [] when you only talk, \
+when the current skill already does it, or when nothing needs doing. Never add a skill nobody asked for.
+- remember: a short sentence, only when you learn something worth keeping: a name {owner} gives something, a \
+promise, where the base is, a new role {owner} gives you. Leave it out otherwise.
 
 # Skills
 - follow: stay close to {owner}. stay: hold this spot and guard it. come: walk to {owner} now.
@@ -146,7 +147,8 @@ base is, a new role {owner} gives you. Leave it out otherwise.
 Items, blocks and mobs are Minecraft ids in English: oak_log, cobblestone, iron_ingot, bread, zombie.
 
 # Rules
-- The state that comes with each message is the truth. Never claim to see, hold or know what it doesn't show.
+- The state that comes with each message is the truth. Never claim to see, hold or know what it doesn't show. \
+\"Doing:\" is the skill you are running now.
 - If {owner} asks for something no skill can do, say so in character and offer what you can do.
 - Stay inside Minecraft. No real-world dangerous instructions, nothing sexual, no hate, no personal questions. \
 If asked, refuse in character and steer back to the game.
@@ -168,9 +170,15 @@ slurs, never aimed at who someone is."
     out += "\n\n# Level\n";
     out += &level_text(persona.level, &owner);
     out += &format!(
-        "\n\n# Example\nState: night, zombie at 3 o'clock, 6 blocks. {owner}: \"help!\"\nAnswer: \
+        "\n\n# Examples (use your own words, in {lang} and in character)\n\
+State: night, zombie at 3 o'clock 6 blocks. {owner}: \"help!\"\n\
 {{\"tone\":\"shout\",\"say\":\"Zombie on your right, I've got it!\",\"actions\":[{{\"skill\":\"attack\",\
-\"target\":\"zombie\"}}]}}\n(Your own words, in {lang} and in character.)\n"
+\"target\":\"zombie\"}}]}}\n\
+State: your inventory 12 torch. {owner}: \"get me 20 cobble and pass me some torches\"\n\
+{{\"tone\":\"normal\",\"say\":\"Torches coming, then cobble.\",\"actions\":[{{\"skill\":\"give\",\
+\"item\":\"torch\",\"count\":6}},{{\"skill\":\"collect\",\"item\":\"cobblestone\",\"count\":20}}]}}\n\
+State: skill follow. {owner}: \"nice view up here\"\n\
+{{\"tone\":\"normal\",\"say\":\"Best spot for a base, if you ask me.\",\"actions\":[]}}\n"
     );
     out
 }
@@ -368,13 +376,16 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(3)
 }
 
-/// The messages for one turn.
+/// The messages for one turn. `language` is the game's language code: outside English the turn ends
+/// with a short reminder of it, which the benchmark showed keeps the small model from sliding back into
+/// English (85 % to 95 % of French replies in French).
 pub fn messages(
     system: &str,
     memory: &str,
     state: &str,
     history: &[Exchange],
     input: &Input,
+    language: &str,
     budget: &Budget,
 ) -> Vec<Message> {
     let memory = keep_last_lines(memory.trim(), budget.memory);
@@ -392,6 +403,10 @@ pub fn messages(
         turn += "\n\n";
     }
     turn += &input.heard();
+    let lang = language_name(language);
+    if lang != "English" {
+        turn += &format!("\n(Answer in {lang}.)");
+    }
     let fixed = estimate_tokens(&system) + estimate_tokens(&turn) + 16;
     let mut room = budget.total.saturating_sub(fixed);
     let mut kept = Vec::new();
@@ -480,7 +495,8 @@ mod tests {
         ] {
             assert!(a.contains(needle), "{needle} in\n{a}");
         }
-        assert!(estimate_tokens(&a) < 1100, "{} tokens", estimate_tokens(&a));
+        // About 860 real tokens (llama-server /tokenize, Qwen3.5): bytes / 3 overestimates by a quarter.
+        assert!(estimate_tokens(&a) < 1200, "{} tokens", estimate_tokens(&a));
     }
 
     #[test]
@@ -576,6 +592,7 @@ mod tests {
             "Overworld, day\nHealth 20",
             &history,
             &input,
+            "en_us",
             &Budget::default(),
         );
         assert_eq!(msgs[0].role, Role::System);
@@ -594,9 +611,15 @@ mod tests {
             "",
             &[],
             &Input::Event("You died.".into()),
+            "en_us",
             &Budget::default(),
         );
         assert_eq!(event[1].content, "[event] You died.");
+        let french = messages("S", "", "", &[], &input, "fr_fr", &Budget::default());
+        assert_eq!(
+            french[1].content,
+            format!("Steve: get wood\n(Answer in {}.)", language_name("fr_fr"))
+        );
     }
 
     #[test]
@@ -606,7 +629,15 @@ mod tests {
             total: 120,
             ..Budget::default()
         };
-        let msgs = messages("S", "", "", &history, &Input::Event("x".into()), &budget);
+        let msgs = messages(
+            "S",
+            "",
+            "",
+            &history,
+            &Input::Event("x".into()),
+            "en_us",
+            &budget,
+        );
         assert!(msgs.len() < 14 && msgs.len() > 2, "{}", msgs.len());
         assert_eq!(
             msgs[msgs.len() - 3].content,
@@ -621,6 +652,7 @@ mod tests {
             "",
             &[],
             &Input::Event("x".into()),
+            "en_us",
             &Budget::default(),
         );
         assert!(msgs[0].content.ends_with("note 199\n"));
@@ -634,6 +666,7 @@ mod tests {
             &state,
             &[],
             &Input::Event("x".into()),
+            "en_us",
             &Budget::default(),
         );
         let turn = &msgs[1].content;
