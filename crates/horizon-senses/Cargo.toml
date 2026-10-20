@@ -1,0 +1,27 @@
+[package]
+name = "horizon-senses"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The companion's senses without the game: the audio.cpp and embedding sidecars, streaming text to speech, push-to-talk speech recognition, the intent classifier and the voice DSP (docs/companions.md)"
+
+[dependencies]
+# The sidecars' HTTP APIs (blocking, on worker threads), as in the rest of the workspace.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+# Streamed speech arrives as base64 PCM in server-sent events.
+base64 = "0.22"
+# The embedding server's random API key.
+getrandom = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+# The sidecars' process group and priority.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The sidecars' job object (killed with the game) and priority class.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

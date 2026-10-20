@@ -1563,6 +1563,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-senses"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "libc",
+ "serde",
+ "serde_json",
+ "ureq",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
