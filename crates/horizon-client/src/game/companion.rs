@@ -82,6 +82,13 @@ pub(super) struct Body {
     /// Its work skills: the task stack, the dig, the bow, the open menu
     /// (game/companion_work.rs).
     pub work: super::companion_work::Work,
+    /// What it sees and remembers, at its perception level
+    /// (game/companion_senses.rs).
+    pub senses: horizon_client::companion::perception::Senses,
+    /// Movement that digs, bridges and pillars (game/companion_walk.rs).
+    pub walk: super::companion_walk::Walk,
+    /// The Speedrunner's route under way (game/companion_run.rs).
+    pub run: Option<Box<super::companion_run::Run>>,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -191,6 +198,12 @@ impl Body {
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
             work: Default::default(),
+            senses: horizon_client::companion::perception::Senses::new(
+                Default::default(),
+                dim.id(),
+            ),
+            walk: Default::default(),
+            run: None,
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -212,6 +225,9 @@ impl Body {
             .filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
         self.file.hold_fire = self.hold_fire;
         self.file.task = self.work.saved();
+        if self.run.is_some() {
+            self.file.task = Some(format!("run {}", self.senses.level.id()));
+        }
     }
     /// xorshift64*: the body's own randomness (teleport spots, item
     /// scatter), so that a companion never draws from the level's random.
@@ -252,6 +268,12 @@ pub(super) struct Companions {
     pub work: super::companion_work::WorkCache,
     /// The owner watching a companion (game/companion_watch.rs).
     pub watch: Option<super::companion_watch::Watch>,
+    /// How sight passes each block state (game/companion_senses.rs).
+    pub sight: Option<std::sync::Arc<super::companion_senses::SightTable>>,
+    /// Sight since the last `companion cost`: ticks, time, worst.
+    pub sight_cost: (u32, std::time::Duration, std::time::Duration),
+    /// Item → the blocks that drop it (the tech-tree planner's).
+    pub mined: Option<std::sync::Arc<std::collections::HashMap<String, Vec<horizon_client::companion::techtree::Mined>>>>,
 }
 
 impl Companions {
@@ -271,6 +293,9 @@ impl Game<'_> {
     /// A report from a body: kept for the brain, and in its recent events.
     pub(super) fn companion_report(&mut self, b: &mut Body, report: CompanionReport) {
         let line = report.text();
+        if let Some(run) = b.run.as_mut() {
+            run.heard(&report);
+        }
         log::info!("[companion] {}: {line}", b.file.name);
         if b.recent.len() == RECENT {
             b.recent.pop_front();
@@ -440,6 +465,7 @@ impl Game<'_> {
             host.hub.set_game_mode(conn, 0);
         }
         let mut b = Body::new(conn, uuid, file.clone(), self.dim);
+        b.senses = self.companion_load_senses(&file.uuid, self.dim.id());
         b.last_health = health;
         if beside_owner {
             // Called back by name: with its owner, whatever it did before.
@@ -500,6 +526,7 @@ impl Game<'_> {
         host.mob_players.retain(|_, conn| *conn != b.conn);
         b.file.active = active;
         b.keep_skill();
+        self.companion_save_senses(&b);
         if let Err(e) = b.file.save(&self.world_root) {
             log::warn!("[companion] could not save {}: {e}", b.file.name);
         }
@@ -554,6 +581,7 @@ impl Game<'_> {
                 g.dimension = in_place.clone();
             }
             host.companions[bi].keep_skill();
+            self.companion_save_senses(&host.companions[bi]);
             let file = &host.companions[bi].file;
             if let Err(e) = file.save(&self.world_root) {
                 log::warn!("[companion] could not save {}: {e}", file.name);
@@ -961,6 +989,10 @@ impl Game<'_> {
                 cost["plans"] = json!(plans);
                 cost["plans_ms"] = json!(total.as_secs_f64() * 1000.0);
                 cost["plan_max_ms"] = json!(max.as_secs_f64() * 1000.0);
+                let (n, total, max) = std::mem::take(&mut self.companions.sight_cost);
+                cost["sight_ticks"] = json!(n);
+                cost["sight_ms"] = json!(total.as_secs_f64() * 1000.0);
+                cost["sight_max_ms"] = json!(max.as_secs_f64() * 1000.0);
                 if let Value::Object(work) = self.companion_work_cost() {
                     for (k, v) in work {
                         cost[k] = v;
@@ -1025,6 +1057,12 @@ impl Game<'_> {
                     "sleeping": g.bed.is_some(),
                     "inventory": counts,
                     "task": b.work.status(),
+                    "perception": b.senses.level.id(),
+                    "run": self.companion_run_status(b),
+                    "walk": b.walk.status(),
+                    "ticks": b.ticks,
+                    "digging": b.work.dig.map(|d| d.0),
+                    "mining": host.play.get(&b.conn).and_then(|p| p.mining()),
                 }))
             })
             .collect();

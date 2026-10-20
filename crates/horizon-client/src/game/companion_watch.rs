@@ -43,7 +43,7 @@ pub(super) struct Watch {
     /// The level the body was in last tick.
     dim: Dim,
     /// The run timer, in ticks.
-    ticks: u64,
+    pub ticks: u64,
     /// What the planner says it is doing, and how much it sees.
     pub step: String,
     pub perception: String,

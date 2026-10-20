@@ -31,6 +31,9 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 const SEARCH_BUDGET: u32 = 6 * 4096;
 /// Ticks a target may take before it is given up as out of reach.
 const TARGET_PATIENCE: u64 = 900;
+/// Ticks a collect looks round (a full turn of its eye) before it says
+/// there is none it knows of.
+const LOOK_ROUND: u32 = 64;
 /// Ticks one block may take to break before the dig is given up.
 const DIG_PATIENCE: u64 = 600;
 /// Ticks it walks to one dropped item before leaving it.
@@ -189,7 +192,14 @@ impl Work {
         match self.tasks.last() {
             Some(t) => {
                 let (done, total) = t.progress();
-                json!({ "skill": t.skill.name(), "done": done, "total": total, "depth": self.tasks.len() })
+                let mut v = json!({ "skill": t.skill.name(), "done": done, "total": total, "depth": self.tasks.len() });
+                if let Kind::Collect(k) = &t.kind {
+                    v["target"] = json!(k.target.as_ref().map(|t| t.pos));
+                    v["hunting"] = json!(k.hunting.map(|h| h.0));
+                    v["bad"] = json!(k.bad.len());
+                    v["looked"] = json!(k.looked);
+                }
+                v
             }
             None => Value::Null,
         }
@@ -284,6 +294,8 @@ pub(super) struct Collect {
     prey: Vec<String>,
     search: Option<BlockSearch>,
     searches: u32,
+    /// Ticks it spent looking round for one it doesn't know of yet.
+    looked: u32,
     target: Option<Target>,
     bad: Vec<[i32; 3]>,
     /// Drops to pick up around a point until a tick.
@@ -606,7 +618,7 @@ impl Game<'_> {
     ) {
         let started = std::time::Instant::now();
         let Some(mut task) = b.work.tasks.pop() else {
-            b.skill = Skill::Follow;
+            b.skill = if b.run.is_some() { Skill::Run } else { Skill::Follow };
             return;
         };
         let outcome = if task.dim != b.dim {
@@ -798,7 +810,7 @@ impl Game<'_> {
     }
 
     /// What each block drops without a tool match (`work::loot_items`), once.
-    fn block_drops(&mut self) -> Arc<HashMap<String, Vec<String>>> {
+    pub(super) fn block_drops(&mut self) -> Arc<HashMap<String, Vec<String>>> {
         if let Some(d) = &self.companions.work.block_drops {
             return d.clone();
         }
@@ -922,6 +934,7 @@ impl Game<'_> {
             prey,
             search: None,
             searches: 0,
+            looked: 0,
             target: None,
             bad: Vec::new(),
             pickup: None,
@@ -997,19 +1010,29 @@ impl Game<'_> {
             return Outcome::Busy;
         }
         let here = feet(pos);
-        let search = k
-            .search
-            .get_or_insert_with(|| BlockSearch::new(k.states.clone(), here, SEARCH_RADIUS));
+        // What its perception level lets it know of (companion_senses.rs).
+        let Some(mut found) =
+            self.companion_known(b, &k.states, here, SEARCH_RADIUS, &mut k.search, SEARCH_BUDGET)
+        else {
+            return Outcome::Busy;
+        };
         let world = &self.world;
         let states = &k.states;
         let facts = self.res.facts();
-        search.found.retain(|p| {
-            !k.bad.contains(p)
-                && states
-                    .get(world.block(p[0], p[1], p[2]).0 as usize)
-                    .copied()
-                    .unwrap_or(false)
+        let mut stale = Vec::new();
+        found.retain(|p| {
+            let there = states
+                .get(world.block(p[0], p[1], p[2]).0 as usize)
+                .copied()
+                .unwrap_or(false);
+            if !there {
+                stale.push(*p);
+            }
+            !k.bad.contains(p) && there
         });
+        for p in stale {
+            b.senses.memory_mut().forget(p);
+        }
         // The nearest it can harvest, with a little weight against digging.
         let inventory = &host
             .hub
@@ -1019,7 +1042,7 @@ impl Game<'_> {
         let items = self.res.items();
         let mut needs: Option<&'static str> = None;
         let mut best: Option<(f64, [i32; 3])> = None;
-        for p in &search.found {
+        for p in &found {
             let f = facts.get(world.block(p[0], p[1], p[2]));
             if f.requires_tool
                 && !inventory
@@ -1054,12 +1077,6 @@ impl Game<'_> {
                 best = Some((cost, *p));
             }
         }
-        // Keep looking a little: a nearer one may be in the next sections.
-        let enough = best.is_some_and(|(cost, _)| cost < 12.0) || search.found.len() >= 24;
-        if !search.done() && !enough {
-            search.step(&self.world, SEARCH_BUDGET);
-            return Outcome::Busy;
-        }
         if let Some((_, p)) = best {
             k.target = Some(Target {
                 pos: p,
@@ -1088,10 +1105,18 @@ impl Game<'_> {
         if let Some(tool) = needs {
             return Outcome::Failed(format!("needs a {}", c::short_id(tool).replace('_', " ")));
         }
+        // What it sees only by looking: a full turn of its eye first.
+        if b.senses.level.xray_radius(SEARCH_RADIUS).is_none() && k.looked < LOOK_ROUND {
+            k.looked += 1;
+            k.search = None;
+            b.yaw += 360.0 / LOOK_ROUND as f32;
+            return Outcome::Busy;
+        }
         // Searched out: once more from where it now stands, then it gives up.
         if k.searches < 2 && !k.bad.is_empty() {
             k.searches += 1;
             k.search = None;
+            k.looked = 0;
             k.bad.clear();
             return Outcome::Busy;
         }
@@ -1248,6 +1273,16 @@ impl Game<'_> {
         pos: [f64; 3],
     ) -> Steer {
         let there = c::horizontal(pos, goal) <= near && (goal[1] - pos[1]).abs() < 2.5;
+        // A runner walks the way that digs, bridges and pillars.
+        if b.run.is_some() && !there {
+            let to = feet(goal);
+            let goal = if near < 1.0 {
+                horizon_client::companion::moves::Goal::exact(to)
+            } else {
+                horizon_client::companion::moves::Goal::near(to, near)
+            };
+            return self.companion_travel(host, b, goal, pos);
+        }
         if there {
             b.work.tunnel = None;
             b.work.tunnel_until = None;
@@ -1342,7 +1377,9 @@ impl Game<'_> {
             k.pickup = Some((centre(p), b.ticks + 200));
             return Outcome::Busy;
         }
-        if b.ticks - t.since > TARGET_PATIENCE {
+        // A runner may walk, dig and bridge a long way to it.
+        let patience = if b.run.is_some() { TARGET_PATIENCE * 3 } else { TARGET_PATIENCE };
+        if b.ticks - t.since > patience {
             self.companion_stop_dig(host, b);
             k.bad.push(p);
             k.target = None;
@@ -1387,6 +1424,30 @@ impl Game<'_> {
                 return Outcome::Busy;
             }
             Access::None => {}
+        }
+        let Some(t) = k.target.as_mut() else {
+            return Outcome::Busy;
+        };
+        // A runner walks there the way that digs, bridges and pillars (its
+        // digging on the way is the walk's).
+        if b.run.is_some() {
+            let goal = horizon_client::companion::moves::Goal {
+                at: p,
+                near: 2.0,
+                vertical: 2,
+            };
+            match self.companion_travel(host, b, goal, pos) {
+                Steer::Moving => {}
+                Steer::Arrived | Steer::Stuck => {
+                    t.tried.push(pos);
+                    b.walk.reset();
+                    if t.tried.len() > 2 {
+                        k.bad.push(p);
+                        k.target = None;
+                    }
+                }
+            }
+            return Outcome::Busy;
         }
         self.companion_stop_dig(host, b);
         let Some(t) = k.target.as_mut() else {
@@ -1687,6 +1748,21 @@ impl Game<'_> {
         DigStep::Busy
     }
 
+    /// Dig `p` on a walk (its drops don't matter): Ok while it digs or once
+    /// it broke, Err when it can't.
+    pub(super) fn companion_dig_step(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        p: [i32; 3],
+        face: u8,
+    ) -> Result<(), ()> {
+        match self.companion_dig(host, b, p, face, false) {
+            DigStep::Failed(_) => Err(()),
+            _ => Ok(()),
+        }
+    }
+
     /// The dig stops: STOP once the block is gone (its client saw it break),
     /// else ABORT.
     pub(super) fn companion_stop_dig(&mut self, host: &mut LanHost, b: &mut Body) {
@@ -1852,13 +1928,12 @@ impl Game<'_> {
         if k.bed.is_none() {
             // A bed near its owner's when the owner sleeps, else near it.
             let here = owner_bed.unwrap_or(feet(pos));
-            let search = k.search.get_or_insert_with(|| {
-                let beds = self.states_where(|n| n.ends_with("_bed"));
-                BlockSearch::new(beds, here, STATION_RADIUS)
-            });
-            if !search.step(&self.world, SEARCH_BUDGET) {
+            let beds = self.states_where(|n| n.ends_with("_bed"));
+            let Some(found) =
+                self.companion_known(b, &beds, here, STATION_RADIUS, &mut k.search, SEARCH_BUDGET)
+            else {
                 return Outcome::Busy;
-            }
+            };
             let registry = &self.pack.assets.registry;
             let free = |p: &[i32; 3]| {
                 let props = registry
@@ -1869,8 +1944,7 @@ impl Game<'_> {
                     && props.get("occupied").map(String::as_str) != Some("true")
                     && Some(*p) != owner_bed
             };
-            k.bed = search
-                .found
+            k.bed = found
                 .iter()
                 .filter(|p| free(p))
                 .min_by(|x, y| {

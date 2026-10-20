@@ -170,6 +170,9 @@ impl Game<'_> {
         }
         let (pos, health, food) = (g.position, g.health, g.food);
         b.near_owner = c::distance(pos, owner) <= c::COME_ALONG;
+        self.companion_see(b, pos);
+        // A runner plays alone: its own place stands for its owner's.
+        let owner = if b.run.is_some() { pos } else { owner };
         self.companion_notice_hurt(host, b, pos, health);
         if b.ticks.is_multiple_of(10) {
             self.companion_callouts(b, pos, owner);
@@ -214,6 +217,17 @@ impl Game<'_> {
         }
         self.companion_work_reflexes(host, b);
         self.companion_pick_target(host, b, pos, owner);
+        // A runner leaves creepers alone (the run backs off from them).
+        if b.run.is_some()
+            && let Some(id) = b.target
+            && self
+                .mobs
+                .iter()
+                .any(|m| m.id == id && &*m.kind.id == "minecraft:creeper")
+        {
+            b.target = None;
+            b.ordered = false;
+        }
         self.companion_move(host, b, pos, owner);
         if b.jump {
             b.keys.jump = true;
@@ -245,6 +259,24 @@ impl Game<'_> {
             )
         {
             self.companion_cancel_work(host, b, Some("stopped"));
+        }
+        // Any other order ends a run.
+        if b.run.is_some()
+            && !matches!(
+                command,
+                CompanionCommand::Run { .. }
+                    | CompanionCommand::Perception(_)
+                    | CompanionCommand::HoldFire(_)
+                    | CompanionCommand::Jump
+                    | CompanionCommand::Crouch(_)
+                    | CompanionCommand::Eat
+            )
+        {
+            if !b.work.tasks.is_empty() {
+                self.companion_cancel_work(host, b, Some("stopped"));
+            }
+            b.run = None;
+            b.walk.reset();
         }
         let start = |game: &mut Self, b: &mut Body, skill: Skill| {
             if b.skill != skill {
@@ -349,6 +381,8 @@ impl Game<'_> {
             | CompanionCommand::Craft { .. }
             | CompanionCommand::Smelt { .. }
             | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
+            CompanionCommand::Run { perception } => self.companion_start_run(host, b, perception),
+            CompanionCommand::Perception(level) => b.senses.level = level,
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
                     self.companion_report(
@@ -569,6 +603,10 @@ impl Game<'_> {
     /// Where it goes this tick, and the blow it strikes.
     fn companion_move(&mut self, host: &mut LanHost, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
         let eye = [pos[0], pos[1] + 1.62, pos[2]];
+        // A run watches over whatever its work does.
+        if b.run.is_some() && self.companion_run_watch(host, b, pos) {
+            return;
+        }
         // Fighting.
         if let Some(id) = b.target {
             let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
@@ -622,6 +660,7 @@ impl Game<'_> {
             Skill::Collect | Skill::Give | Skill::Craft | Skill::Smelt | Skill::Sleep => {
                 self.companion_work(host, b, pos, owner);
             }
+            Skill::Run => self.companion_run_tick(host, b, pos),
             Skill::Follow | Skill::Defend | Skill::Retreat => {
                 // TamableAnimal.tryToTeleportToOwner wants a floor by the
                 // owner: none while they fall or fly, when it heads for the

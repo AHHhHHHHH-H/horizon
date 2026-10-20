@@ -65,6 +65,13 @@ pub enum CompanionCommand {
     },
     /// Sleep in a bed within 16 blocks (it also does when its owner sleeps).
     Sleep,
+    /// The Speedrunner's route (game/companion_run.rs), at a perception
+    /// level when one is given.
+    Run {
+        perception: Option<perception::PerceptionLevel>,
+    },
+    /// What it may know of the world (companion/perception.rs).
+    Perception(perception::PerceptionLevel),
 }
 
 /// What [`CompanionCommand::Collect`] and [`CompanionCommand::Give`] are
@@ -133,6 +140,10 @@ impl CompanionCommand {
             }
             Self::Smelt { item, count } => format!("smelt {count} {}", short_id(item)),
             Self::Sleep => "sleep".into(),
+            Self::Run { perception } => match perception {
+                Some(p) => format!("run {}", p.id()),
+                None => "run".into(),
+            },
             _ => return None,
         })
     }
@@ -170,6 +181,8 @@ pub enum Skill {
     Craft,
     Smelt,
     Sleep,
+    /// The Speedrunner's route.
+    Run,
 }
 
 impl Skill {
@@ -188,6 +201,7 @@ impl Skill {
             Skill::Craft,
             Skill::Smelt,
             Skill::Sleep,
+            Skill::Run,
         ]
         .into_iter()
         .find(|s| s.name() == name)
@@ -207,6 +221,7 @@ impl Skill {
             Skill::Craft => "craft",
             Skill::Smelt => "smelt",
             Skill::Sleep => "sleep",
+            Skill::Run => "run",
         }
     }
 }
@@ -383,6 +398,22 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
             }
         }
         "sleep" | "bed" => CompanionCommand::Sleep,
+        "run" | "speedrun" => CompanionCommand::Run {
+            perception: match words.get(1..).filter(|w| !w.is_empty()) {
+                Some(w) => Some(
+                    perception::PerceptionLevel::parse(&w.join(" "))
+                        .ok_or_else(|| format!("no perception level {}", w.join(" ")))?,
+                ),
+                None => None,
+            },
+        },
+        "perception" | "senses" => {
+            let w = words.get(1..).unwrap_or_default().join(" ");
+            CompanionCommand::Perception(
+                perception::PerceptionLevel::parse(&w)
+                    .ok_or_else(|| format!("perception fair, sharp, scout or all, not {w:?}"))?,
+            )
+        }
         other => return Err(format!("unknown companion command: {other}")),
     })
 }

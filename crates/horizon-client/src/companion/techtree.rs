@@ -100,8 +100,11 @@ pub struct Stations {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TechPlan {
     pub actions: Vec<Action>,
-    /// Items it has no known way to get (not seen, can't be crafted).
+    /// Goals it has no known way to get (not seen, can't be crafted).
     pub missing: Vec<String>,
+    /// The raw items those lack: mined or hunted, but none known (what to
+    /// go and look for).
+    pub lacks: Vec<String>,
     /// Estimated ticks.
     pub cost: u32,
 }
@@ -142,6 +145,8 @@ pub struct TechPlanner<'a, K: Knowledge> {
     visiting: Vec<String>,
     budget: u32,
     missing: Vec<String>,
+    lacks: Vec<String>,
+    tried: Vec<String>,
 }
 
 impl<'a, K: Knowledge> TechPlanner<'a, K> {
@@ -156,6 +161,8 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
             visiting: Vec::new(),
             budget: BUDGET,
             missing: Vec::new(),
+            lacks: Vec::new(),
+            tried: Vec::new(),
         }
     }
 
@@ -163,10 +170,16 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
     /// can't be had.
     pub fn want(&mut self, item: &str, n: u32) -> Option<u32> {
         let saved = self.state.clone();
+        self.tried.clear();
         match self.need(item, n) {
             Some(c) => Some(c),
             None => {
                 self.state = saved;
+                for t in std::mem::take(&mut self.tried) {
+                    if !self.lacks.contains(&t) {
+                        self.lacks.push(t);
+                    }
+                }
                 if !self.missing.iter().any(|m| m == item) {
                     self.missing.push(item.to_owned());
                 }
@@ -228,6 +241,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         TechPlan {
             actions,
             missing: self.missing,
+            lacks: self.lacks,
             cost: 0,
         }
     }
@@ -304,6 +318,12 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
             consider(self, c);
         }
         self.visiting.pop();
+        if best.is_none()
+            && (!self.k.mined_from(item).is_empty() || !self.k.hunted_from(item).is_empty())
+            && !self.tried.iter().any(|t| t == item)
+        {
+            self.tried.push(item.to_owned());
+        }
         let (cost, state) = best?;
         self.state = state;
         Some(cost)
@@ -842,6 +862,7 @@ mod tests {
         );
         assert!(!p.complete());
         assert_eq!(p.missing, vec![i("bucket")]);
+        assert!(p.lacks.contains(&i("raw_iron")), "{:?}", p.lacks);
         assert!(
             p.actions.is_empty(),
             "nothing half-planned: {:?}",

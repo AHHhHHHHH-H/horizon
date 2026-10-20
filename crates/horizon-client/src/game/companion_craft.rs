@@ -122,7 +122,7 @@ fn menu_slot(base: usize, i: usize) -> usize {
 }
 
 /// What placing a crafting table or furnace came to.
-enum Place {
+pub(super) enum Place {
     Busy,
     Placed([i32; 3]),
     Failed(String),
@@ -358,7 +358,7 @@ impl Game<'_> {
     }
 
     /// A right click on block `p` (a crafting table or furnace opens).
-    fn companion_use_block(
+    pub(super) fn companion_use_block(
         &mut self,
         host: &mut LanHost,
         b: &mut Body,
@@ -393,7 +393,7 @@ impl Game<'_> {
     }
 
     /// Place a crafting table or furnace it carries on the floor beside it.
-    fn companion_place(
+    pub(super) fn companion_place(
         &mut self,
         host: &mut LanHost,
         b: &mut Body,
@@ -472,21 +472,17 @@ impl Game<'_> {
     /// a tick; None while searching or when there is none (`searched`).
     fn companion_station(
         &mut self,
+        b: &Body,
         search: &mut Option<BlockSearch>,
         searched: &mut bool,
         name: &str,
         pos: [f64; 3],
     ) -> Option<[i32; 3]> {
-        let s = search.get_or_insert_with(|| {
-            let wanted = self.states_where(|n| n == name);
-            BlockSearch::new(wanted, feet(pos), STATION_RADIUS)
-        });
-        if !s.step(&self.world, SEARCH_BUDGET) {
-            return None;
-        }
+        let wanted = self.states_where(|n| n == name);
+        let found =
+            self.companion_known(b, &wanted, feet(pos), STATION_RADIUS, search, SEARCH_BUDGET)?;
         *searched = true;
-        let found = s
-            .found
+        let found = found
             .iter()
             .filter(|p| {
                 *self
@@ -576,6 +572,7 @@ impl Game<'_> {
         };
         if plan.needs_table() && k.table.is_none() && !k.searched {
             k.table = self.companion_station(
+                b,
                 &mut k.search,
                 &mut k.searched,
                 "minecraft:crafting_table",
@@ -781,6 +778,7 @@ impl Game<'_> {
         let Some(p) = k.furnace else {
             if !k.searched {
                 k.furnace = self.companion_station(
+                    b,
                     &mut k.search,
                     &mut k.searched,
                     "minecraft:furnace",

@@ -206,6 +206,13 @@ impl Memory {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Every block it remembers, and its state.
+    pub fn iter(&self) -> impl Iterator<Item = ([i32; 3], u32)> + '_ {
+        self.notable
+            .iter()
+            .chain(self.common.iter())
+            .map(|(p, s)| (*p, *s))
+    }
     /// The state remembered at `p`.
     pub fn get(&self, p: [i32; 3]) -> Option<u32> {
         self.notable

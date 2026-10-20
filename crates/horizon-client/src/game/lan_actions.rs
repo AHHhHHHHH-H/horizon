@@ -140,6 +140,10 @@ impl GuestPlay {
     pub(super) fn digging(&self) -> Option<[i32; 3]> {
         self.digging.map(|(pos, _)| pos)
     }
+    /// The dig's progress as the server counts it: the block, how far, ticks.
+    pub(super) fn mining(&self) -> Option<([i32; 3], f32, u32)> {
+        self.mining.as_ref().map(|m| (m.pos, m.progress, m.ticks))
+    }
 }
 
 struct ItemRules<'a>(&'a horizon_client::items::Items);

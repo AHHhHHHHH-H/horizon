@@ -149,6 +149,9 @@ def scenario(endpoint, shots, home):
     build_arena(endpoint)
     owner_to(endpoint, X, Z)
     name = command(endpoint, 'companion spawn Ari')['name']
+    # The arena's iron ore is buried: All-knowing finds it through the
+    # stone (Fair, the default, only knows what it saw).
+    companion_do(endpoint, f'{name} perception all')
     reports = Reports(endpoint)
     numbers = {}
 
