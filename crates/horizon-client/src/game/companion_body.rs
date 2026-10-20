@@ -12,7 +12,10 @@ use super::{
 };
 use horizon_client::{
     blocks::Fluid,
-    companion::{self as c, AttackTarget, CompanionCommand, CompanionReport, FollowStep, GoTarget, Skill, gear},
+    companion::{
+        self as c, AttackTarget, CompanionCommand, CompanionReport, FollowStep, GoTarget, Skill,
+        gear,
+    },
     items::ItemStack,
     mobs::{
         Mob, Who,
@@ -172,7 +175,10 @@ impl Game<'_> {
                 .is_some();
             if !using {
                 b.eating = None;
-                let after = host.hub.guest(b.conn).map_or(before, |g| carried(&g.inventory, &item));
+                let after = host
+                    .hub
+                    .guest(b.conn)
+                    .map_or(before, |g| carried(&g.inventory, &item));
                 if after < before {
                     self.companion_report(b, CompanionReport::Ate { item });
                 }
@@ -209,7 +215,13 @@ impl Game<'_> {
     }
 
     /// A command from the brain or the dev command.
-    fn companion_apply(&mut self, host: &mut LanHost, b: &mut Body, command: CompanionCommand, owner: [f64; 3]) {
+    fn companion_apply(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        command: CompanionCommand,
+        owner: [f64; 3],
+    ) {
         let pos = host.hub.guest(b.conn).map_or(owner, |g| g.position);
         let start = |game: &mut Self, b: &mut Body, skill: Skill| {
             if b.skill != skill {
@@ -260,18 +272,28 @@ impl Game<'_> {
             }
             CompanionCommand::Attack(who) => {
                 let id = match who {
-                    AttackTarget::Entity(id) => self.mobs.iter().any(|m| m.id == id && m.alive()).then_some(id),
+                    AttackTarget::Entity(id) => self
+                        .mobs
+                        .iter()
+                        .any(|m| m.id == id && m.alive())
+                        .then_some(id),
                     AttackTarget::NearestHostile => self
                         .mobs
                         .iter()
                         .filter(|m| threat(m) && c::distance(mob_at(m), pos) <= c::NOTICE_RADIUS)
-                        .min_by(|x, y| c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos)))
+                        .min_by(|x, y| {
+                            c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos))
+                        })
                         .map(|m| m.id),
                 };
                 match id {
                     Some(id) => {
                         if b.skill != Skill::Attack {
-                            b.resume = if b.skill == Skill::Idle { Skill::Follow } else { b.skill };
+                            b.resume = if b.skill == Skill::Idle {
+                                Skill::Follow
+                            } else {
+                                b.skill
+                            };
                         }
                         b.target = Some(id);
                         b.ordered = true;
@@ -316,8 +338,16 @@ impl Game<'_> {
     /// The block the owner's crosshair hits, up to 128 blocks away.
     fn owner_crosshair_block(&self) -> Option<[i32; 3]> {
         let eye = self.eye_position()?;
-        let hit = self.clip_ray(eye, super::view_vector(self.yaw, self.pitch), c::CROSSHAIR_RANGE)?;
-        Some([hit.pos[0] + hit.face[0], hit.pos[1] + hit.face[1], hit.pos[2] + hit.face[2]])
+        let hit = self.clip_ray(
+            eye,
+            super::view_vector(self.yaw, self.pitch),
+            c::CROSSHAIR_RANGE,
+        )?;
+        Some([
+            hit.pos[0] + hit.face[0],
+            hit.pos[1] + hit.face[1],
+            hit.pos[2] + hit.face[2],
+        ])
     }
 
     /// Where a player stands to be at block `p`: on top of it when it is
@@ -338,7 +368,11 @@ impl Game<'_> {
                 q[1] -= 1;
             }
         }
-        [f64::from(q[0]) + 0.5, f64::from(q[1]), f64::from(q[2]) + 0.5]
+        [
+            f64::from(q[0]) + 0.5,
+            f64::from(q[1]),
+            f64::from(q[2]) + 0.5,
+        ]
     }
 
     /// Health lost since last tick: a Hurt report, and who did it (the mob
@@ -395,7 +429,13 @@ impl Game<'_> {
     }
 
     /// The fight it is in: kept while it lasts, else one it should start.
-    fn companion_pick_target(&mut self, host: &LanHost, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
+    fn companion_pick_target(
+        &mut self,
+        host: &LanHost,
+        b: &mut Body,
+        pos: [f64; 3],
+        owner: [f64; 3],
+    ) {
         if b.hold_fire || b.retreating || b.skill == Skill::Idle {
             if b.skill != Skill::Attack {
                 b.target = None;
@@ -406,17 +446,23 @@ impl Game<'_> {
         }
         // The current target, while it is alive and near enough.
         if let Some(id) = b.target {
-            let keep = self.mobs.iter().find(|m| m.id == id && m.alive()).is_some_and(|m| {
-                let at = mob_at(m);
-                if b.ordered {
-                    c::distance(at, pos) <= 48.0
-                } else {
-                    match (b.skill, b.post) {
-                        (Skill::Stay, Some(post)) => c::distance(at, post) <= c::GUARD_RADIUS + 8.0,
-                        _ => c::distance(at, owner) <= LEASH,
+            let keep = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && m.alive())
+                .is_some_and(|m| {
+                    let at = mob_at(m);
+                    if b.ordered {
+                        c::distance(at, pos) <= 48.0
+                    } else {
+                        match (b.skill, b.post) {
+                            (Skill::Stay, Some(post)) => {
+                                c::distance(at, post) <= c::GUARD_RADIUS + 8.0
+                            }
+                            _ => c::distance(at, owner) <= LEASH,
+                        }
                     }
-                }
-            });
+                });
             if keep {
                 return;
             }
@@ -479,7 +525,9 @@ impl Game<'_> {
                     .iter()
                     .filter(|m| threat(m) && (!only_hunting || m.ai.target == Some(Who::Player)))
                     .filter(|m| c::distance(mob_at(m), centre) <= radius)
-                    .min_by(|x, y| c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos)))
+                    .min_by(|x, y| {
+                        c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos))
+                    })
                     .map(|m| m.id);
             }
         }
@@ -542,7 +590,11 @@ impl Game<'_> {
                 // owner: none while they fall or fly, when it heads for the
                 // ground below them.
                 let grounded = self.player.as_ref().is_some_and(|p| p.ground.on_ground);
-                let owner = if grounded { owner } else { self.floor_below(owner) };
+                let owner = if grounded {
+                    owner
+                } else {
+                    self.floor_below(owner)
+                };
                 let d = c::distance(pos, owner);
                 match c::follow_step(d, b.moving) {
                     FollowStep::Teleport => {
@@ -558,7 +610,9 @@ impl Game<'_> {
                     step @ (FollowStep::Walk | FollowStep::Sprint) => {
                         b.moving = true;
                         let sprint = step == FollowStep::Sprint || b.retreating;
-                        if self.companion_steer(host, b, owner, c::FOLLOW_NEAR - 0.5, sprint) == Steer::Stuck {
+                        if self.companion_steer(host, b, owner, c::FOLLOW_NEAR - 0.5, sprint)
+                            == Steer::Stuck
+                        {
                             // Like a tamed wolf that cannot reach its owner.
                             if d > 12.0 && grounded && self.companion_place_near(host, b, owner) {
                                 self.companion_report(b, CompanionReport::Teleported);
@@ -603,19 +657,21 @@ impl Game<'_> {
                 }
                 _ => self.companion_look_at_owner(b, pos, owner),
             },
-            Skill::Come => match self.companion_steer(host, b, owner, 2.5, c::distance(pos, owner) > 8.0) {
-                Steer::Arrived => {
-                    b.skill = Skill::Stay;
-                    b.post = Some(pos);
-                    self.companion_report(b, CompanionReport::SkillFinished(Skill::Come));
-                }
-                Steer::Stuck => {
-                    if self.companion_place_near(host, b, owner) {
-                        self.companion_report(b, CompanionReport::Teleported);
+            Skill::Come => {
+                match self.companion_steer(host, b, owner, 2.5, c::distance(pos, owner) > 8.0) {
+                    Steer::Arrived => {
+                        b.skill = Skill::Stay;
+                        b.post = Some(pos);
+                        self.companion_report(b, CompanionReport::SkillFinished(Skill::Come));
                     }
+                    Steer::Stuck => {
+                        if self.companion_place_near(host, b, owner) {
+                            self.companion_report(b, CompanionReport::Teleported);
+                        }
+                    }
+                    Steer::Moving => {}
                 }
-                Steer::Moving => {}
-            },
+            }
             Skill::GoTo => {
                 let Some(goal) = b.post else {
                     b.skill = Skill::Follow;
@@ -645,12 +701,23 @@ impl Game<'_> {
 
     fn companion_look_at_owner(&self, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
         b.yaw = c::yaw_toward(pos, owner) as f32;
-        let eye_height = self.player.as_ref().map_or(1.62, |p| f64::from(p.dimensions.eye_height));
-        b.pitch = look_pitch([pos[0], pos[1] + 1.62, pos[2]], [owner[0], owner[1] + eye_height, owner[2]]);
+        let eye_height = self
+            .player
+            .as_ref()
+            .map_or(1.62, |p| f64::from(p.dimensions.eye_height));
+        b.pitch = look_pitch(
+            [pos[0], pos[1] + 1.62, pos[2]],
+            [owner[0], owner[1] + eye_height, owner[2]],
+        );
     }
 
     /// A dropped item it can take near its owner, the nearest first.
-    fn companion_item_nearby(&self, skip: &[u32], pos: [f64; 3], owner: [f64; 3]) -> Option<(u32, [f64; 3])> {
+    fn companion_item_nearby(
+        &self,
+        skip: &[u32],
+        pos: [f64; 3],
+        owner: [f64; 3],
+    ) -> Option<(u32, [f64; 3])> {
         self.dropped
             .iter()
             .filter(|d| d.pickup_delay < 10 && !skip.contains(&d.id))
@@ -662,7 +729,14 @@ impl Game<'_> {
 
     /// Steer toward `goal` along a vanilla path for a player-sized walker:
     /// sets its keys and facing for the physics tick.
-    fn companion_steer(&mut self, host: &LanHost, b: &mut Body, goal: [f64; 3], near: f64, sprint: bool) -> Steer {
+    fn companion_steer(
+        &mut self,
+        host: &LanHost,
+        b: &mut Body,
+        goal: [f64; 3],
+        near: f64,
+        sprint: bool,
+    ) -> Steer {
         let Some(g) = host.hub.guest(b.conn) else {
             return Steer::Stuck;
         };
@@ -705,7 +779,8 @@ impl Game<'_> {
             pos[2].floor() as i32,
         ));
         let in_water = in_water.fluid == Fluid::Water;
-        let stale = nav.path.as_ref().is_none_or(Path::is_done) || c::distance(nav.goal, goal) > 2.0;
+        let stale =
+            nav.path.as_ref().is_none_or(Path::is_done) || c::distance(nav.goal, goal) > 2.0;
         // FollowOwnerGoal and MeleeAttackGoal plan again every 10 ticks or
         // so; a goal out of reach (an owner in the air) costs a full search
         // every time, so a plan that fell short waits longer.
@@ -723,7 +798,11 @@ impl Game<'_> {
             let took = started.elapsed();
             let plans = &mut self.companions.plans;
             *plans = (plans.0 + 1, plans.1 + took, plans.2.max(took));
-            nav.misses = if nav.path.as_ref().is_some_and(|p| p.reached) { 0 } else { nav.misses + 1 };
+            nav.misses = if nav.path.as_ref().is_some_and(|p| p.reached) {
+                0
+            } else {
+                nav.misses + 1
+            };
             nav.goal = goal;
             nav.planned_at = ticks;
             if nav.path.is_none() {
@@ -771,7 +850,14 @@ impl Game<'_> {
 
     /// `PathFinder.findPath` for a player-sized walker (vanilla's
     /// WalkNodeEvaluator: no lava, fire or falls past 3 blocks).
-    fn companion_path(&self, from: [f64; 3], on_ground: bool, in_water: bool, goal: [f64; 3], near: f64) -> Option<Path> {
+    fn companion_path(
+        &self,
+        from: [f64; 3],
+        on_ground: bool,
+        in_water: bool,
+        goal: [f64; 3],
+        near: f64,
+    ) -> Option<Path> {
         let w = self.mob_world_base(&[]);
         let mob = PathMob {
             position: Vec3::new(from[0], from[1], from[2]),
@@ -870,7 +956,9 @@ impl Game<'_> {
         // The host's own "last hurt mob" is its owner's (wolves follow it).
         let owner_hurt = self.combat.last_hurt_mob;
         let hit = self
-            .as_guest(host, b.conn, |g| g.attack_strength_scale() >= 0.95 && g.attack())
+            .as_guest(host, b.conn, |g| {
+                g.attack_strength_scale() >= 0.95 && g.attack()
+            })
             .unwrap_or(false);
         self.combat.last_hurt_mob = owner_hurt;
         if hit {
@@ -962,9 +1050,16 @@ impl Game<'_> {
             g.inventory.swap(i, 8);
             8
         };
-        let item = g.inventory[slot].as_ref().map(|s| s.item.to_string()).unwrap_or_default();
+        let item = g.inventory[slot]
+            .as_ref()
+            .map(|s| s.item.to_string())
+            .unwrap_or_default();
         let (count, yaw, pitch) = (carried(&g.inventory, &item), g.yaw, g.pitch);
-        self.lan_guest_packet(host, b.conn, S::SetCarriedItem(play::SetCarriedItem { slot: slot as i16 }));
+        self.lan_guest_packet(
+            host,
+            b.conn,
+            S::SetCarriedItem(play::SetCarriedItem { slot: slot as i16 }),
+        );
         self.lan_guest_packet(
             host,
             b.conn,
@@ -987,7 +1082,12 @@ impl Game<'_> {
     }
 
     /// Pickups the guest tick made for a companion.
-    pub(super) fn companion_picked_up(&mut self, host: &mut LanHost, conn: u32, picked: Vec<(String, u32)>) {
+    pub(super) fn companion_picked_up(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        picked: Vec<(String, u32)>,
+    ) {
         let Some(bi) = host.companions.iter().position(|b| b.conn == conn) else {
             return;
         };
@@ -1071,7 +1171,11 @@ impl Game<'_> {
             if w.facts.get(w.world.block(p[0], p[1], p[2])).fluid != Fluid::None {
                 return None;
             }
-            let (x, y, z) = (f64::from(p[0]) + 0.5, f64::from(p[1]), f64::from(p[2]) + 0.5);
+            let (x, y, z) = (
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]),
+                f64::from(p[2]) + 0.5,
+            );
             w.no_collision(Aabb::new(
                 Vec3::new(x - 0.3, y, z - 0.3),
                 Vec3::new(x + 0.3, y + 1.8, z + 0.3),
@@ -1112,7 +1216,12 @@ impl Game<'_> {
     }
 
     /// Teleport beside the owner, if a spot is free.
-    pub(super) fn companion_place_near(&mut self, host: &mut LanHost, b: &mut Body, at: [f64; 3]) -> bool {
+    pub(super) fn companion_place_near(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        at: [f64; 3],
+    ) -> bool {
         match self.companion_spot(b, at) {
             Some(to) => {
                 self.companion_move_to(host, b, to);
@@ -1170,7 +1279,11 @@ impl Game<'_> {
                 let leather_boots = game.armor[3]
                     .as_ref()
                     .is_some_and(|s| &*s.item == "minecraft:leather_boots");
-                let immune = game.res.items().item_tags.get("minecraft:freeze_immune_wearables");
+                let immune = game
+                    .res
+                    .items()
+                    .item_tags
+                    .get("minecraft:freeze_immune_wearables");
                 let freeze_immune = game
                     .armor
                     .iter()

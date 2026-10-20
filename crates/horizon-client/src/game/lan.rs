@@ -378,44 +378,46 @@ impl Game<'_> {
     fn lan_status(&self) -> serde_json::Value {
         use serde_json::json;
         match &self.lan {
-            Some(h) if !h.private && (!self.serving() || self.published_port().is_some()) => json!({
-                "open": true,
-                "host": h.host_name,
-                "port": h.settings.port,
-                // The server's own world: its finished chunks and how many it
-                // has generated or loaded so far.
-                "world": {
-                    "chunks": self.world.chunks.len(),
-                    "generated": self.streaming.generated_total,
-                },
-                "guests": h.hub.guests.iter().map(|g| json!({
-                    "name": g.name,
-                    "position": g.position,
-                    "placed": g.placed,
-                    "loaded": g.loaded,
-                    "game_mode": g.game_mode,
-                    "sneaking": g.sneaking,
-                    "sleeping": g.bed,
-                    "health": g.health,
-                    // FoodData: food level, saturation and exhaustion.
-                    "food": [
-                        f64::from(g.food),
-                        f64::from(g.saturation),
-                        g.motion.as_ref().map_or(0.0, |m| f64::from(m.health.food.exhaustion)),
-                    ],
-                    "chunks": g.sent_chunks.len(),
-                    "tracked": g.tracker.len(),
-                    // The armour the host draws on this guest, head to feet.
-                    "model_armor": h.models.get(&g.conn).map(|m| {
-                        [&m.extra.head, &m.extra.chest, &m.extra.legs, &m.extra.feet]
-                            .map(|s| s.as_deref())
-                    }),
-                    // The host draws this guest's arm swinging.
-                    "model_swinging": h.models.get(&g.conn).map(|m| m.ai.swinging),
-                    // For how many ticks the host draws this guest using an item.
-                    "model_using": h.models.get(&g.conn).map(|m| m.extra.using_item),
-                })).collect::<Vec<_>>(),
-            }),
+            Some(h) if !h.private && (!self.serving() || self.published_port().is_some()) => {
+                json!({
+                    "open": true,
+                    "host": h.host_name,
+                    "port": h.settings.port,
+                    // The server's own world: its finished chunks and how many it
+                    // has generated or loaded so far.
+                    "world": {
+                        "chunks": self.world.chunks.len(),
+                        "generated": self.streaming.generated_total,
+                    },
+                    "guests": h.hub.guests.iter().map(|g| json!({
+                        "name": g.name,
+                        "position": g.position,
+                        "placed": g.placed,
+                        "loaded": g.loaded,
+                        "game_mode": g.game_mode,
+                        "sneaking": g.sneaking,
+                        "sleeping": g.bed,
+                        "health": g.health,
+                        // FoodData: food level, saturation and exhaustion.
+                        "food": [
+                            f64::from(g.food),
+                            f64::from(g.saturation),
+                            g.motion.as_ref().map_or(0.0, |m| f64::from(m.health.food.exhaustion)),
+                        ],
+                        "chunks": g.sent_chunks.len(),
+                        "tracked": g.tracker.len(),
+                        // The armour the host draws on this guest, head to feet.
+                        "model_armor": h.models.get(&g.conn).map(|m| {
+                            [&m.extra.head, &m.extra.chest, &m.extra.legs, &m.extra.feet]
+                                .map(|s| s.as_deref())
+                        }),
+                        // The host draws this guest's arm swinging.
+                        "model_swinging": h.models.get(&g.conn).map(|m| m.ai.swinging),
+                        // For how many ticks the host draws this guest using an item.
+                        "model_using": h.models.get(&g.conn).map(|m| m.extra.using_item),
+                    })).collect::<Vec<_>>(),
+                })
+            }
             _ => json!({ "open": false }),
         }
     }
@@ -647,7 +649,8 @@ impl Game<'_> {
             return;
         };
         let was_private = host.private;
-        let reason = horizon_protocol::text::translatable("multiplayer.disconnect.server_shutdown", &[]);
+        let reason =
+            horizon_protocol::text::translatable("multiplayer.disconnect.server_shutdown", &[]);
         let conns: Vec<u32> = host
             .hub
             .guests

@@ -101,22 +101,45 @@ impl Skill {
 pub enum CompanionReport {
     SkillStarted(Skill),
     SkillFinished(Skill),
-    SkillFailed { skill: Skill, reason: String },
+    SkillFailed {
+        skill: Skill,
+        reason: String,
+    },
     /// It lost health; `by` names the entity type that hit it, when one did.
-    Hurt { amount: f32, by: Option<String> },
-    Died { cause: String },
+    Hurt {
+        amount: f32,
+        by: Option<String>,
+    },
+    Died {
+        cause: String,
+    },
     Respawned,
     /// A hostile came into view: its type, the clock bearing from the
     /// owner's facing (12 ahead, 3 right) and its distance from the owner.
-    SawHostile { kind: String, bearing: u8, distance: f32 },
+    SawHostile {
+        kind: String,
+        bearing: u8,
+        distance: f32,
+    },
     /// It was too far behind and teleported beside the owner.
     Teleported,
-    Ate { item: String },
-    Equipped { item: String },
-    PickedUp { item: String, count: u32 },
+    Ate {
+        item: String,
+    },
+    Equipped {
+        item: String,
+    },
+    PickedUp {
+        item: String,
+        count: u32,
+    },
     /// It came along when the owner changed dimension, or stayed behind.
-    ChangedDimension { dimension: String },
-    StayedBehind { dimension: String },
+    ChangedDimension {
+        dimension: String,
+    },
+    StayedBehind {
+        dimension: String,
+    },
 }
 
 impl CompanionReport {
@@ -141,7 +164,9 @@ impl CompanionReport {
             Self::Ate { item } => format!("ate {}", short_id(item)),
             Self::Equipped { item } => format!("equipped {}", short_id(item)),
             Self::PickedUp { item, count } => format!("picked up {count} {}", short_id(item)),
-            Self::ChangedDimension { dimension } => format!("came along to {}", short_id(dimension)),
+            Self::ChangedDimension { dimension } => {
+                format!("came along to {}", short_id(dimension))
+            }
             Self::StayedBehind { dimension } => format!("stayed in {}", short_id(dimension)),
         }
     }
@@ -169,7 +194,10 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
         "goto" | "go" => match &words[1..] {
             [] | ["there"] | ["crosshair"] => CompanionCommand::GoTo(GoTarget::Crosshair),
             [x, y, z] => {
-                let n = |v: &str| v.parse::<i32>().map_err(|_| format!("not a block coordinate: {v}"));
+                let n = |v: &str| {
+                    v.parse::<i32>()
+                        .map_err(|_| format!("not a block coordinate: {v}"))
+                };
                 CompanionCommand::GoTo(GoTarget::Block([n(x)?, n(y)?, n(z)?]))
             }
             _ => return Err("goto <x> <y> <z>, or goto there".into()),
@@ -394,10 +422,22 @@ mod tests {
         let p = |line: &str| parse_command(&line.split(' ').collect::<Vec<_>>());
         assert_eq!(p("follow"), Ok(CompanionCommand::Follow));
         assert_eq!(p("guard"), Ok(CompanionCommand::Stay));
-        assert_eq!(p("goto 1 64 -3"), Ok(CompanionCommand::GoTo(GoTarget::Block([1, 64, -3]))));
-        assert_eq!(p("goto there"), Ok(CompanionCommand::GoTo(GoTarget::Crosshair)));
-        assert_eq!(p("attack 42"), Ok(CompanionCommand::Attack(AttackTarget::Entity(42))));
-        assert_eq!(p("attack"), Ok(CompanionCommand::Attack(AttackTarget::NearestHostile)));
+        assert_eq!(
+            p("goto 1 64 -3"),
+            Ok(CompanionCommand::GoTo(GoTarget::Block([1, 64, -3])))
+        );
+        assert_eq!(
+            p("goto there"),
+            Ok(CompanionCommand::GoTo(GoTarget::Crosshair))
+        );
+        assert_eq!(
+            p("attack 42"),
+            Ok(CompanionCommand::Attack(AttackTarget::Entity(42)))
+        );
+        assert_eq!(
+            p("attack"),
+            Ok(CompanionCommand::Attack(AttackTarget::NearestHostile))
+        );
         assert_eq!(p("holdfire off"), Ok(CompanionCommand::HoldFire(false)));
         assert_eq!(p("crouch"), Ok(CompanionCommand::Crouch(true)));
         assert!(p("dance").is_err());
