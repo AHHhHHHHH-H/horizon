@@ -49,10 +49,18 @@ def scenario(endpoint, level, budget):
              what='owner at the platform')
     build(endpoint)
     name = command(endpoint, 'companion spawn Runner')['name']
+    wait_for(endpoint, 'companion list', lambda v: v['companions'] and not v['companions'][0]['dead'],
+             what='runner')
     say(endpoint, f'clear {name}')
     for item in ('bucket 2', 'flint_and_steel', 'cobblestone 64', 'iron_pickaxe', 'cooked_beef 8'):
         say(endpoint, f'give {name} {item}')
     say(endpoint, f'tp {name} {X + 0.5} {Y + 1} {Z + 0.5}')
+    # A moment to look around (the water, the pool) before it starts: the
+    # platform floats high, and a search off its edge is a fall.
+    command(endpoint, f'companion do {name} stay')
+    command(endpoint, 'command tick sprint 60')
+    while command(endpoint, 'status').get('sprinting'):
+        time.sleep(0.1)
     command(endpoint, f'companion watch {name}')
     command(endpoint, f'companion do {name} run {level} from portal')
     done, lit = 0, None

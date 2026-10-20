@@ -633,7 +633,9 @@ impl Game<'_> {
                     ex.goal = None;
                     ex.heading += 2.1;
                 }
-                if let Some(cast) = run.cast.as_mut() {
+                if let Some(cast) = run.cast.as_mut()
+                    && cast.slot < SLOTS.len()
+                {
                     if let Some(ruin) = cast.ruin.take() {
                         cast.ruins_seen.push(ruin);
                     }
@@ -1478,7 +1480,11 @@ impl Game<'_> {
         let now = self.world.game_time.max(0) as u64;
         match cast.slot_since {
             Some((s, t)) if s == cast.slot => {
-                if now > t + 6000 {
+                if now > t + 6000 && cast.slot >= SLOTS.len() {
+                    // A whole frame isn't given up: only the way to it.
+                    cast.slot_since = Some((cast.slot, now));
+                    b.walk.reset();
+                } else if now > t + 6000 {
                     log::info!("[companion] {} run: frame block {} won't cast here", b.file.name, cast.slot + 1);
                     cast.bad.push(pool);
                     cast.site = None;
@@ -1511,9 +1517,6 @@ impl Game<'_> {
             }
             run.note = "lighting the portal".into();
             let stand = site.stand_at(1, 0);
-            if !self.companion_at_stand(host, b, stand, pos) {
-                return;
-            }
             // The inside clear first: the water left from the cast taken
             // back (a source in or before the frame keeps it flowing in),
             // what flowed in and set (cobblestone) dug out.
@@ -1529,12 +1532,19 @@ impl Game<'_> {
             });
             if let Some(w) = source {
                 run.note = "draining the portal".into();
+                let rc = [(w[0] - site.base[0]).clamp(0, 3), (w[1] - site.base[1]).clamp(0, 4)];
+                if !self.companion_at_stand(host, b, site.stand_for(rc), pos) {
+                    return;
+                }
                 let inv = self.companion_inventory(host, b);
                 if count(&inv, "minecraft:bucket") > 0 && self.companion_hold(host, b, "minecraft:bucket") {
                     self.companion_use_toward(host, b, site.near_point(w), pos);
                 } else {
                     let _ = self.companion_place_block(host, b, w, pos);
                 }
+                return;
+            }
+            if !self.companion_at_stand(host, b, stand, pos) {
                 return;
             }
             for y in 1..=3 {
@@ -1588,7 +1598,10 @@ impl Game<'_> {
                             let _ = self.companion_place_block(host, b, w, pos);
                             return;
                         }
-                        if self.companion_at_stand(host, b, stand, pos) && self.companion_hold(host, b, "minecraft:bucket") {
+                        let rc = [(w[0] - site.base[0]).clamp(0, 3), (w[1] - site.base[1]).clamp(0, 4)];
+                        if self.companion_at_stand(host, b, site.stand_for(rc), pos)
+                            && self.companion_hold(host, b, "minecraft:bucket")
+                        {
                             self.companion_use_toward(host, b, site.near_point(w), pos);
                         }
                         return;
@@ -1642,7 +1655,7 @@ impl Game<'_> {
                         log::info!("[companion] {} run: lava at {src:?} out of reach", b.file.name);
                         // No way there: none to the ones around it either.
                         if !reached {
-                            cast.bad.extend(sources.iter().filter(|s| (0..3).all(|k| (s[k] - src[k]).abs() <= 3)));
+                            cast.bad.extend(sources.iter().filter(|s| (0..3).all(|k| (s[k] - src[k]).abs() <= 1)));
                         }
                         cast.bad.push(src);
                         cast.trying = None;
@@ -1858,6 +1871,16 @@ impl Game<'_> {
             b.yaw = c::yaw_toward(pos, at) as f32;
             b.keys.forward = true;
             b.keys.shift = true;
+            return false;
+        }
+        // A raised stand with nothing under it yet, right beside it: the
+        // floor first (from where it is), then a step over.
+        let under = [stand[0], stand[1] - 1, stand[2]];
+        let beside = (f[0] - stand[0]).abs() + (f[2] - stand[2]).abs() == 1 && f[1] == stand[1];
+        if beside && !self.floor(under) && self.passable(under) {
+            b.walk.reset();
+            b.keys.shift = true;
+            let _ = self.companion_place_block(host, b, under, pos);
             return false;
         }
         let _ = self.companion_travel(host, b, Goal::exact(stand), pos);

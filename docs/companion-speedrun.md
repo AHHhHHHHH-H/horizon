@@ -526,6 +526,171 @@ My suggestion, if useful:
 - Get the first kill on All-knowing (A) on a curated seed (C).
 - Show the harness table per level, including Fair, at the reveal, whatever it is by then.
 
+## 5. Phase 1 as built (overworld, up to a lit portal)
+
+Branch `feat/companion-planner`. What exists, how it fits, what the harness measured, and what
+still fails.
+
+### The pieces
+
+- **Perception** (`companion/perception.rs`, `game/companion_senses.rs`): `Senses` holds the
+  level (Fair, Sharp, Scout, All-knowing) and a `Memory` of what it has seen. Sight casts 64 rays a
+  tick from the eyes. Notable blocks (ores, logs, water and lava sources, crafting stations) are
+  kept in their own map. `companion_known` merges memory with a through-walls `BlockSearch` for the
+  levels that have x-ray. Structures (ruined portals and so on) are known only to Scout and
+  All-knowing. Memory is saved with the companion.
+- **Movement 2.0** (`companion/moves.rs`, `game/companion_walk.rs`): A* over cells (Open, Water,
+  Lava, Hazard, Solid with dig ticks and falling, Unknown). Moves are walk, up, fall, down, dig down,
+  bridge, pillar and swim. Each search is capped at 5000 nodes and 12 ms of wall time, and long trips
+  go in 40-block legs. Cells are cached per block state and per position within one search. On Fair,
+  solid blocks it never saw and doesn't touch are Unknown (planned as stone).
+- **Walker**:
+  - **Steps**: patience scales with the blocks a step digs. It goes back to the middle of its row
+    while still moving forward. When off the route, it replans from where it is. In water, it swims
+    up toward the step.
+  - **Bad blocks**: blocks it can't break or stand on become walls for the next plan.
+  - **Blocks it keeps**: it never digs the portal mould's blocks on its way.
+  - **Planning rate**: one plan every 5 ticks at most (20 after a plan that found nothing).
+  - **Cost of water**: being fully under water costs three times as much as swimming at the
+    surface.
+- **Tech-tree planner** (`companion/techtree.rs`, `GameKnowledge`): turns stage goals into mine,
+  hunt, craft and smelt actions. Gather cost comes from the remembered distance. The x-ray levels
+  also use flat guesses for natural blocks. Actions run as work commands (`collect`, `make`,
+  `smelt`).
+- **Run supervisor** (`game/companion_run.rs`, every tick):
+  - **Stages**: wood, stone tools, food, iron, kit, portal. Each stage has a time budget, and
+    food is optional.
+  - **Splits**: logged when reached, and shown on the Watch HUD (step, timer, perception).
+  - **Air**: it goes up for air before 140 ticks under water. Its eyes are low when it swims under a
+    ceiling. It stays up until its air is back, and heads for the nearest air to the side when the
+    way up is blocked.
+  - **Night**: under open sky it digs a capped pit two blocks deep. It stays in the pit while mobs
+    gather above.
+  - **Threats**: it backs off from creepers (5 blocks) and pillagers (20 blocks).
+  - **Death recovery**: it goes back for its things for up to 2 minutes.
+  - **Watchdogs**:
+    - work that changes no item for 3000 ticks;
+    - the route's own moves going nowhere for 3000 ticks;
+    - a smelt is let finish rather than cut off by the stage budget;
+    - after a stalled smelt, the meat stays raw.
+- **Portal cast**: lava is found in memory, through walls on Sharp and up, or near ruined portals
+  on Scout and up.
+  - **Site and mould**: the site is two blocks from a pool. It builds a mould of floors, a back
+    wall and three corners, then fills the ten frame blocks one at a time.
+  - **Each frame block**: water first, lava poured on the back wall's face, water beside or
+    above it, then the water taken back. A pour that misses is scooped back up.
+  - **Finding water and lava**: it digs a line of sight to buried sources. Sources and pools it
+    can't reach are given up after 30 s, and a frame block that won't cast in 5 minutes moves it to
+    another pool.
+  - **Lighting**: before the flint and steel, it drains the inside of the frame and the cells in
+    front of it.
+
+### Harness results
+
+`tools/test_speedrun.py`: 5 fixed seeds (20261020, 1, 42, 123456, 987654321), Easy, 48,000 game
+ticks (40 game minutes) per run, `/tick sprint`, Watch mode, 5 clients in parallel on the Mac mini.
+Times are game min:s from the start of the run. Success counts the seeds that reached the
+milestone.
+
+| Milestone | All-knowing | median | Fair | median |
+| --- | --- | --- | --- | --- |
+| wooden pickaxe | 4/5 | 0:26 | 5/5 | 0:26 |
+| stone tools | 4/5 | 10:20 | 5/5 | 0:55 |
+| food (4 cooked) | 2/5 | 8:26 | 0/5 | - |
+| 10 iron | 3/5 | 3:09 | 0/5 | - |
+| iron pickaxe | 3/5 | 8:10 | 0/5 | - |
+| buckets | 3/5 | 8:10 | 0/5 | - |
+| 10 obsidian | 0/5 | - | 0/5 | - |
+| portal lit | 0/5 | - | 0/5 | - |
+| first night survived | 4/5 | 19:07 | 4/5 | 19:07 |
+
+Runs are not deterministic: mobs, drops and timing vary, so the same seeds give different results
+from one run to the next. Over the last ten All-knowing runs, each milestone's success varied as
+follows:
+
+| Milestone | Seeds reaching it (of 5) |
+| --- | --- |
+| wood and stone tools | 3 to 5 |
+| iron and the kit | 1 to 4 |
+| food | 0 to 4 |
+
+The 10:20 stone median comes from two seeds stuck on "no cobbled deepslate" for a while (see
+below); the other three took under 1:05. Obsidian was reached once, at 28:02 (seed 1), but that
+portal never lit. In an earlier Fair run, 2 of 5 seeds reached 10 iron (median 14:19) and 1 reached
+the iron pickaxe (24:32).
+
+On a prepared platform, `tools/test_companion_portal.py` (kit given, a 5x5 lava pool, one water
+source) casts all ten blocks and lights the portal in 1350-2200 ticks. It is still flaky, passing
+in about half the runs. When it fails, it is out of reach of lava from that pool after five or six
+blocks, or the water spills over the frame's open top-right corner during the last pour.
+
+### Hard failures and their causes
+
+- **Portal cast in natural terrain (0/5)**: the cast is still the wall. Causes seen:
+  - Pools under the ground or in caves that the walker can't plan a way to.
+  - Water poured into the frame and not taken back, which then floods the next block.
+  - A side frame block (L2) whose stand needs a raised floor the mould doesn't build.
+  - The frame's interior full of water when it comes to lighting (now drained first).
+  - The watchdogs now move it to another pool instead of looping, but a full cast in natural
+    terrain hasn't happened yet.
+- **Desert spawn (seed 123456)**: no tree within 48 blocks. It walks the sand at night and husks
+  kill it over and over (8 to 22 deaths). Wood comes late or never. The search should go further
+  before the first night and dig in at dusk on any level.
+- **Food 0/5 in the final runs**: hunting works, but the four cooked meats wait for the furnace in
+  the kit stage. When the kit stage runs out of time or the smelt stalls, the food split never
+  comes. It should cook with the first furnace instead.
+- **Iron on Fair (0/5 in the final run)**: Fair has no x-ray. "Collect raw iron" fails at once with
+  "no raw iron within 48 blocks", and the tunnels at y 16 don't find 10 ore in the 40 minutes. It
+  doesn't follow the caves it sees from the surface.
+- **Stone on some seeds**: when the cobblestone it can see stalls, the planner turns to cobbled
+  deepslate (none near). It then searches downward for a long while before it comes back to plain
+  stone.
+- **Kit stage**: "no room to place it": the crafting table or furnace has nowhere to go in a
+  1x2 tunnel. It needs to dig a pocket first.
+- **Deaths**: these came from drowning and from fish and squid pushing it under. The air reflex
+  now prevents most of them.
+
+### Tick cost and spikes (task 8)
+
+The companion's own work per tick, measured by `companion cost` over whole runs:
+
+| | All-knowing | Fair |
+| --- | --- | --- |
+| mean ms per tick | 0.10-0.35 | 0.06-1.29 |
+| max single tick (ms) | 26-107 | 26-63 |
+| sight max (ms) | 4-34 | - |
+
+The earlier 1.9-5.5 ms ticks and the spike "during smelt" had three causes:
+
+1. **First-use cache builds** (sight table, block drops, recipe book), which took 30-180 ms once.
+   They are now built when the companion joins (`companion_warm_caches`).
+2. **The walker replanning every tick** when a plan was undone at once, at 40-45 ms each. It now
+   plans every 5 ticks at most, and every 20 after a failed plan.
+3. **Slow A\* nodes.** Each node built new vectors and recomputed every cell. Buffers are now
+   reused and cells cached by position.
+
+Each search is also capped at 12 ms. The worst ticks left are single walk plans (checked against
+the cap every 256 nodes) and the first block search of a collect: 26-107 ms, measured with five
+clients in parallel on a shared CPU. Sight peaks (up to about 60 ms) come when a block search over
+48 blocks starts. Both are rare: the mean is well under a millisecond on most seeds.
+
+### Next, toward the Nether and the End
+
+1. **Make the overworld cast work.** Pick sites by line of sight to a surface pool, and add the
+   raised stands to the mould. Check that each poured water source is taken back before the next
+   block. A mould-free variant (dig a 4x5 slot into a wall beside the pool) may be more reliable.
+   The fallback is a ruined portal's obsidian plus a bucket cast of the missing blocks.
+2. **Cook with the first furnace** (the food split) and dig a pocket before placing stations.
+3. **Fair iron**: follow visible caves down, and branch-mine at y 16 in longer straight tunnels.
+4. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) into
+   this route:
+   - **Nether**: lit portal → fortress → rods → pearls (bartering) → eyes, using this walker
+     (bridging over lava, pillaring) and these perception levels. Ghast and blaze fights need the
+     bow and shield logic from the body.
+   - **Stronghold and End**: triangulation → portal room → crystals → dragon, on the engine work
+     already merged (E1-E6).
+   - **Harness**: add the Nether and End milestones.
+
 ## Appendix: tests run
 
 All were run on the Mac mini (Ludovic away), with `target/fast/horizon-client --offscreen`,
