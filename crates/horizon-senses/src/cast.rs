@@ -69,33 +69,9 @@ impl Emotion {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Gender {
-    Female,
-    Male,
-}
-
-/// One designed voice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Character {
-    /// The id settings and requests name (`Speak::voice`).
-    pub id: &'static str,
-    /// The name the voice list shows.
-    pub label: &'static str,
-    /// What it sounds like, in a few words.
-    pub description: &'static str,
-    pub gender: Gender,
-    /// The personality it is the default voice of.
-    pub personality: Option<&'static str>,
-    /// The VoiceDesign description it was made from (with an emotion appended per clip).
-    pub design: &'static str,
-    /// The VoiceDesign seed of its anchor clip.
-    pub seed: u32,
-}
-
-/// Languages with their own clips. Other languages take the voice of the English neutral clip
-/// without its delivery (Qwen3-TTS Base would copy its accent).
-pub const CLIP_LANGUAGES: &[&str] = &["en", "fr"];
+pub use horizon_companion::cast::{
+    CAST, CLIP_LANGUAGES, Character, Gender, character, clip_name, default_for,
+};
 
 /// What every reference clip says, by language and emotion (5–8 s each). The transcript must match
 /// the audio: Qwen3-TTS Base conditions on both.
@@ -152,132 +128,6 @@ pub const REFERENCE_LINES: &[(&str, Emotion, &str)] = &[
     ),
 ];
 
-macro_rules! character {
-    ($id:literal, $label:literal, $gender:ident, $desc:literal, $personality:expr, $design:literal, $seed:literal) => {
-        Character {
-            id: $id,
-            label: $label,
-            description: $desc,
-            gender: Gender::$gender,
-            personality: $personality,
-            design: $design,
-            seed: $seed,
-        }
-    };
-}
-
-/// The cast, the default voice first.
-pub const CAST: &[Character] = &[
-    character!(
-        "veteran",
-        "Veteran",
-        Male,
-        "Gruff, deep, battle-worn",
-        Some("veteran"),
-        "A gruff, deep male voice of a battle-worn veteran soldier in his fifties, gravelly and rough, low pitch, a bit hoarse, grumpy and world-weary.",
-        3
-    ),
-    character!(
-        "coach",
-        "Coach",
-        Female,
-        "Cheerful, warm, encouraging",
-        Some("coach"),
-        "A cheerful, energetic young woman in her late twenties, a friendly sports coach, warm mid-high pitch, bright and encouraging, clear articulation.",
-        3
-    ),
-    character!(
-        "expert",
-        "Expert",
-        Female,
-        "Calm, precise, composed",
-        Some("expert"),
-        "A calm, precise woman in her forties, a composed scientist, smooth medium-low pitch, measured pace, clear and confident, unhurried.",
-        1
-    ),
-    character!(
-        "joker",
-        "Joker",
-        Male,
-        "Cocky, cheeky, a grin in his voice",
-        Some("joker"),
-        "A cocky young man in his twenties, a cheeky prankster, playful and smug, medium pitch, quick and bouncy delivery, a grin in his voice.",
-        2
-    ),
-    character!(
-        "quiet",
-        "Quiet one",
-        Female,
-        "Soft-spoken, gentle, a little shy",
-        Some("quiet"),
-        "A soft-spoken shy young woman in her twenties, gentle and airy, light breathy voice, slow and careful, slightly timid.",
-        1
-    ),
-    character!(
-        "captain",
-        "Old captain",
-        Male,
-        "Raspy old sea dog",
-        None,
-        "A raspy old sea captain in his sixties, a pirate-like rough gravelly voice, heavy and husky, rolling and theatrical, a weathered growl.",
-        3
-    ),
-    character!(
-        "speedrunner",
-        "Speedrunner",
-        Male,
-        "Hyped, fast-talking streamer",
-        None,
-        "An energetic young male video game streamer around twenty, fast-talking and hyped, high energy, bright tenor, excited and punchy.",
-        1
-    ),
-    character!(
-        "nana",
-        "Nana",
-        Female,
-        "Warm, kind older woman",
-        None,
-        "A warm, kind older woman in her late sixties, a gentle grandmother, soft and motherly, slightly low and mellow, reassuring and affectionate.",
-        2
-    ),
-    character!(
-        "teen",
-        "Teen",
-        Female,
-        "Sarcastic, bored, unimpressed",
-        None,
-        "A sarcastic teenage girl around sixteen, bored and unimpressed, slightly nasal mid-high pitch, eye-rolling drawl, deadpan.",
-        1
-    ),
-    character!(
-        "knight",
-        "Knight",
-        Male,
-        "Deep, stoic, noble",
-        None,
-        "A deep, stoic male knight in his forties, a resonant bass voice, solemn and steady, slow and noble, firm and controlled.",
-        1
-    ),
-    character!(
-        "sunny",
-        "Sunny",
-        Female,
-        "Bright, bubbly, upbeat",
-        None,
-        "A bright, upbeat young woman around twenty, bubbly and sparkly, high pitch, giggly and enthusiastic, fast and lively.",
-        1
-    ),
-    character!(
-        "butler",
-        "Butler",
-        Male,
-        "Dry, refined, British",
-        None,
-        "A dry, refined older British butler in his fifties, crisp received pronunciation, polite and understated, medium-low pitch, impeccably composed.",
-        1
-    ),
-];
-
 /// A reference clip of the pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clip {
@@ -288,13 +138,20 @@ pub struct Clip {
     pub text: &'static str,
 }
 
-impl Character {
+/// A character's clips in the voice pack.
+pub trait Clips {
+    fn clips(&self) -> impl Iterator<Item = Clip> + '_;
+    fn reference(&self, language: &str, emotion: Emotion) -> Clip;
+    fn reference_name(&self, language: &str, tone: &Tone) -> String;
+}
+
+impl Clips for Character {
     /// Every clip of the character.
-    pub fn clips(&self) -> impl Iterator<Item = Clip> + '_ {
+    fn clips(&self) -> impl Iterator<Item = Clip> + '_ {
         REFERENCE_LINES
             .iter()
             .map(move |&(language, emotion, text)| Clip {
-                name: clip_name(self.id, language, emotion),
+                name: clip_name(self.id, language, emotion.id()),
                 language,
                 emotion,
                 text,
@@ -303,7 +160,7 @@ impl Character {
 
     /// The clip a line in `language` with this emotion is said from: that language's clip, else
     /// the English one (see `SpeechClient::request` for how a cloning model takes it then).
-    pub fn reference(&self, language: &str, emotion: Emotion) -> Clip {
+    fn reference(&self, language: &str, emotion: Emotion) -> Clip {
         let language = CLIP_LANGUAGES
             .iter()
             .copied()
@@ -315,24 +172,9 @@ impl Character {
     }
 
     /// The library name of [`Character::reference`].
-    pub fn reference_name(&self, language: &str, tone: &Tone) -> String {
+    fn reference_name(&self, language: &str, tone: &Tone) -> String {
         self.reference(language, Emotion::for_tone(tone)).name
     }
-}
-
-fn clip_name(id: &str, language: &str, emotion: Emotion) -> String {
-    format!("hz-{id}-{language}-{}", emotion.id())
-}
-
-pub fn character(id: &str) -> Option<&'static Character> {
-    CAST.iter().find(|c| c.id == id)
-}
-
-/// The voice a personality starts with (the custom personality and unknown ones get the first).
-pub fn default_for(personality: &str) -> &'static Character {
-    CAST.iter()
-        .find(|c| c.personality == Some(personality))
-        .unwrap_or(&CAST[0])
 }
 
 /// The archive of every clip, downloaded once beside the voice models.
@@ -361,16 +203,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_cast_is_well_formed() {
-        assert!(CAST.len() >= 10);
+    fn every_character_has_a_clip_per_language_and_emotion() {
         for c in CAST {
-            assert_eq!(CAST.iter().filter(|o| o.id == c.id).count(), 1, "{}", c.id);
-            assert!(
-                c.id.bytes().all(|b| b.is_ascii_lowercase()),
-                "{}: ids are file names",
-                c.id
-            );
-            assert!(!c.label.is_empty() && !c.description.is_empty() && !c.design.is_empty());
             let clips: Vec<Clip> = c.clips().collect();
             assert_eq!(clips.len(), CLIP_LANGUAGES.len() * Emotion::ALL.len());
             for language in CLIP_LANGUAGES {
@@ -381,16 +215,6 @@ mod tests {
                 }
             }
         }
-        let men = CAST.iter().filter(|c| c.gender == Gender::Male).count();
-        assert_eq!(men * 2, CAST.len(), "as many women as men");
-    }
-
-    #[test]
-    fn every_personality_has_its_own_default_voice() {
-        for p in ["veteran", "coach", "expert", "joker", "quiet"] {
-            assert_eq!(default_for(p).personality, Some(p));
-        }
-        assert_eq!(default_for("custom").id, CAST[0].id);
     }
 
     #[test]

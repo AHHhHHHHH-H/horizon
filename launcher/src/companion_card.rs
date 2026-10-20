@@ -749,24 +749,37 @@ impl Launcher {
                     })
             });
             if let Some(model) = tts {
-                let default =
-                    horizon_companion::senses::default_voice(model, c.settings.persona.personality);
-                let chosen = c.settings.voices.get(model.id).cloned();
-                let auto_detail = format!(
-                    "The personality's: {}. Play a sample in the game's Companion settings.",
-                    default.map_or("the model's first", |v| v.label)
-                );
-                let picks =
-                    std::iter::once((None, "Voice: the personality's".to_owned(), auto_detail))
-                        .chain(model.voices.iter().map(|v| {
-                            (
-                                Some(v.id.to_owned()),
-                                format!("Voice: {}", v.label),
-                                v.description.to_owned(),
-                            )
-                        }));
-                for (value, label, detail) in picks {
-                    let right = if value == chosen {
+                // The game's list: the cast (with a sample of each) once the voice pack is here,
+                // then the model's own voices.
+                let voices = companion::voices(model);
+                let default = companion::default_voice(model, c.settings.persona.personality);
+                let chosen = c
+                    .settings
+                    .voices
+                    .get(model.id)
+                    .filter(|id| voices.iter().any(|(v, ..)| v == *id))
+                    .cloned();
+                let default_label = voices
+                    .iter()
+                    .find(|(id, ..)| Some(id) == default.as_ref())
+                    .map_or("the model's first", |(_, label, ..)| label.as_str());
+                let auto_detail = format!("The personality's: {default_label}.");
+                let picks = std::iter::once((
+                    None,
+                    "Voice: the personality's".to_owned(),
+                    auto_detail,
+                    None,
+                ))
+                .chain(voices.iter().map(|(id, label, description, sample)| {
+                    (
+                        Some(id.clone()),
+                        format!("Voice: {label}"),
+                        description.clone(),
+                        sample.clone(),
+                    )
+                }));
+                for (value, label, detail, sample) in picks {
+                    let use_it = if value == chosen {
                         text(theme::CAPTION)
                             .text_color(t.muted)
                             .child("In use")
@@ -786,11 +799,23 @@ impl Launcher {
                             }))
                             .into_any_element()
                     };
+                    let mut right = div().flex().items_center().gap(px(8.));
+                    if let Some(clip) = sample {
+                        let id = SharedString::from(format!("companion-voice-sample-{label}"));
+                        right = right.child(button(id, "Play", Kind::Ghost, &t).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if let Err(e) = companion::play_sample(&clip) {
+                                    this.companion.error = Some(e);
+                                }
+                                cx.notify();
+                            }),
+                        ));
+                    }
                     rows = rows.child(index_row(
                         next(),
                         label,
                         Some(div().child(detail).into_any_element()),
-                        Some(right),
+                        Some(right.child(use_it).into_any_element()),
                         &t,
                     ));
                 }

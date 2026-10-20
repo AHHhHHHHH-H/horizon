@@ -7,6 +7,7 @@
 //! Nothing here blocks a caller's frame: downloads, the runtime and the chat client run on their own
 //! threads and report over channels the game polls once per tick.
 
+pub mod cast;
 pub mod catalogue;
 pub mod client;
 pub mod download;

@@ -3,7 +3,7 @@
 //!
 //! Speech arrives as server-sent events of base64 PCM (`stream_format: "sse"`) rather than a raw PCM
 //! body, because an error after the first chunk then still arrives as an event.
-use crate::cast;
+use crate::cast::{self, Clips as _};
 use crate::sidecar::{Launch, Sidecar};
 use base64::Engine as _;
 use horizon_companion::catalogue::Backend;
