@@ -2051,14 +2051,23 @@ impl Game<'_> {
                 Hit::Entity { who, .. } => match who {
                     Who::Player => {
                         if !self.creative {
+                            // SmallFireball.onHitEntity: alight for 5 seconds,
+                            // put back as it was when the hit did not hurt
+                            // (a raised shield).
+                            let before = self.player.as_ref().map(|p| p.fire_ticks);
                             if let Some(p) = self.player.as_mut() {
                                 p.ignite_for_ticks(100)?;
                             }
-                            self.mob_hits_player(
+                            let hurt = self.mob_hits_player(
                                 5.0,
                                 [p.previous.x, p.previous.y, p.previous.z],
                                 "minecraft:fireball",
                             );
+                            if !hurt
+                                && let (Some(pl), Some(old)) = (self.player.as_mut(), before)
+                            {
+                                pl.set_remaining_fire_ticks(old);
+                            }
                         }
                     }
                     Who::Mob(id) => {

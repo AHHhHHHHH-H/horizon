@@ -89,6 +89,8 @@ pub(super) struct Body {
     pub walk: super::companion_walk::Walk,
     /// The Speedrunner's route under way (game/companion_run.rs).
     pub run: Option<Box<super::companion_run::Run>>,
+    /// Its middle part, Nether to the stronghold (game/companion_nether.rs).
+    pub nether: Option<Box<super::companion_nether::NetherRun>>,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -204,6 +206,7 @@ impl Body {
             ),
             walk: Default::default(),
             run: None,
+            nether: None,
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -255,6 +258,9 @@ pub(super) struct Companions {
     pub pending: Vec<CompanionFile>,
     /// Those that stayed in another dimension.
     pub parked: Vec<(CompanionFile, Dim)>,
+    /// The Nether part of a body that left the hub (parked, or dead and
+    /// back alone), by name: picked up again when it comes back.
+    pub nether: std::collections::HashMap<String, Box<super::companion_nether::NetherRun>>,
     /// What the bodies told the brain: the companion's name and the report.
     pub reports: VecDeque<(String, CompanionReport)>,
     /// Mobs a companion hit, and when: their deaths are its kills.
@@ -294,6 +300,9 @@ impl Game<'_> {
     pub(super) fn companion_report(&mut self, b: &mut Body, report: CompanionReport) {
         let line = report.text();
         if let Some(run) = b.run.as_mut() {
+            run.heard(&report);
+        }
+        if let Some(run) = b.nether.as_mut() {
             run.heard(&report);
         }
         log::info!("[companion] {}: {line}", b.file.name);
@@ -466,6 +475,13 @@ impl Game<'_> {
         }
         let mut b = Body::new(conn, uuid, file.clone(), self.dim);
         b.senses = self.companion_load_senses(&file.uuid, self.dim.id());
+        // Its Nether part goes on where it was (its route's frame, done).
+        b.nether = self.companions.nether.remove(&file.name);
+        if let Some(run) = &b.nether {
+            b.ticks = run.body_ticks;
+            b.commands
+                .retain(|c| !matches!(c, CompanionCommand::Run { .. }));
+        }
         b.last_health = health;
         if beside_owner {
             // Called back by name: with its owner, whatever it did before.
@@ -477,6 +493,14 @@ impl Game<'_> {
         file.active = true;
         if let Err(e) = file.save(&self.world_root) {
             log::warn!("[companion] could not save {}: {e}", file.name);
+        }
+        if let Some(nether) = b.nether.take() {
+            let level = b.senses.level;
+            self.companion_start_run(&mut host, &mut b, Some(level));
+            if let Some(run) = b.run.as_mut() {
+                run.stage = super::companion_run::Stage::Done;
+            }
+            b.nether = Some(nether);
         }
         let skill = b.skill;
         self.companion_report(&mut b, CompanionReport::SkillStarted(skill));
@@ -525,6 +549,10 @@ impl Game<'_> {
         host.play.remove(&b.conn);
         host.mob_players.retain(|_, conn| *conn != b.conn);
         b.file.active = active;
+        if let Some(mut run) = b.nether.take() {
+            run.body_ticks = b.ticks;
+            self.companions.nether.insert(b.file.name.clone(), run);
+        }
         b.keep_skill();
         self.companion_save_senses(&b);
         if let Err(e) = b.file.save(&self.world_root) {
@@ -793,7 +821,7 @@ impl Game<'_> {
         })
     }
 
-    fn companion_biome(&self, p: [f64; 3]) -> String {
+    pub(super) fn companion_biome(&self, p: [f64; 3]) -> String {
         let (x, y, z) = (
             p[0].floor() as i32,
             p[1].floor() as i32,
@@ -1059,6 +1087,7 @@ impl Game<'_> {
                     "task": b.work.status(),
                     "perception": b.senses.level.id(),
                     "run": self.companion_run_status(b),
+                    "nether": self.companion_nether_status(b),
                     "walk": b.walk.status(),
                     "ticks": b.ticks,
                     "digging": b.work.dig.map(|d| d.0),

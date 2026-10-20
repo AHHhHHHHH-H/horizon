@@ -380,10 +380,13 @@ impl Game<'_> {
         };
         let took = self.companion_run_supervise(host, b, &mut run, pos);
         // The Watch HUD (game/companion_watch.rs) shows the run.
+        let step = self
+            .companion_nether_step(host, b)
+            .unwrap_or_else(|| format!("{}: {}", run.stage.name(), run.note));
         if self.watched(b)
             && let Some(w) = self.companions.watch.as_mut()
         {
-            w.step = format!("{}: {}", run.stage.name(), run.note);
+            w.step = step;
             w.perception = b.senses.level.label().to_owned();
             w.ticks = (self.world.game_time.max(0) as u64).saturating_sub(run.start);
         }
@@ -464,7 +467,10 @@ impl Game<'_> {
         let inventory = g.inventory.clone();
         let _ = ticks;
         if run.stage == Stage::Done {
-            run.note = "portal lit: ready for the Nether".into();
+            // On to the Nether (game/companion_nether.rs).
+            run.note = "portal lit: on to the Nether".into();
+            self.companion_nether_after_overworld(host, b);
+            self.companion_nether_tick(host, b, pos);
             return;
         }
         // Out of time for this stage: classified, then on (food is optional).
@@ -1033,7 +1039,7 @@ impl Game<'_> {
     }
 
     /// Hold the first stack of `item`; false when it carries none.
-    fn companion_hold(&mut self, host: &mut LanHost, b: &Body, item: &str) -> bool {
+    pub(super) fn companion_hold(&mut self, host: &mut LanHost, b: &Body, item: &str) -> bool {
         let Some(slot) = host
             .hub
             .guest(b.conn)
@@ -1081,7 +1087,7 @@ impl Game<'_> {
             let dz = if pool[2] >= f[2] { -1 } else { 1 };
             cast.site = Some(Site {
                 base: [f[0] - 1, f[1], f[2] + 2 * dz],
-                front: dz.signum() * -1,
+                front: -dz.signum(),
             });
             cast.slot = 0;
             run.note = "building the mould".into();

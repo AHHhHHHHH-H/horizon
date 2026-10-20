@@ -415,7 +415,7 @@ impl Game<'_> {
                 Access::Direct(face) => face,
                 _ => face_of([
                     (f[0] - d[0]).signum(),
-                    if d[1] < f[1] { 1 } else if d[1] > f[1] + 1 { 0 } else { 0 },
+                    i32::from(d[1] < f[1]),
                     (f[2] - d[2]).signum(),
                 ]),
             };
@@ -514,12 +514,8 @@ impl Game<'_> {
                 b.keys.jump = step.to[1] >= f[1];
                 b.keys.shift = step.to[1] < f[1];
             }
-            Move::Fall | Move::Down | Move::DigDown => {
-                // Over the hole or the edge: in it, it drops.
-                if h < 0.25 {
-                    b.keys.forward = false;
-                }
-            }
+            // Over the hole or the edge: in it, it drops.
+            Move::Fall | Move::Down | Move::DigDown if h < 0.25 => b.keys.forward = false,
             _ => {}
         }
         // Edges it isn't meant to go off: sneaking keeps it on.

@@ -27,6 +27,7 @@ mod commands;
 mod companion;
 mod companion_body;
 mod companion_craft;
+mod companion_nether;
 mod companion_run;
 mod companion_senses;
 mod companion_walk;

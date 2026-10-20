@@ -276,6 +276,7 @@ impl Game<'_> {
                 self.companion_cancel_work(host, b, Some("stopped"));
             }
             b.run = None;
+            b.nether = None;
             b.walk.reset();
         }
         let start = |game: &mut Self, b: &mut Body, skill: Skill| {
@@ -381,7 +382,16 @@ impl Game<'_> {
             | CompanionCommand::Craft { .. }
             | CompanionCommand::Smelt { .. }
             | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
-            CompanionCommand::Run { perception } => self.companion_start_run(host, b, perception),
+            CompanionCommand::Run { perception } => {
+                b.nether = None;
+                self.companion_start_run(host, b, perception);
+            }
+            CompanionCommand::Nether {
+                from,
+                until,
+                perception,
+                targets,
+            } => self.companion_start_nether(host, b, from, until, perception, targets),
             CompanionCommand::Perception(level) => b.senses.level = level,
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
@@ -446,7 +456,9 @@ impl Game<'_> {
             let by = self
                 .mobs
                 .iter()
-                .filter(|m| m.alive() && host.mob_players.get(&m.id) == Some(&b.conn))
+                // Not a neutral one minding its own business: a fall or a
+                // burn blamed on a zombified piglin would set the herd on it.
+                .filter(|m| threat(m) && host.mob_players.get(&m.id) == Some(&b.conn))
                 .filter(|m| c::distance(mob_at(m), pos) < 16.0)
                 .min_by(|x, y| c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos)))
                 .map(|m| (m.id, m.kind.id.to_string()));
@@ -605,6 +617,10 @@ impl Game<'_> {
         let eye = [pos[0], pos[1] + 1.62, pos[2]];
         // A run watches over whatever its work does.
         if b.run.is_some() && self.companion_run_watch(host, b, pos) {
+            return;
+        }
+        // The Nether part fights blazes, endermen and ghasts its own way.
+        if b.nether.is_some() && self.companion_nether_take(host, b, pos) {
             return;
         }
         // Fighting.
@@ -1108,7 +1124,7 @@ impl Game<'_> {
 
     /// Start eating its best food: into the hotbar, then used as a client's
     /// use-item packet would. False when it carries nothing worth eating.
-    fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
+    pub(super) fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
         if b.eating.is_some() {
             return true;
         }
