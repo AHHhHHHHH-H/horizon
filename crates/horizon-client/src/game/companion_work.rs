@@ -836,6 +836,23 @@ impl Game<'_> {
     }
 
     /// What a mob kind drops (`minecraft:entities/<kind>`), once per kind.
+    /// Build what the work skills look up once (recipes, drops, block
+    /// names, sight), when a companion joins rather than in the middle of
+    /// a tick's work: the first collect, craft or smelt otherwise paid for
+    /// it (milliseconds to a tenth of a second at once).
+    pub(super) fn companion_warm_caches(&mut self) {
+        let started = std::time::Instant::now();
+        let _ = self.companion_book();
+        let _ = self.block_drops();
+        for kind in PREY {
+            let _ = self.mob_drops(kind);
+        }
+        let _ = self.states_where(|n| n == "minecraft:crafting_table");
+        let _ = self.companion_sight_table();
+        let _ = self.companion_mined_index();
+        log::debug!("[companion] caches built in {:?}", started.elapsed());
+    }
+
     fn mob_drops(&mut self, kind: &str) -> Arc<Vec<String>> {
         if let Some(d) = self.companions.work.mob_drops.get(kind) {
             return d.clone();

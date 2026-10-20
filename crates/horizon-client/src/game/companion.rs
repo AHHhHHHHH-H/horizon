@@ -464,6 +464,7 @@ impl Game<'_> {
         if g.game_mode != 0 {
             host.hub.set_game_mode(conn, 0);
         }
+        self.companion_warm_caches();
         let mut b = Body::new(conn, uuid, file.clone(), self.dim);
         b.senses = self.companion_load_senses(&file.uuid, self.dim.id());
         b.last_health = health;

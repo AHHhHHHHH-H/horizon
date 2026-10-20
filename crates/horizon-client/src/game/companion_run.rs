@@ -860,7 +860,7 @@ impl Game<'_> {
     }
 
     /// Item → the blocks that drop it, and the tool each needs (once).
-    fn companion_mined_index(&mut self) -> Arc<HashMap<String, Vec<Mined>>> {
+    pub(super) fn companion_mined_index(&mut self) -> Arc<HashMap<String, Vec<Mined>>> {
         if let Some(m) = &self.companions.mined {
             return m.clone();
         }
@@ -1243,7 +1243,7 @@ impl Game<'_> {
             let dz = if pool[2] >= f[2] { -1 } else { 1 };
             cast.site = Some(Site {
                 base: [f[0] - 1, f[1], f[2] + 2 * dz],
-                front: dz.signum() * -1,
+                front: -dz.signum(),
             });
             cast.slot = 0;
             run.note = "building the mould".into();
