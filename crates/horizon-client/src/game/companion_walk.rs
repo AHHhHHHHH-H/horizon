@@ -97,6 +97,31 @@ fn falls(name: &str) -> bool {
     ) || name.ends_with("_concrete_powder")
 }
 
+const COBBLESTONE: &str = "minecraft:cobblestone";
+/// Cobblestone it keeps for tools and a furnace (never placed on a walk).
+const COBBLE_RESERVE: u32 = 8;
+
+/// The slot of the block to place: any throwaway block but cobblestone
+/// first, cobblestone only above its reserve.
+pub(super) fn throwaway_slot(inventory: &[Option<ItemStack>]) -> Option<usize> {
+    let is = |s: &Option<ItemStack>, cobble: bool| {
+        s.as_ref()
+            .is_some_and(|s| THROWAWAY.contains(&&*s.item) && (&*s.item == COBBLESTONE) == cobble)
+    };
+    if let Some(i) = inventory.iter().position(|s| is(s, false)) {
+        return Some(i);
+    }
+    let cobble: u32 = inventory
+        .iter()
+        .flatten()
+        .filter(|s| &*s.item == COBBLESTONE)
+        .map(|s| s.count)
+        .sum();
+    (cobble > COBBLE_RESERVE)
+        .then(|| inventory.iter().position(|s| is(s, true)))
+        .flatten()
+}
+
 /// What a body's walker keeps between ticks (`Body::walk`).
 #[derive(Default)]
 pub(super) struct Walk {
@@ -111,6 +136,12 @@ pub(super) struct Walk {
     bad: Vec<[i32; 3]>,
     /// A pillar step's jump started.
     jumped: bool,
+    /// Where a chase goes (a mob's place when it was set).
+    chase: Option<Goal>,
+    /// No new plan before this tick (the last one found no way).
+    wait: u64,
+    /// What the caller builds or digs with it (for the status line).
+    pub note: String,
     /// Blocks placed and dug, plans made (the run's numbers).
     pub placed: u32,
     pub dug: u32,
@@ -127,6 +158,7 @@ impl Walk {
         self.step = 0;
         self.replans = 0;
         self.jumped = false;
+        self.chase = None;
     }
     /// Where it is going and how (the companion list).
     pub fn status(&self) -> serde_json::Value {
@@ -160,10 +192,34 @@ struct GameTerrain<'a, 'g> {
     near: [i32; 3],
     bad: &'a [[i32; 3]],
     digs: RefCell<HashMap<u32, u16>>,
+    /// Each block state's cell, worked out once a search.
+    states: RefCell<HashMap<u32, Cell>>,
     min_y: i32,
 }
 
 impl GameTerrain<'_, '_> {
+    /// What a block state is to the search, wherever it stands.
+    fn state_cell(&self, state: horizon_world::registry::BlockStateId) -> Cell {
+        let facts = self.game.res.facts();
+        let f = facts.get(state);
+        if f.fluid == Fluid::Lava {
+            return Cell::Lava;
+        }
+        if hazard(&f.name) {
+            return Cell::Hazard;
+        }
+        if f.fluid == Fluid::Water && !f.full_collision {
+            return Cell::Water;
+        }
+        if facts.is_air(state) || !f.full_collision && !f.legacy_solid {
+            return Cell::Open;
+        }
+        Cell::Solid {
+            dig: self.dig_ticks(state.0),
+            falls: falls(&f.name),
+        }
+    }
+
     fn dig_ticks(&self, state: u32) -> u16 {
         if let Some(t) = self.digs.borrow().get(&state) {
             return *t;
@@ -197,24 +253,18 @@ impl Terrain for GameTerrain<'_, '_> {
             return Cell::Solid { dig: 0, falls: false };
         }
         let state = world.block(p[0], p[1], p[2]);
-        let facts = self.game.res.facts();
-        let f = facts.get(state);
-        if f.fluid == Fluid::Lava {
-            return Cell::Lava;
-        }
-        if hazard(&f.name) {
-            return Cell::Hazard;
-        }
-        if f.fluid == Fluid::Water && !f.full_collision {
-            return Cell::Water;
-        }
-        if facts.is_air(state) || !f.full_collision && !f.legacy_solid {
-            return Cell::Open;
-        }
-        let solid = Cell::Solid {
-            dig: self.dig_ticks(state.0),
-            falls: falls(&f.name),
+        let cached = self.states.borrow().get(&state.0).copied();
+        let solid = match cached {
+            Some(c) => c,
+            None => {
+                let c = self.state_cell(state);
+                self.states.borrow_mut().insert(state.0, c);
+                c
+            }
         };
+        if !matches!(solid, Cell::Solid { .. }) {
+            return solid;
+        }
         // Fair sight: a solid block it never saw and doesn't touch is a
         // block of unknown kind (planned as stone).
         if self.level.xray_radius(1).is_none()
@@ -242,12 +292,15 @@ fn face_of(d: [i32; 3]) -> u8 {
 impl Game<'_> {
     /// Throwaway blocks it carries (to bridge and pillar).
     pub(super) fn companion_blocks(inventory: &[Option<ItemStack>]) -> u32 {
-        inventory
-            .iter()
-            .flatten()
-            .filter(|s| THROWAWAY.contains(&&*s.item))
-            .map(|s| s.count)
-            .sum()
+        let (mut cobble, mut other) = (0, 0);
+        for s in inventory.iter().flatten().filter(|s| THROWAWAY.contains(&&*s.item)) {
+            if &*s.item == COBBLESTONE {
+                cobble += s.count;
+            } else {
+                other += s.count;
+            }
+        }
+        other + cobble.saturating_sub(COBBLE_RESERVE)
     }
 
     /// Ticks to dig stone with what it carries (an unknown block's cost).
@@ -285,6 +338,7 @@ impl Game<'_> {
                 near: from,
                 bad: &b.walk.bad,
                 digs: RefCell::new(HashMap::new()),
+                states: RefCell::new(HashMap::new()),
                 min_y: self.dim.min_y(),
             };
             moves::find(&t, from, goal, &rules)
@@ -328,12 +382,19 @@ impl Game<'_> {
                 b.walk.reset();
                 return Steer::Stuck;
             }
-            if !self.companion_settled(host, b) {
+            if !self.companion_settled(host, b) || b.ticks < b.walk.wait {
                 return Steer::Moving;
             }
             let leg = leg_toward(f, goal);
             let route = self.companion_plan_walk(host, b, f, leg);
             if route.steps.is_empty() {
+                b.walk.wait = b.ticks + 20;
+                log::debug!(
+                    "[companion] {} no way from {f:?} to {:?} ({} nodes)",
+                    b.file.name,
+                    leg.at,
+                    route.nodes
+                );
                 b.walk.replans += 1;
                 b.walk.route = None;
                 if !route.reached && b.walk.replans > 2 {
@@ -353,6 +414,23 @@ impl Game<'_> {
             b.walk.jumped = false;
         }
         self.companion_walk_step(host, b, pos)
+    }
+
+    /// After a mob at `at`: toward where it is, the goal kept until it has
+    /// moved off a few blocks (each new goal is a new plan).
+    pub(super) fn companion_chase(&mut self, host: &mut LanHost, b: &mut Body, at: [f64; 3], pos: [f64; 3]) {
+        let cell = feet(at);
+        let goal = match b.walk.chase {
+            Some(g) if (0..3).map(|k| (g.at[k] - cell[k]).abs()).max().unwrap_or(0) <= 3 => g,
+            _ => Goal::near(cell, 1.5),
+        };
+        let keep = b.walk.chase.take();
+        if self.companion_travel(host, b, goal, pos) == Steer::Moving {
+            b.walk.chase = Some(goal);
+        } else if keep.is_some() {
+            // There or stuck: straight at it.
+            let _ = self.companion_steer(host, b, at, 1.2, false);
+        }
     }
 
     /// Whether it stands somewhere (on the ground, in water, or still).
@@ -395,6 +473,17 @@ impl Game<'_> {
             b.walk.since = b.ticks;
             b.walk.jumped = false;
             b.walk.replans = 0;
+            return Steer::Moving;
+        }
+        // Off its route (a fall went further, a mob pushed it): plan again
+        // from where it is.
+        let off = (0..3).map(|k| (f[k] - step.to[k]).abs()).max().unwrap_or(0) > 1
+            && route
+                .steps
+                .get(b.walk.step.wrapping_sub(1))
+                .is_none_or(|s| (0..3).map(|k| (f[k] - s.to[k]).abs()).max().unwrap_or(0) > 1);
+        if off && (on_ground || in_water) && b.work.dig.is_none() {
+            b.walk.route = None;
             return Steer::Moving;
         }
         // Too long on one step: that block is bad, plan again.
@@ -445,11 +534,7 @@ impl Game<'_> {
         if let Some(q) = step.place
             && !self.floor(q)
         {
-            let Some(slot) = host.hub.guest(b.conn).and_then(|g| {
-                g.inventory
-                    .iter()
-                    .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
-            }) else {
+            let Some(slot) = host.hub.guest(b.conn).and_then(|g| throwaway_slot(&g.inventory)) else {
                 // Out of blocks: plan again without bridging.
                 b.walk.route = None;
                 return Steer::Moving;
@@ -497,17 +582,30 @@ impl Game<'_> {
             }
             return Steer::Moving;
         }
-        // Move toward the step's block.
-        let aim = if chain {
+        // Move toward the step's block: from the middle of its own when it
+        // stands off to the side of the way (its box would catch the corner
+        // of the block beside), else straight, past it on straight walks.
+        let (sx, sz) = (step.to[0] - f[0], step.to[2] - f[2]);
+        let aside = match (sx != 0, sz != 0) {
+            (true, false) => (pos[2] - (f64::from(f[2]) + 0.5)).abs(),
+            (false, true) => (pos[0] - (f64::from(f[0]) + 0.5)).abs(),
+            _ => 0.0,
+        };
+        let middle = [f64::from(f[0]) + 0.5, pos[1], f64::from(f[2]) + 0.5];
+        let centring = aside > 0.2 && on_ground && step.how != Move::Fall;
+        let aim = if centring {
+            middle
+        } else if chain {
             // Straight walks: aim past this block at the next one.
             next.map_or(to_c, |n| [f64::from(n.to[0]) + 0.5, f64::from(n.to[1]), f64::from(n.to[2]) + 0.5])
         } else {
             to_c
         };
+        let h = if centring { c::horizontal(pos, middle) } else { h };
         b.yaw = c::yaw_toward(pos, aim) as f32;
         b.pitch = 0.0;
         b.keys.forward = h > 0.1;
-        b.keys.sprint = chain && food > 6 && !in_water;
+        b.keys.sprint = chain && !centring && food > 6 && !in_water;
         match step.how {
             Move::Up => b.keys.jump = on_ground || in_water,
             Move::Swim | Move::Walk if in_water => {

@@ -72,6 +72,11 @@ pub enum CompanionCommand {
     },
     /// What it may know of the world (companion/perception.rs).
     Perception(perception::PerceptionLevel),
+    /// The route from one of its stages (`run all from portal`), for tests.
+    RunFrom {
+        perception: perception::PerceptionLevel,
+        stage: String,
+    },
 }
 
 /// What [`CompanionCommand::Collect`] and [`CompanionCommand::Give`] are
@@ -398,6 +403,13 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
             }
         }
         "sleep" | "bed" => CompanionCommand::Sleep,
+        "run" | "speedrun" if words.len() == 4 && words[2].eq_ignore_ascii_case("from") => {
+            CompanionCommand::RunFrom {
+                perception: perception::PerceptionLevel::parse(words[1])
+                    .ok_or_else(|| format!("no perception level {}", words[1]))?,
+                stage: words[3].to_ascii_lowercase(),
+            }
+        }
         "run" | "speedrun" => CompanionCommand::Run {
             perception: match words.get(1..).filter(|w| !w.is_empty()) {
                 Some(w) => Some(

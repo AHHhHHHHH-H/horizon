@@ -265,6 +265,7 @@ impl Game<'_> {
             && !matches!(
                 command,
                 CompanionCommand::Run { .. }
+                    | CompanionCommand::RunFrom { .. }
                     | CompanionCommand::Perception(_)
                     | CompanionCommand::HoldFire(_)
                     | CompanionCommand::Jump
@@ -382,6 +383,12 @@ impl Game<'_> {
             | CompanionCommand::Smelt { .. }
             | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
             CompanionCommand::Run { perception } => self.companion_start_run(host, b, perception),
+            CompanionCommand::RunFrom { perception, stage } => {
+                self.companion_start_run(host, b, Some(perception));
+                if let Some(run) = b.run.as_mut() {
+                    run.skip_to(&stage);
+                }
+            }
             CompanionCommand::Perception(level) => b.senses.level = level,
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
@@ -622,7 +629,12 @@ impl Game<'_> {
             }
             if reach > REACH * 0.8 {
                 let sprint = c::horizontal(pos, at) > 4.0;
-                let _ = self.companion_steer(host, b, at, 1.2, sprint);
+                if b.run.is_some() {
+                    // A runner gets to it the way that digs and builds.
+                    self.companion_chase(host, b, at, pos);
+                } else {
+                    let _ = self.companion_steer(host, b, at, 1.2, sprint);
+                }
             }
             let centre = [at[0], at[1] + height * 0.5, at[2]];
             b.yaw = c::yaw_toward(pos, at) as f32;

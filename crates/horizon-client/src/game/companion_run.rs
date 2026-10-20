@@ -12,7 +12,7 @@ use super::{
     companion::Body,
     companion_body::{Steer, mob_at},
     companion_work::{eye, feet},
-    companion_walk::THROWAWAY,
+    companion_walk::throwaway_slot,
     lan::LanHost,
 };
 use horizon_client::{
@@ -20,7 +20,7 @@ use horizon_client::{
     companion::{
         self as c, CompanionReport, Skill, gear,
         moves::Goal,
-        perception::PerceptionLevel,
+        perception::{Keep, PerceptionLevel},
         techtree::{self, Action, Knowledge, Mined, Stations},
         work::CraftRecipe,
     },
@@ -72,13 +72,16 @@ fn budget(stage: Stage) -> u64 {
     match stage {
         Stage::Wood => 4800,
         Stage::Stone => 4800,
-        Stage::Food => 3600,
+        Stage::Food => 2400,
         Stage::Iron => 24_000,
         Stage::Kit => 9600,
         Stage::Portal => 24_000,
         Stage::Done => u64::MAX,
     }
 }
+
+/// Ticks under water before it goes up for air (of the 300 a player has).
+const AIR_TICKS: u32 = 140;
 
 /// Ticks work may go without its inventory changing before the run calls
 /// it stuck.
@@ -127,6 +130,17 @@ pub(super) struct Run {
     source: Option<String>,
     /// The inventory's signature, and since when it hasn't changed.
     progress: (u64, u64),
+    health: f32,
+    /// Ticks its eyes have been under water.
+    under: u32,
+    /// Where it stood last tick, and where it died (its things lie there)
+    /// with when it got back there.
+    at: [f64; 3],
+    death: Option<([f64; 3], Option<u64>)>,
+    /// The pit it spends the night in (where its feet go), and whether
+    /// the night is given up on (no way to dig one here).
+    shelter: Option<[i32; 3]>,
+    no_shelter: Option<i64>,
     pub deaths: u32,
     night: Option<i64>,
     died_at_night: bool,
@@ -149,6 +163,12 @@ impl Run {
             cast: None,
             source: None,
             progress: (0, now),
+            health: 20.0,
+            under: 0,
+            at: [0.0; 3],
+            death: None,
+            shelter: None,
+            no_shelter: None,
             deaths: 0,
             night: None,
             died_at_night: false,
@@ -162,12 +182,24 @@ impl Run {
         self.splits.push((name.to_owned(), ticks));
         true
     }
+    /// Start at a later stage (`run all from portal`): wood, stone, food,
+    /// iron, kit, portal.
+    pub fn skip_to(&mut self, stage: &str) {
+        let mut s = Stage::Wood;
+        while s != Stage::Done && !s.name().starts_with(stage) && !format!("{s:?}").eq_ignore_ascii_case(stage) {
+            s = s.next();
+        }
+        self.stage = s;
+    }
     /// A report the body made: a failure is kept.
     pub fn heard(&mut self, report: &CompanionReport) {
         match report {
             CompanionReport::SkillFailed { reason, .. } => self.failure = Some(reason.clone()),
             CompanionReport::Died { .. } => {
                 self.deaths += 1;
+                self.death = Some((self.at, None));
+                self.explore = None;
+                self.cast = None;
                 if self.night.is_some() {
                     self.died_at_night = true;
                 }
@@ -243,7 +275,7 @@ impl Knowledge for GameKnowledge<'_, '_> {
             // Through walls it may find one within 48 blocks: what is
             // common underground.
             None if self.level == PerceptionLevel::AllKnowing
-                && (common_underground(block) || block.ends_with("_log") || block.ends_with("_leaves")) =>
+                && (common_underground(block) || natural_wood(block)) =>
             {
                 Some(1500)
             }
@@ -267,6 +299,12 @@ fn common_underground(block: &str) -> bool {
         )
 }
 
+/// Logs and leaves as trees grow them (not stripped, not bark blocks).
+fn natural_wood(block: &str) -> bool {
+    let n = c::short_id(block);
+    !n.starts_with("stripped_") && (n.ends_with("_log") || n.ends_with("_leaves"))
+}
+
 /// Items one block gives, on average, where it isn't one.
 fn per_block(block: &str, item: &str) -> f32 {
     match (c::short_id(block), c::short_id(item)) {
@@ -286,14 +324,21 @@ fn count_any(inventory: &[Option<ItemStack>], items: &[&str]) -> u32 {
     items.iter().map(|i| count(inventory, i)).sum()
 }
 
-const COOKED: [&str; 6] = [
+const COOKED: [&str; 4] = [
     "minecraft:cooked_beef",
     "minecraft:cooked_porkchop",
     "minecraft:cooked_mutton",
     "minecraft:cooked_chicken",
-    "minecraft:cooked_rabbit",
-    "minecraft:bread",
 ];
+/// The same meat raw, in the same order.
+const RAW: [&str; 4] = [
+    "minecraft:beef",
+    "minecraft:porkchop",
+    "minecraft:mutton",
+    "minecraft:chicken",
+];
+/// Pieces of meat a run takes along.
+const FOOD: u32 = 4;
 
 /// Iron it has, counting what its kit holds.
 fn iron(inventory: &[Option<ItemStack>]) -> u32 {
@@ -357,6 +402,14 @@ impl Game<'_> {
             "plan_ms": b.walk.plan_time.as_secs_f64() * 1000.0,
             "plan_max_ms": b.walk.plan_max.as_secs_f64() * 1000.0,
             "known": b.senses.memory().len(),
+            "cast": run.cast.as_ref().map(|c| json!({
+                "pool": c.pool,
+                "base": c.site.map(|s| s.base),
+                "front": c.site.map(|s| s.front),
+                "slot": c.slot,
+                "phase": format!("{:?}", c.phase),
+                "mould": c.mould_done,
+            })),
             "seen": b.senses.seen,
         })
     }
@@ -397,10 +450,49 @@ impl Game<'_> {
             return false;
         };
         let inventory = g.inventory.clone();
+        let health = g.health;
+        // Hurt by nothing it fights: what it stands in, for the log.
+        if health < run.health - 0.5 && b.hurt_by.is_none_or(|(_, at)| self.world.game_time - at > 5) {
+            let f = feet(pos);
+            log::info!(
+                "[companion] {} run: hurt {:.1} at {f:?} in {} / {} on {} (in a wall: {})",
+                b.file.name,
+                run.health - health,
+                self.block_name(f),
+                self.block_name([f[0], f[1] + 1, f[2]]),
+                self.block_name([f[0], f[1] - 1, f[2]]),
+                self.in_wall(pos, 1.62),
+            );
+        }
+        run.health = health;
+        run.at = pos;
         self.companion_run_splits(b, run, &inventory, now.saturating_sub(run.start));
         // Dropped out of the run's work somehow: back to the route.
         if matches!(b.skill, Skill::Follow | Skill::Idle | Skill::Stay | Skill::Come) && b.work.tasks.is_empty() {
             b.skill = Skill::Run;
+        }
+        // Under water too long (a player has 15 s of air): up for air,
+        // through what is above if it must.
+        let head = feet(eye(pos));
+        let under = self.res.facts().get(self.world.block(head[0], head[1], head[2])).fluid == Fluid::Water;
+        run.under = if under { run.under + 1 } else { 0 };
+        if run.under > AIR_TICKS {
+            run.note = "up for air".into();
+            b.walk.reset();
+            let above = [head[0], head[1] + 1, head[2]];
+            if !self.passable(above) && self.res.facts().get(self.world.block(above[0], above[1], above[2])).fluid == Fluid::None {
+                b.keys.jump = false;
+                let _ = self.companion_dig_step(host, b, above, 0);
+            } else {
+                self.companion_stop_dig(host, b);
+                b.pitch = -30.0;
+                b.keys.jump = true;
+            }
+            return true;
+        }
+        // Night under the open sky: into a capped pit until morning.
+        if self.companion_night(host, b, run, pos) {
+            return true;
         }
         // A creeper close: away from it, whatever it was doing.
         if let Some(creeper) = self
@@ -463,6 +555,38 @@ impl Game<'_> {
         };
         let inventory = g.inventory.clone();
         let _ = ticks;
+        // Died: back for its things (they lie there 5 minutes).
+        if let Some((at, back)) = run.death {
+            let far = c::distance(pos, at);
+            match back {
+                _ if far > 400.0 => run.death = None,
+                Some(t) if now > t + 60 => {
+                    log::info!("[companion] {} run: back with what was left", b.file.name);
+                    run.death = None;
+                }
+                Some(_) => {
+                    // There: a moment to pick everything up.
+                    run.note = "picking my things up".into();
+                    let _ = self.companion_steer(host, b, at, 0.5, false);
+                }
+                None if far < 2.0 => run.death = Some((at, Some(now))),
+                None => {
+                    if run.note != "going back for my things" {
+                        log::info!("[companion] {} run: going back for my things at {at:?}", b.file.name);
+                    }
+                    run.note = "going back for my things".into();
+                    let goal = Goal { at: feet(at), near: 1.5, vertical: 2 };
+                    match self.companion_travel(host, b, goal, pos) {
+                        Steer::Moving => {}
+                        Steer::Arrived => run.death = Some((at, Some(now))),
+                        Steer::Stuck => run.death = None,
+                    }
+                }
+            }
+            if run.death.is_some() {
+                return;
+            }
+        }
         if run.stage == Stage::Done {
             run.note = "portal lit: ready for the Nether".into();
             return;
@@ -549,7 +673,7 @@ impl Game<'_> {
         if has_pickaxe(inventory, &["stone", "iron", "diamond"]) {
             hit.push("stone_tools");
         }
-        if count_any(inventory, &COOKED) >= 5 {
+        if count_any(inventory, &COOKED) >= FOOD {
             hit.push("food");
         }
         if iron(inventory) >= 10 {
@@ -611,28 +735,31 @@ impl Game<'_> {
                 }
             }
             Stage::Food => {
-                if count_any(inv, &COOKED) < 5 {
-                    // The cooked meat of the animal it knows nearest.
-                    let kinds = [
-                        ("minecraft:cow", "cooked_beef"),
-                        ("minecraft:pig", "cooked_porkchop"),
-                        ("minecraft:sheep", "cooked_mutton"),
-                        ("minecraft:chicken", "cooked_chicken"),
-                    ];
-                    let nearest = kinds
+                // Raw meat from the animal it knows nearest (cooked later
+                // with the iron); none near: no food stage.
+                let have = count_any(inv, &RAW) + count_any(inv, &COOKED);
+                if have < FOOD {
+                    let nearest = RAW
                         .iter()
-                        .filter_map(|(mob, food)| {
+                        .filter_map(|meat| {
+                            let mob = match c::short_id(meat) {
+                                "beef" => "minecraft:cow",
+                                "porkchop" => "minecraft:pig",
+                                "mutton" => "minecraft:sheep",
+                                _ => "minecraft:chicken",
+                            };
                             self.mobs
                                 .iter()
-                                .filter(|x| x.alive() && !x.is_baby() && &*x.kind.id == *mob)
+                                .filter(|x| x.alive() && !x.is_baby() && &*x.kind.id == mob)
                                 .map(|x| c::distance(mob_at(x), pos))
                                 .filter(|d| *d < 48.0)
                                 .min_by(f64::total_cmp)
-                                .map(|d| (d, *food))
+                                .map(|d| (d, *meat))
                         })
                         .min_by(|a, b| a.0.total_cmp(&b.0));
-                    let food = nearest.map_or("cooked_beef", |(_, f)| f);
-                    goals.push((m(food), 5u32.saturating_sub(count_any(inv, &COOKED)).max(1)));
+                    if let Some((_, meat)) = nearest {
+                        goals.push((meat.to_string(), FOOD - have));
+                    }
                 }
             }
             Stage::Iron => {
@@ -651,6 +778,13 @@ impl Game<'_> {
                 }
                 if count(inv, "minecraft:flint_and_steel") == 0 {
                     goals.push((m("flint_and_steel"), 1));
+                }
+                // The meat it hunted, cooked in the same furnace.
+                for (raw, cooked) in RAW.iter().zip(COOKED) {
+                    let n = count(inv, raw);
+                    if n > 0 {
+                        goals.push((cooked.to_string(), count(inv, cooked) + n));
+                    }
                 }
                 // Blocks to bridge, pillar and build the mould with.
                 let blocks = Self::companion_blocks(inv);
@@ -934,6 +1068,34 @@ impl Game<'_> {
             self.companion_fill_bucket(host, b, w, pos);
             return;
         }
+        // Through walls (Sharp senses, All-knowing): lava it can't see yet
+        // is known too, as far as its senses reach.
+        if b.senses.level.xray_radius(48).is_some() {
+            let here = feet(pos);
+            let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
+            let stale = cast
+                .scanned
+                .is_none_or(|s| (0..3).map(|k| (s[k] - here[k]).abs()).max().unwrap_or(0) > 24);
+            if stale {
+                let lava = self.states_where(|n| n == "minecraft:lava");
+                let mut search = cast.search.take();
+                match self.companion_known(b, &lava, here, 48, &mut search, 6 * 4096) {
+                    None => {
+                        cast.search = search;
+                        return;
+                    }
+                    Some(found) => {
+                        for p in found {
+                            let s = self.world.block(p[0], p[1], p[2]).0;
+                            if self.is_source(s, Fluid::Lava) {
+                                b.senses.memory_mut().remember(p, s, Keep::Notable);
+                            }
+                        }
+                        cast.scanned = Some(here);
+                    }
+                }
+            }
+        }
         // A lava pool.
         let pools = b.senses.memory().pools(|s| self.is_source(s, Fluid::Lava), feet(pos), 160);
         let Some((pool, size)) = pools.iter().copied().find(|(_, n)| *n >= 4) else {
@@ -1093,7 +1255,7 @@ impl Game<'_> {
         if !cast.mould_done {
             match self.companion_build_mould(host, b, &site, pos) {
                 Build::Busy => {
-                    run.note = "building the mould".into();
+                    run.note = format!("building the mould ({})", b.walk.note);
                     return;
                 }
                 Build::Done => cast.mould_done = true,
@@ -1117,22 +1279,38 @@ impl Game<'_> {
             break;
         }
         if cast.slot >= SLOTS.len() {
-            run.split("obsidian_10", self.world.game_time.max(0) as u64 - run.start);
+            let now = self.world.game_time.max(0) as u64;
+            run.split("obsidian_10", now - run.start);
             // Light it on the top face of a bottom block.
             let interior = site.at([1, 1]);
             if &*self.block_name(interior) == "minecraft:nether_portal" {
-                let now = self.world.game_time.max(0) as u64;
                 run.split("portal_lit", now - run.start);
                 b.senses.memory_mut().places.insert("portal".into(), interior);
+                log::info!("[companion] {} run: portal lit at {interior:?}", b.file.name);
                 self.companion_run_next(run, now);
                 self.companion_report(b, CompanionReport::SkillFinished(Skill::Run));
                 return;
             }
             run.note = "lighting the portal".into();
-            let stand = site.stand(1);
+            let stand = site.stand_at(1, 0);
             if !self.companion_at_stand(host, b, stand, pos) {
                 return;
             }
+            // The inside clear first: what flowed in and set (cobblestone),
+            // and the water drained.
+            for y in 1..=3 {
+                for x in 1..=2 {
+                    let q = site.at([x, y]);
+                    if !self.passable(q) && &*self.block_name(q) != "minecraft:nether_portal" {
+                        let _ = self.companion_dig_step(host, b, q, site.front_face());
+                        return;
+                    }
+                    if self.res.facts().get(self.world.block(q[0], q[1], q[2])).fluid != Fluid::None {
+                        return;
+                    }
+                }
+            }
+            self.companion_stop_dig(host, b);
             if self.companion_hold(host, b, "minecraft:flint_and_steel") {
                 let bottom = site.at([1, 0]);
                 self.companion_use_block(host, b, bottom, 1, pos);
@@ -1141,7 +1319,8 @@ impl Game<'_> {
         }
         let rc = SLOTS[cast.slot];
         let slot = site.at(rc);
-        let stand = site.stand(rc[0]);
+        let stand = site.stand_for(rc);
+        let water = site.at(water_cell(rc));
         match cast.phase {
             Phase::Lava => {
                 // Something fell or flowed in (cobblestone): out with it.
@@ -1152,7 +1331,18 @@ impl Game<'_> {
                     return;
                 }
                 self.companion_stop_dig(host, b);
-                if count(&self.companion_inventory(host, b), "minecraft:lava_bucket") == 0 {
+                let inv = self.companion_inventory(host, b);
+                // Water in hand before any lava: it sets the lava at once.
+                if count(&inv, "minecraft:water_bucket") == 0 {
+                    run.note = "water for the cast".into();
+                    let Some(w) = b.senses.memory().nearest(|s| self.is_source(s, Fluid::Water), feet(pos)) else {
+                        self.companion_cast_explore(host, b, run, pos, Search::Surface, "looking for water");
+                        return;
+                    };
+                    self.companion_fill_bucket(host, b, w, pos);
+                    return;
+                }
+                if count(&inv, "minecraft:lava_bucket") == 0 {
                     run.note = format!("lava for frame block {}", cast.slot + 1);
                     let sources: Vec<[i32; 3]> = b
                         .senses
@@ -1171,9 +1361,8 @@ impl Game<'_> {
                     return;
                 }
                 // Pour against the back wall's face: the lava lands in the slot.
-                let wall = site.back(rc);
                 if self.companion_hold(host, b, "minecraft:lava_bucket") {
-                    let to = site.face_point(wall);
+                    let to = site.face_point(site.back(rc));
                     self.companion_use_toward(host, b, to, pos);
                     if self.res.facts().get(self.world.block(slot[0], slot[1], slot[2])).fluid == Fluid::Lava {
                         cast.phase = Phase::Water;
@@ -1182,30 +1371,45 @@ impl Game<'_> {
                 }
             }
             Phase::Water => {
-                let above = site.at([rc[0], rc[1] + 1]);
                 if &*self.block_name(slot) == "minecraft:obsidian" {
                     cast.phase = Phase::Pickup;
                     cast.since = b.ticks;
                     return;
                 }
-                if b.ticks - cast.since > 60 {
-                    // The lava ran off or the water missed: again.
-                    cast.phase = Phase::Pickup;
+                if b.ticks - cast.since > 20 {
+                    // The water missed: the lava back into the bucket
+                    // before it spreads (30 ticks), then again.
+                    cast.phase = Phase::Scoop;
+                    cast.since = b.ticks;
                     return;
                 }
                 if !self.companion_at_stand(host, b, stand, pos) {
                     return;
                 }
-                if self.res.facts().get(self.world.block(above[0], above[1], above[2])).fluid != Fluid::Water
+                // Water beside or above the lava (never below: that sets
+                // nothing) turns the source to obsidian.
+                if self.res.facts().get(self.world.block(water[0], water[1], water[2])).fluid != Fluid::Water
                     && self.companion_hold(host, b, "minecraft:water_bucket")
                 {
-                    let to = site.face_point(site.back([rc[0], rc[1] + 1]));
+                    let to = site.face_point(site.back(water_cell(rc)));
+                    self.companion_use_toward(host, b, to, pos);
+                }
+            }
+            Phase::Scoop => {
+                let lava = self.is_source(self.world.block(slot[0], slot[1], slot[2]).0, Fluid::Lava);
+                if !lava || b.ticks - cast.since > 40 {
+                    cast.phase = Phase::Pickup;
+                    cast.since = b.ticks;
+                    return;
+                }
+                if self.companion_hold(host, b, "minecraft:bucket") {
+                    let to = site.near_point(slot);
                     self.companion_use_toward(host, b, to, pos);
                 }
             }
             Phase::Pickup => {
-                // The water back into the bucket.
-                let above = site.at([rc[0], rc[1] + 1]);
+                // The water back into the bucket: where it was poured, or
+                // wherever beside the cell it landed.
                 let inv = self.companion_inventory(host, b);
                 if count(&inv, "minecraft:water_bucket") > 0 || b.ticks - cast.since > 80 {
                     cast.phase = Phase::Lava;
@@ -1215,18 +1419,113 @@ impl Game<'_> {
                 if !self.companion_at_stand(host, b, stand, pos) {
                     return;
                 }
-                if self.is_source(self.world.block(above[0], above[1], above[2]).0, Fluid::Water)
-                    && self.companion_hold(host, b, "minecraft:bucket")
-                {
-                    let to = [f64::from(above[0]) + 0.5, f64::from(above[1]) + 0.5, f64::from(above[2]) + 0.5];
-                    self.companion_use_toward(host, b, to, pos);
-                } else {
-                    // No source there (it flowed off): the bucket is lost to it;
-                    // more water later.
-                    cast.phase = Phase::Lava;
+                let around = [
+                    water,
+                    site.front_of(slot),
+                    site.front_of(water),
+                    [slot[0], slot[1] + 1, slot[2]],
+                    [slot[0] - 1, slot[1], slot[2]],
+                    [slot[0] + 1, slot[1], slot[2]],
+                ];
+                let source = around
+                    .into_iter()
+                    .find(|p| self.is_source(self.world.block(p[0], p[1], p[2]).0, Fluid::Water));
+                match source {
+                    Some(w) if self.companion_hold(host, b, "minecraft:bucket") => {
+                        // The near half of its face: the ray reaches it past
+                        // the frame's corners.
+                        let to = site.near_point(w);
+                        self.companion_use_toward(host, b, to, pos);
+                    }
+                    _ => {
+                        // No source left (it flowed off): water again next.
+                        cast.phase = Phase::Lava;
+                    }
                 }
             }
         }
+    }
+
+    /// The night: under the open sky it digs two blocks down, caps the pit
+    /// and waits there for the morning (zombies and skeletons can't reach
+    /// it); under a roof (mining) it works on. True while it shelters.
+    fn companion_night(&mut self, host: &mut LanHost, b: &mut Body, run: &mut Run, pos: [f64; 3]) -> bool {
+        let time = self.world.day_time.rem_euclid(24000);
+        let day = self.world.day_time.div_euclid(24000);
+        let night = (12900..23200).contains(&time);
+        if !night {
+            if run.shelter.take().is_some() {
+                log::info!("[companion] {} run: morning, out of the pit", b.file.name);
+                b.walk.reset();
+            }
+            return false;
+        }
+        if run.no_shelter == Some(day) || b.target.is_some() || run.stage == Stage::Done {
+            return false;
+        }
+        let f = feet(pos);
+        let pit = match run.shelter {
+            Some(p) => p,
+            None => {
+                // Under a roof already: it works on.
+                let roofed = (2..26).any(|dy| !self.passable([f[0], f[1] + dy, f[2]]));
+                if roofed {
+                    return false;
+                }
+                log::info!("[companion] {} run: night, digging a pit at {f:?}", b.file.name);
+                self.companion_cancel_work(host, b, None);
+                b.skill = Skill::Run;
+                b.walk.reset();
+                let p = [f[0], f[1] - 2, f[2]];
+                run.shelter = Some(p);
+                p
+            }
+        };
+        run.note = "sheltering for the night".into();
+        if f != pit {
+            match self.companion_travel(host, b, Goal::exact(pit), pos) {
+                Steer::Stuck => {
+                    log::info!("[companion] {} run: no pit here tonight", b.file.name);
+                    run.shelter = None;
+                    run.no_shelter = Some(day);
+                    return false;
+                }
+                _ => return true,
+            }
+        }
+        // In it: the cap over its head.
+        let cap = [pit[0], pit[1] + 2, pit[2]];
+        if !self.floor(cap) {
+            let _ = self.companion_place_block(host, b, cap, pos);
+        }
+        b.keys = Default::default();
+        true
+    }
+
+    /// Place a throwaway block at `p` against a solid neighbour in reach;
+    /// false when it can't (no blocks, nothing to place against).
+    fn companion_place_block(&mut self, host: &mut LanHost, b: &mut Body, p: [i32; 3], pos: [f64; 3]) -> bool {
+        let Some(slot) = host.hub.guest(b.conn).and_then(|g| throwaway_slot(&g.inventory)) else {
+            return false;
+        };
+        let against = [[0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, -1, 0]]
+            .iter()
+            .map(|d| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
+            .find(|n| self.floor(*n) && super::companion_work::to_block(eye(pos), *n) < 4.4);
+        let Some(n) = against else {
+            return false;
+        };
+        let face = match [p[0] - n[0], p[1] - n[1], p[2] - n[2]] {
+            [0, -1, 0] => 0,
+            [0, 1, 0] => 1,
+            [0, 0, -1] => 2,
+            [0, 0, 1] => 3,
+            [-1, 0, 0] => 4,
+            _ => 5,
+        };
+        self.companion_hold_slot(host, b, slot);
+        self.companion_use_block(host, b, n, face, pos);
+        true
     }
 
     fn companion_inventory(&self, host: &LanHost, b: &Body) -> Vec<Option<ItemStack>> {
@@ -1263,7 +1562,11 @@ impl Game<'_> {
         }
         let to = [f64::from(src[0]) + 0.5, f64::from(src[1]) + 0.85, f64::from(src[2]) + 0.5];
         self.companion_use_toward(host, b, to, pos);
-        b.senses.memory_mut().forget(src);
+        // Taken (or the ray took another source): what is there now.
+        let now = self.world.block(src[0], src[1], src[2]).0;
+        if !self.is_source(now, Fluid::Lava) {
+            b.senses.memory_mut().forget(src);
+        }
     }
 
     /// Build the mould around a portal site, one block a tick.
@@ -1274,23 +1577,32 @@ impl Game<'_> {
                 let corner = matches!((x, y), (0, 0) | (3, 0) | (0, 4));
                 let p = site.at([x, y]);
                 if !corner && !self.passable(p) && &*self.block_name(p) != "minecraft:obsidian" {
+                    {
+                    b.walk.note = format!("clear {p:?}");
                     return self.companion_build_op(host, b, site, p, false, pos);
+                }
                 }
             }
         }
         for x in 0..=3 {
-            for y in 0..=1 {
+            for y in 0..=4 {
                 let p = site.front_cell(x, y);
                 if !self.passable(p) {
+                    {
+                    b.walk.note = format!("clear {p:?}");
                     return self.companion_build_op(host, b, site, p, false, pos);
+                }
                 }
             }
         }
-        // Floors: under the frame and the front.
+        // Floors: under the frame, the front and the back wall.
         for x in 0..=3 {
-            for p in [site.at([x, -1]), site.front_cell(x, -1)] {
+            for p in [site.at([x, -1]), site.front_cell(x, -1), site.back([x, -1])] {
                 if !self.floor(p) {
+                    {
+                    b.walk.note = format!("place {p:?}");
                     return self.companion_build_op(host, b, site, p, true, pos);
+                }
                 }
             }
         }
@@ -1299,14 +1611,20 @@ impl Game<'_> {
             for x in 0..=3 {
                 let p = site.back([x, y]);
                 if !self.floor(p) {
+                    {
+                    b.walk.note = format!("place {p:?}");
                     return self.companion_build_op(host, b, site, p, true, pos);
+                }
                 }
             }
         }
         for rc in [[0, 0], [3, 0], [0, 4]] {
             let p = site.at(rc);
             if !self.floor(p) {
-                return self.companion_build_op(host, b, site, p, true, pos);
+                {
+                    b.walk.note = format!("place {p:?}");
+                    return self.companion_build_op(host, b, site, p, true, pos);
+                }
             }
         }
         Build::Done
@@ -1338,11 +1656,7 @@ impl Game<'_> {
             return Build::Busy;
         }
         self.companion_stop_dig(host, b);
-        let Some(slot) = host.hub.guest(b.conn).and_then(|g| {
-            g.inventory
-                .iter()
-                .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
-        }) else {
+        let Some(slot) = host.hub.guest(b.conn).and_then(|g| throwaway_slot(&g.inventory)) else {
             return Build::Failed;
         };
         let against = [[0, -1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, 1, 0]]
@@ -1350,6 +1664,11 @@ impl Game<'_> {
             .map(|d| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
             .find(|n| self.floor(*n) && super::companion_work::to_block(eye(pos), *n) < 4.4);
         let Some(n) = against else {
+            // Nothing to place it against: the block under it first.
+            let below = [p[0], p[1] - 1, p[2]];
+            if below[1] > site.base[1] - 4 && !self.floor(below) {
+                return self.companion_build_op(host, b, site, below, true, pos);
+            }
             return Build::Busy;
         };
         let d = [p[0] - n[0], p[1] - n[1], p[2] - n[2]];
@@ -1383,6 +1702,16 @@ fn search_for(item: &str, f: [i32; 3]) -> Search {
 
 // ---- the cast's state -------------------------------------------------------------------
 
+/// Where the water goes to set a frame cell's lava: above the bottom and
+/// top rows, beside the side columns (inside the frame).
+fn water_cell(rc: [i32; 2]) -> [i32; 2] {
+    match rc {
+        [0, y] => [1, y],
+        [3, y] => [2, y],
+        [x, y] => [x, y + 1],
+    }
+}
+
 /// The frame's cells to fill, in order: (column, row) in the frame's plane.
 /// The bottom two, the left column, the right column, the top two; the
 /// corners are cobblestone (any block does).
@@ -1404,6 +1733,7 @@ enum Phase {
     #[default]
     Lava,
     Water,
+    Scoop,
     Pickup,
 }
 
@@ -1438,6 +1768,34 @@ impl Site {
     fn stand(&self, x: i32) -> [i32; 3] {
         self.front_cell(x.clamp(0, 3), 0)
     }
+    /// Where it stands in the front row: column x, `h` blocks up.
+    fn stand_at(&self, x: i32, h: i32) -> [i32; 3] {
+        self.front_cell(x.clamp(0, 3), h)
+    }
+    /// Where it stands to pour into a frame cell: in front of its column,
+    /// high enough that its eye sees the back wall behind the cell past
+    /// the obsidian already cast below (rows 0-1 from the ground, row 2
+    /// one block up, rows 3-4 two).
+    fn stand_for(&self, rc: [i32; 2]) -> [i32; 3] {
+        let h = match rc[1] {
+            0 | 1 => 0,
+            2 => 1,
+            _ => 2,
+        };
+        self.stand_at(rc[0], h)
+    }
+    /// The cell in front of `p` (toward where it stands).
+    fn front_of(&self, p: [i32; 3]) -> [i32; 3] {
+        [p[0], p[1], p[2] + self.front]
+    }
+    /// A point on the front half of a frame cell's face toward the front.
+    fn near_point(&self, p: [i32; 3]) -> [f64; 3] {
+        [
+            f64::from(p[0]) + 0.5,
+            f64::from(p[1]) + 0.5,
+            f64::from(p[2]) + 0.5 + 0.45 * f64::from(self.front),
+        ]
+    }
     /// The face of a back wall block that looks at the front.
     fn front_face(&self) -> u8 {
         if self.front > 0 { 3 } else { 2 }
@@ -1459,6 +1817,9 @@ impl Site {
 
 #[derive(Default)]
 struct Cast {
+    /// Where it last searched for lava through walls, and the search.
+    scanned: Option<[i32; 3]>,
+    search: Option<super::companion_work::BlockSearch>,
     pool: Option<[i32; 3]>,
     site: Option<Site>,
     mould_done: bool,
@@ -1500,6 +1861,15 @@ mod tests {
         assert_eq!(cells.len(), 10, "ten frame blocks, no corner");
         assert!(!SLOTS.contains(&[0, 0]) && !SLOTS.contains(&[3, 4]));
         assert!(!site.away_from([11, 64, 20]));
+        // Water sets each cell from above or beside, never from below.
+        assert_eq!(water_cell([1, 0]), [1, 1]);
+        assert_eq!(water_cell([0, 3]), [1, 3]);
+        assert_eq!(water_cell([3, 2]), [2, 2]);
+        assert_eq!(water_cell([2, 4]), [2, 5]);
+        // Higher cells are poured from higher up the front row.
+        assert_eq!(site.stand_for([0, 1]), [10, 64, 21]);
+        assert_eq!(site.stand_for([0, 2]), [10, 65, 21]);
+        assert_eq!(site.stand_for([1, 4]), [11, 66, 21]);
         assert!(site.away_from([11, 64, 26]));
     }
 

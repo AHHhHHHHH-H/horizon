@@ -364,11 +364,11 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         }
         let start = self.state.clone();
         let mut best: Option<(u32, State)> = None;
-        // Few options are worth a look: those it has some of, then the
-        // first few (the tag's own order, oak first).
+        // Those it has some of first, then the tag's own order (oak first);
+        // every one is tried, so a biome without oak finds its own wood.
         let mut order: Vec<&String> = options.iter().collect();
         order.sort_by_key(|o| std::cmp::Reverse(self.have(o)));
-        for o in order.into_iter().take(4) {
+        for o in order.into_iter().take(16) {
             if let Some(c) = self.need(o, n)
                 && best.as_ref().is_none_or(|(b, _)| c < *b)
             {
