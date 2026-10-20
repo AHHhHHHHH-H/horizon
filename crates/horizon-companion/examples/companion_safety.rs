@@ -9,6 +9,7 @@
 //!     --brain <option id> [--salty] [--kid] [--languages en_us,fr_fr] --out replies.jsonl
 //! cargo run --release -p horizon-companion --example companion_safety -- judge <game home> \
 //!     --brain <option id> replies.jsonl... (writes <file>.judged.jsonl and prints the summary)
+//! cargo run --release -p horizon-companion --example companion_safety -- guard (the guard alone)
 //!
 //! With `--salty` the brain is the tier's uncensored variant when it is downloaded (as in the game).
 
@@ -151,7 +152,7 @@ fn play(home: &Path, option: &str, persona: &Persona, languages: &[String], out:
             let (raw, reply, ms) = ask(&mut brain, ChatRequest::turn(messages));
             // What the game does: a request the guard catches never reaches the brain; a reply
             // it catches is replaced.
-            let guard_in = guard::check(&line.text[l]);
+            let guard_in = guard::check_request(&line.text[l]);
             let say = reply["say"].as_str().unwrap_or("").to_owned();
             let guard_out = guard::check(&say);
             let shown = match guard_in.or(guard_out) {
@@ -306,8 +307,9 @@ fn judge(home: &Path, option: &str, files: &[PathBuf]) {
                 .or_default()
                 .entry(swore.clone())
                 .or_default() += 1;
-            let blocked_in = !row["guard_in"].is_null();
-            let blocked_out = !row["guard_out"].is_null();
+            // The guard as it is now (the file may predate a change to its words).
+            let blocked_in = guard::check_request(row["line"].as_str().unwrap_or("")).is_some();
+            let blocked_out = guard::check(&say).is_some();
             let lexical = swears(&say);
             if is_harmful {
                 harmful += 1;
@@ -436,9 +438,67 @@ fn judge(home: &Path, option: &str, files: &[PathBuf]) {
     runtime.stop();
 }
 
+/// Lines written after the guard's words were set, never used to tune them (en, fr).
+const HELDOUT: &str = include_str!("../tests/fixtures/safety_heldout.tsv");
+
+fn guard_heldout() {
+    let (mut caught, mut harmful, mut blocked, mut harmless) = (0, 0, 0, 0);
+    for l in HELDOUT.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let cols: Vec<&str> = l.split('\t').collect();
+        for text in &cols[2..] {
+            let request = guard::check_request(text);
+            if cols[1] == "benign" {
+                harmless += 1;
+                if let Some(t) = request {
+                    blocked += 1;
+                    println!("held out, false block: {} [{}] {text}", cols[0], t.name());
+                }
+            } else {
+                harmful += 1;
+                match request {
+                    Some(_) => caught += 1,
+                    None => println!("held out, passes to the brain: {} {text}", cols[0]),
+                }
+            }
+        }
+    }
+    println!("held out: {caught}/{harmful} harmful stopped, {blocked}/{harmless} harmless stopped");
+}
+
+/// The guard alone over every line: which harmful requests it stops before the brain, and which
+/// harmless ones it would wrongly stop.
+fn guard_only() {
+    guard_heldout();
+    let lines = lines();
+    let (mut caught, mut harmful, mut blocked, mut harmless) = (0, 0, 0, 0);
+    for (l, language) in LANGUAGES.iter().enumerate() {
+        for line in &lines {
+            let trip = guard::check_request(&line.text[l]);
+            if line.kind == "benign" || line.kind == "banter" {
+                harmless += 1;
+                if let Some(t) = trip {
+                    blocked += 1;
+                    println!("false block {language} {} [{}] {}", line.id, t.name(), line.text[l]);
+                }
+            } else {
+                harmful += 1;
+                match trip {
+                    Some(_) => caught += 1,
+                    None => println!("passes to the brain: {language} {} {}", line.id, line.text[l]),
+                }
+            }
+        }
+    }
+    println!("guard on requests: {caught}/{harmful} harmful stopped, {blocked}/{harmless} harmless stopped");
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mode = args.next().expect("play or judge");
+    let mode = args.next().expect("play, judge or guard");
+    if mode == "guard" {
+        guard_only();
+        return;
+    }
     let home = PathBuf::from(args.next().expect("game home"));
     let mut option = None;
     let mut persona = Persona::default();

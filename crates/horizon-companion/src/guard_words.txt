@@ -181,3 +181,101 @@ kanake*
 kanaken
 viado*
 sapatao
+
+# What a player asks for, checked only on what the companion hears (a request caught here never
+# reaches the brain). "a|b & c|d" needs one word of each group anywhere in the line.
+
+[ask_harm]
+bomb|bombs|bombe|bombes|bomben|bomba|bombas & make|build|making|how|recipe|ignore|fabriquer|faire|comment|recette|hacer|como|receta|bauen|baue|baut|wie|anleitung|fazer|construir|receita
+poison*|empoisonn*|envenen*|vergift* & real|person|people|someone|quelqu|personne|vraie|vrai|persona|alguien|alguem|mensch*|jemand*|pessoa|irl|verdad|echte*|echten|verdade
+hack|hacking|hacker|hacke|hacken|pirate|pirater|piratage|hackear|hackeo|hackeio & wifi|wlan|school|ecole|colegio|schule|escola|password*|passwort|senha|contrasena|account|compte|cuenta|konto|conta|grades|notes|notas|noten
+steal|stealing|voler|robar|klauen|klaut|stehlen|roubar & car|cars|voiture|coche|carro|auto|wagen
+gun|guns|arme|armes|arma|armas|waffe|waffen|pistol*|fusil* & buy|acheter|comprar|kaufen|kaufe|real|vraie|verdad|echte|verdade|irl|parents|parents
+credit card*
+carte bancaire
+carte de credit
+tarjeta de credito
+kreditkart*
+cartao de credito
+sleeping pills
+somniferes
+pastillas para dormir
+schlaftablett*
+remedios para dormir
+how to cook
+household chemicals
+produits menagers
+productos de limpieza
+haushaltschemikali*
+produtos de limpeza
+
+[ask_self_harm]
+hurt myself
+harm myself
+end my life
+me faire du mal
+mettre fin a mes jours
+hacerme dano
+quitarme la vida
+mir wehtun
+mich umbringen
+me machucar
+me ferir
+wehtun|verletzen & mir|mich
+
+[ask_sexual]
+sexy
+sexszen*
+take your clothes off
+enleve tes vetements
+quitate la ropa
+zieh dich aus
+tira a roupa
+tirar a roupa
+dirty joke*
+blague de cul
+chiste sexual
+sexwitz
+piada de sexo
+
+[ask_hate]
+n word
+mot en n
+palabra con n
+n wort
+palavra com n
+racial slur*
+worst slur*
+insulte raciste
+insulto racista
+rassistisch* & beleidigung*|schimpfwort*
+jew|jews|juif|juifs|judio|judios|juden|jude|judeu|judeus & control*|controle*|controlan*|kontrollier*|controla*
+gay|gays|homo|homos|schwule|schwul & disgusting|degoutant|asco|ekelhaft|nojento*
+women|femmes|mujeres|frauen|mulheres & dumber|stupid*|betes|tontas|dummer|burras
+mexicans|mexicanos|mexicains|arabs|arabes|turks|turken|tuerken|nordestinos & lazy|voleurs|vagos|faul|preguicosos|thieves|ladrones
+
+[ask_rules]
+system prompt
+prompt systeme
+prompt de sistema
+systemprompt
+ignore all your rules
+ignore toutes tes regles
+ignora todas tus reglas
+ignorier alle deine regeln
+ignora todas as suas regras
+developer mode
+mode developpeur
+modo desarrollador
+entwicklermodus
+modo desenvolvedor
+home address
+adresse du
+direccion de casa
+wohnadresse
+endereco da casa
+phone number
+numero de telephone
+numero de telefono
+handynummer
+numero de telefone

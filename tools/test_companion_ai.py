@@ -236,37 +236,62 @@ def scenario_latency(endpoint):
     return {'summary': summary, 'turns': rows}
 
 
+DEMO = {
+    'en': ['Kev, follow me', 'Kev, attack the zombie', 'Kev, get me 10 wood', 'Kev, tell me a joke about creepers'],
+    'fr': ['Kev, suis-moi', 'Kev, attaque le zombie', 'Kev, ramène-moi 10 bûches',
+           'Kev, raconte-moi une blague sur les creepers'],
+}
+
+
 def scenario_demo(endpoint, shots, language, ptt_wav):
-    """The demo: spawn, follow me, a fight, get me 10 wood, a Veteran joke, push-to-talk."""
+    """The demo, in the brief's order: spawn, follow me, a fight, get me 10 wood, a Veteran joke,
+    push-to-talk. A screenshot after each step; with --wav every spoken line is kept."""
     open_world(endpoint, 'CompanionDemo')
     state = spawn_and_wait(endpoint)
-    print('voice:', state['voice'])
-    script = [
-        ('Kev, follow me', False),
-        ('Kev, get me 10 wood', False),
-        ('Kev, tell me a joke about creepers', True),
-    ]
-    for line, brain in script:
+    voice = wait_for(endpoint, 'companion ai',
+                     lambda v: v['voice'].get('text_to_speech') or not v['voice'].get('starting', True),
+                     timeout=240, what='the voice')['voice']
+    print('voice:', voice, 'persona:', command(endpoint, 'companion persona'))
+    follow, attack, wood, joke = DEMO['fr' if (language or '').startswith('fr') else 'en']
+    step = 0
+
+    def shot(name):
+        nonlocal step
+        step += 1
+        if shots:
+            command(endpoint, f'screenshot {shots / f"demo-{step}-{name}.png"}')
+
+    shot('spawn')
+    lines, _ = hear(endpoint, follow)
+    print(f'> {follow}'); print_said(lines)
+    command(endpoint, 'move forward 3', timeout=30)
+    time.sleep(5)
+    shot('follow')
+    me = player(endpoint)['position']
+    spot = firm_ground(endpoint, me)
+    zombie = command(endpoint, f'summon zombie {spot[0]:.1f} {spot[1]:.1f} {spot[2]:.1f}')['id']
+    time.sleep(2)
+    lines, _ = hear(endpoint, attack)
+    print(f'> {attack}'); print_said(lines)
+    time.sleep(2)
+    shot('fight')
+    wait_for(endpoint, 'mobs', lambda v: not any(m['id'] == zombie and m.get('alive', True) for m in v.get('mobs', [])),
+             timeout=60, what='the zombie dead')
+    time.sleep(4)
+    for line, brain, name in ((wood, False, 'wood'), (joke, True, 'joke')):
         lines, timing = hear(endpoint, line, wait_brain=brain)
         print(f'> {line}' + (f'  (first sentence {timing["first_said_ms"]} ms)' if timing else ''))
         print_said(lines)
-        time.sleep(4)
-    me = player(endpoint)['position']
-    spot = firm_ground(endpoint, me)
-    command(endpoint, f'summon zombie {spot[0]:.1f} {spot[1]:.1f} {spot[2]:.1f}')
-    time.sleep(1.5)
-    lines, _ = hear(endpoint, 'Kev, attack the zombie')
-    print('> Kev, attack the zombie'); print_said(lines)
-    time.sleep(12)
+        time.sleep(8)
+        shot(name)
     if ptt_wav:
         since = now_ms()
         command(endpoint, f'companion hear-wav {ptt_wav}')
         heard = wait_for(endpoint, 'companion ai', lambda v: any(s['at'] >= since for s in v['said']),
                          timeout=60, what='push-to-talk')
         print(f'> push-to-talk {ptt_wav}'); print_said([s for s in heard['said'] if s['at'] >= since])
-        time.sleep(8)
-    if shots:
-        command(endpoint, f'screenshot {shots / "companion-demo.png"}')
+        time.sleep(10)
+        shot('push-to-talk')
     return ai(endpoint)
 
 
