@@ -6,7 +6,8 @@
 //! `HORIZON_COMPANION_VOICE=<file.json>` turns it on for testing without the setup screens: the file
 //! names the audio.cpp folder and the models (`{"runtime": "…", "backend": "cpu", "threads": 2,
 //! "models": {"pocket-tts-en-q8_0": "<dir>", "parakeet-tdt-0.6b-v3-q8_0": "<dir>"}, "echo": true}`),
-//! and `echo` has a companion repeat what it heard.
+//! and `echo` has a companion repeat what it heard. `"voices": "<voice pack dir>"` lets cloning
+//! models speak as the cast.
 use super::{Game, Screen};
 use horizon_client::{
     companion_voice::{Heard, PushToTalk, Speakers},
@@ -332,6 +333,7 @@ fn dev_setup(path: &std::path::Path) -> Result<(VoiceSetup, bool), String> {
             threads: v["threads"].as_u64().unwrap_or(2) as usize,
             models,
             work,
+            voices: v["voices"].as_str().map(Into::into),
         },
         v["echo"].as_bool().unwrap_or(false),
     ))

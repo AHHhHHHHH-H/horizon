@@ -9,7 +9,9 @@
 //! cargo run --release -p horizon-senses --example senses_bench -- voice \
 //!     --runtime <audio.cpp dir> --backend cpu --threads 2 --out <dir> \
 //!     --model pocket-tts-en-q8_0=<dir> --model parakeet-tdt-0.6b-v3-q8_0=<dir> [--tones]
+//!     [--voices <voice pack dir> --cast veteran]
 //! ```
+//! With `--voices`, cloning models speak as the `--cast` character, from the clip of each tone.
 use horizon_senses::{
     catalogue::{self, Backend, SenseKind},
     classifier::{self, Classifier, EmbedServer, Example, Intent, Tuning},
@@ -63,6 +65,8 @@ fn main() -> Result<()> {
             flag("--out").ok_or("--out")?.into(),
             &flags("--model"),
             args.iter().any(|a| a == "--tones"),
+            flag("--voices").map(PathBuf::from),
+            flag("--cast"),
         ),
         _ => Err("usage: senses_bench classify|voice …".into()),
     }
@@ -379,6 +383,8 @@ fn voice(
     out: PathBuf,
     models: &[String],
     tones: bool,
+    voices: Option<PathBuf>,
+    cast: Option<String>,
 ) -> Result<()> {
     std::fs::create_dir_all(&out)?;
     let installed: Vec<Installed> = models
@@ -399,6 +405,7 @@ fn voice(
         threads,
         models: installed.clone(),
         work: out.clone(),
+        voices,
     };
     let started = Instant::now();
     let mut server = VoiceServer::start(&setup)?;
@@ -424,7 +431,7 @@ fn voice(
             let stats = speech.speak_blocking(
                 &Speak {
                     text: text.into(),
-                    voice: None,
+                    voice: cast.clone(),
                     tone,
                     language: language.into(),
                 },
@@ -450,7 +457,7 @@ fn voice(
                 );
                 spoken.push((text.to_string(), language, out.join(name)));
             }
-            if tones && model.model.instruct {
+            if tones && (model.model.instruct || model.model.clone) {
                 println!("\n| tone | first audio | audio | RTF | peak | RMS (dBFS) |");
                 println!("|---|---|---|---|---|---|");
                 let text = "Get away from me, there is a creeper right behind you.";
@@ -458,6 +465,7 @@ fn voice(
                     (Tone::Normal, "normal"),
                     (Tone::Shout, "shout"),
                     (Tone::Whisper, "whisper"),
+                    (Tone::Laugh, "laugh"),
                     (Tone::Sarcastic, "sarcastic"),
                 ] {
                     let name = format!("{}-tone-{label}.wav", model.model.id);

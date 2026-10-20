@@ -3,6 +3,7 @@
 //!
 //! Speech arrives as server-sent events of base64 PCM (`stream_format: "sse"`) rather than a raw PCM
 //! body, because an error after the first chunk then still arrives as an event.
+use crate::cast;
 use crate::catalogue::{Backend, Engine, SenseKind, SenseModel};
 use crate::sidecar::{Launch, Sidecar};
 use base64::Engine as _;
@@ -34,7 +35,14 @@ pub struct VoiceSetup {
     pub models: Vec<Installed>,
     /// Where the config and the log are written.
     pub work: PathBuf,
+    /// The unpacked voice pack (`<data>/companion/voices/<version>/`, [`cast::VOICE_PACK`]): the
+    /// cast's reference clips, audio.cpp's `voice_dir`. Cloning models need it to speak as the cast.
+    pub voices: Option<PathBuf>,
 }
+
+/// Reference voices kept prepared per model: one character's clips (5 emotions × 2 languages), so
+/// switching tone never encodes a clip twice.
+const PREPARED_VOICES: usize = 10;
 
 /// audio.cpp's server config: 127.0.0.1, every model registered under its catalogue id and loaded on
 /// first use, speech in streaming mode, recognition offline (the whole clip is sent on key release).
@@ -59,6 +67,16 @@ pub fn server_config(setup: &VoiceSetup) -> Value {
                     if let Some(voice) = i.model.voices.first() {
                         entry["default_voice_preset"] = json!({ "voice_id": voice.id });
                     }
+                    if i.model.clone {
+                        let key = match family {
+                            "qwen3_tts" => Some("qwen3_tts.voice_prompt_cache_slots"),
+                            "pocket_tts" => Some("pocket_tts.voice_state_cache_slots"),
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            entry["session_options"] = json!({ key: PREPARED_VOICES });
+                        }
+                    }
                 }
                 _ => {
                     entry["task"] = "asr".into();
@@ -71,7 +89,7 @@ pub fn server_config(setup: &VoiceSetup) -> Value {
             Some(entry)
         })
         .collect();
-    json!({
+    let mut config = json!({
         "host": "127.0.0.1",
         "port": "{port}",
         "backend": setup.backend.audiocpp_name(),
@@ -79,13 +97,19 @@ pub fn server_config(setup: &VoiceSetup) -> Value {
         "lazy_load": true,
         "log_request_body": false,
         "models": models,
-    })
+    });
+    if let Some(voices) = &setup.voices {
+        config["voice_dir"] = voices.to_string_lossy().into();
+    }
+    config
 }
 
 /// The running voice sidecar.
 pub struct VoiceServer {
     sidecar: Sidecar,
     models: Vec<&'static SenseModel>,
+    /// The voice pack is installed.
+    cast: bool,
 }
 
 impl VoiceServer {
@@ -114,6 +138,7 @@ impl VoiceServer {
         Ok(VoiceServer {
             sidecar,
             models: setup.models.iter().map(|i| i.model).collect(),
+            cast: setup.voices.is_some(),
         })
     }
 
@@ -133,7 +158,8 @@ impl VoiceServer {
             .copied()
             .filter(|m| m.kind == SenseKind::TextToSpeech)
             .collect();
-        (!models.is_empty()).then(|| SpeechClient::new(&self.base_url(), models))
+        (!models.is_empty())
+            .then(|| SpeechClient::new(&self.base_url(), models).with_cast(self.cast))
     }
 
     /// The speech to text client, if a recognition model is installed.
@@ -230,7 +256,9 @@ impl Tone {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Speak {
     pub text: String,
-    /// A voice of the model (`Voice::id`); `None`: its first.
+    /// A character of the cast (`cast::Character::id`), said by a cloning model from the clip that
+    /// matches the tone, or a built-in voice of the model (`Voice::id`). `None`: the first of the
+    /// cast on a cloning model, else the model's first voice.
     pub voice: Option<String>,
     pub tone: Tone,
     /// ISO 639-1 (`fr`).
@@ -282,6 +310,8 @@ pub struct SpeechClient {
     agent: ureq::Agent,
     base: String,
     models: Vec<&'static SenseModel>,
+    /// The voice pack is in the server's `voice_dir`.
+    cast: bool,
 }
 
 impl SpeechClient {
@@ -290,18 +320,26 @@ impl SpeechClient {
             agent: agent(),
             base: base.trim_end_matches('/').to_owned(),
             models,
+            cast: false,
         }
     }
 
-    /// The model that says a line in this language: an expressive one first, else the natural pack
-    /// of that language, else the first one.
+    /// The server has the voice pack: cloning models speak as the cast.
+    pub fn with_cast(mut self, cast: bool) -> SpeechClient {
+        self.cast = cast;
+        self
+    }
+
+    /// The model that says a line in this language: an expressive (graphics card) one first, else
+    /// the natural pack of that language, else the first one. A model that can only clone needs the
+    /// voice pack.
     pub fn model_for(&self, language: &str) -> &'static SenseModel {
-        let speaks = |m: &&&SenseModel| m.speaks(language);
+        let usable = |m: &&&SenseModel| m.speaks(language) && (self.cast || !m.voices.is_empty());
         self.models
             .iter()
-            .filter(speaks)
-            .find(|m| m.instruct)
-            .or_else(|| self.models.iter().find(speaks))
+            .filter(usable)
+            .find(|m| m.needs.vram_mb > 0)
+            .or_else(|| self.models.iter().find(usable))
             .unwrap_or(&self.models[0])
     }
 
@@ -314,19 +352,67 @@ impl SpeechClient {
             "response_format": "pcm",
             "stream_format": "sse",
         });
-        if let Some(voice) = &speak.voice
-            && model.voices.iter().any(|v| v.id == voice)
-        {
-            body["voice"] = voice.as_str().into();
-        }
-        let gain = speak.tone.playback_gain();
-        if model.instruct {
-            body["language"] = speak.language.as_str().into();
-            if let Some(instruction) = speak.tone.instruction() {
-                body["options"] = json!({ "instruct": instruction });
+        let built_in = speak
+            .voice
+            .as_deref()
+            .filter(|voice| model.voices.iter().any(|v| v.id == *voice));
+        if let Some(voice) = built_in {
+            body["voice"] = voice.into();
+        } else if model.clone && self.cast {
+            // The cast: the clip of the line's emotion carries the delivery.
+            let character = speak
+                .voice
+                .as_deref()
+                .and_then(cast::character)
+                .unwrap_or(&cast::CAST[0]);
+            let clip = character.reference(&speak.language, cast::Emotion::for_tone(&speak.tone));
+            if clip.language == speak.language || !is_qwen3(model) {
+                body["voice"] = clip.name.into();
+            } else {
+                // No clips in this language: Qwen3-TTS Base copies the clip's accent and words into
+                // the line (32% word errors for French said from the English clips, 1% from the
+                // French ones), so it takes only the speaker embedding of the neutral clip (0%
+                // errors, the same voice, the delivery flat: the tone gain still applies).
+                body["voice"] = character
+                    .reference("en", cast::Emotion::Neutral)
+                    .name
+                    .into();
+                body["options"] = json!({ "x_vector_only_mode": true });
             }
         }
+        let gain = speak.tone.playback_gain();
+        if model.languages.len() > 1 {
+            body["language"] = speak.language.as_str().into();
+        }
+        if model.instruct
+            && let Some(instruction) = speak.tone.instruction()
+        {
+            body["options"] = json!({ "instruct": instruction });
+        }
         (body, model, gain)
+    }
+
+    /// Get a character's clips in `language` ready: a cloning model encodes a clip the first time a
+    /// line is said from it (about 0.7 s on an M4 Pro GPU, which delays that line's first sound) and
+    /// keeps it prepared afterwards. Call it on a worker thread when the companion's voice is chosen
+    /// or the game's language changes. Nothing to do on a model that doesn't clone.
+    pub fn prepare(&self, character: &str, language: &str) -> io::Result<()> {
+        let model = self.model_for(language);
+        if !(model.clone && self.cast) {
+            return Ok(());
+        }
+        for emotion in cast::Emotion::ALL {
+            self.speak_blocking(
+                &Speak {
+                    text: "Ok.".into(),
+                    voice: Some(character.into()),
+                    tone: emotion.tone(),
+                    language: language.into(),
+                },
+                |_| {},
+            )?;
+        }
+        Ok(())
     }
 
     /// Say a line on a worker thread; the samples arrive on the channel as they are generated.
@@ -408,6 +494,15 @@ impl SpeechClient {
         stats.total = start.elapsed();
         Ok(stats)
     }
+}
+
+fn is_qwen3(model: &SenseModel) -> bool {
+    matches!(
+        model.engine,
+        Engine::AudioCpp {
+            family: "qwen3_tts"
+        }
+    )
 }
 
 /// The JSON of each `data:` line of a server-sent event stream, up to `[DONE]`.
@@ -556,6 +651,7 @@ mod tests {
                 installed(model("qwen3-tts-12hz-1.7b-customvoice-q8_0").unwrap()),
             ],
             work: "/tmp/w".into(),
+            voices: None,
         }
     }
 
@@ -613,6 +709,69 @@ mod tests {
         assert_eq!(natural.model_for("de").id, "pocket-tts-fr-q8_0");
         assert_eq!(Tone::parse("Whispering"), Tone::Whisper);
         assert_eq!(Tone::parse("sleepy"), Tone::Other("sleepy".into()));
+    }
+
+    #[test]
+    fn the_voice_pack_is_the_voice_library_and_cloning_models_keep_a_character_prepared() {
+        let mut m = setup();
+        m.voices = Some("/data/companion/voices/v1".into());
+        m.models.push(Installed {
+            model: model("qwen3-tts-12hz-1.7b-base-q8_0").unwrap(),
+            dir: "/m/b".into(),
+        });
+        let config = server_config(&m);
+        assert_eq!(config["voice_dir"], "/data/companion/voices/v1");
+        let models = config["models"].as_array().unwrap();
+        assert_eq!(
+            models[1]["session_options"]["pocket_tts.voice_state_cache_slots"],
+            10
+        );
+        assert!(models[2].get("session_options").is_none(), "CustomVoice");
+        assert_eq!(
+            models[3]["session_options"]["qwen3_tts.voice_prompt_cache_slots"],
+            10
+        );
+        assert!(server_config(&setup()).get("voice_dir").is_none());
+    }
+
+    #[test]
+    fn cloning_models_say_each_line_from_the_clip_of_its_tone() {
+        let base = model("qwen3-tts-12hz-1.7b-base-q8_0").unwrap();
+        let pocket = pocket_for("fr_fr");
+        let client = SpeechClient::new("http://x", vec![base, pocket]).with_cast(true);
+        let line = |voice: Option<&str>, language: &str, tone: Tone| Speak {
+            text: "Creeper !".into(),
+            voice: voice.map(Into::into),
+            tone,
+            language: language.into(),
+        };
+        let (body, m, gain) = client.request(&line(Some("knight"), "fr", Tone::Shout));
+        assert_eq!(m.id, base.id, "the graphics card model first");
+        assert_eq!(body["voice"], "hz-knight-fr-shout");
+        assert_eq!(body["language"], "fr");
+        assert!(body.get("options").is_none(), "Base takes no instruction");
+        assert!(gain > 1.0);
+        // Spanish has no clips of its own: the voice of the English neutral clip, without its
+        // accent.
+        let (body, _, _) = client.request(&line(Some("knight"), "es", Tone::Whisper));
+        assert_eq!(body["voice"], "hz-knight-en-neutral");
+        assert_eq!(body["options"]["x_vector_only_mode"], true);
+        // No voice, or one the cast doesn't have: the first character.
+        let (body, _, _) = client.request(&line(None, "en", Tone::Laugh));
+        assert_eq!(body["voice"], "hz-veteran-en-laugh");
+        // The natural voice clones the cast too, and keeps its built-in voices.
+        let natural = SpeechClient::new("http://x", vec![pocket]).with_cast(true);
+        let (body, m, _) = natural.request(&line(Some("nana"), "fr", Tone::Sarcastic));
+        assert_eq!(m.id, pocket.id);
+        assert_eq!(body["voice"], "hz-nana-fr-sarcastic");
+        assert!(body.get("language").is_none(), "one language per pack");
+        let (body, _, _) = natural.request(&line(Some("alba"), "fr", Tone::Shout));
+        assert_eq!(body["voice"], "alba");
+        // Without the voice pack: no cloning, and Base (which can only clone) is never picked.
+        let bare = SpeechClient::new("http://x", vec![base, pocket]);
+        let (body, m, _) = bare.request(&line(Some("knight"), "fr", Tone::Shout));
+        assert_eq!(m.id, pocket.id);
+        assert!(body.get("voice").is_none());
     }
 
     #[test]
