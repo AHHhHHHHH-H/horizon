@@ -8,3 +8,6 @@
 pub mod catalogue;
 pub mod download;
 pub mod hardware;
+pub mod client;
+pub mod reply;
+pub mod runtime;
