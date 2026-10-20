@@ -8,7 +8,7 @@ use horizon_companion::plan::{Part, Plan, Runs};
 use horizon_companion::prompt::{Level, Personality};
 use horizon_companion::settings::keychain;
 use horizon_launcher::companion::{
-    self, BrainChoice, CompanionSettings, Event, Job, Machine, TestResult,
+    self, BrainChoice, CompanionSettings, Event, Job, Machine, PartChoice, TestResult,
 };
 
 /// Advanced's text fields.
@@ -106,7 +106,7 @@ impl CompanionUi {
         }
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let machine = Machine::detect();
+            let machine = companion::detect_machine();
             let plan = companion::make_plan(&machine);
             let _ = tx.send((machine, plan));
         });
@@ -504,6 +504,29 @@ impl Launcher {
                 ),
                 &t,
             ));
+        let voice = self.companion.settings.voice;
+        list = list.child(index_row(
+            5,
+            "Voice",
+            Some(
+                div()
+                    .child("Hold V in the game to talk to it, and hear it answer. The microphone opens only while the key is held. Set up again after turning it on to fetch the voice.")
+                    .into_any_element(),
+            ),
+            Some(
+                switch("companion-voice", voice, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        let c = &mut this.companion;
+                        c.settings.voice = !c.settings.voice;
+                        c.save();
+                        c.detect = None;
+                        c.detect();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+            &t,
+        ));
         let mut section = div()
             .flex()
             .flex_col()
@@ -568,7 +591,7 @@ impl Launcher {
             &t,
         ));
         for option in options.iter().filter(|o| o.part == Part::Brain) {
-            let Some(model) = companion::model_of(&option.id) else {
+            let Some(companion::Component::Brain(model)) = companion::model_of(&option.id) else {
                 continue;
             };
             let chosen = c.settings.brain
@@ -626,6 +649,88 @@ impl Launcher {
                 Some(right),
                 &t,
             ));
+        }
+
+        // The senses: command recognition, then speech recognition and the voice (with Voice on).
+        for (part, title) in [
+            (Part::Classifier, "Command recognition"),
+            (Part::SpeechToText, "Speech recognition"),
+            (Part::TextToSpeech, "Voice"),
+        ] {
+            if part != Part::Classifier && !c.settings.voice {
+                continue;
+            }
+            let choice = c.settings.choice(part);
+            let picked = c.plan.as_ref().and_then(|p| p.pick(part)).map_or_else(
+                || "nothing on this PC".to_owned(),
+                |p| p.option.name.clone(),
+            );
+            let choices = std::iter::once((
+                PartChoice::Auto,
+                format!("{title}: automatic"),
+                format!("The plan's choice: {picked}"),
+            ))
+            .chain(options.iter().filter(|o| o.part == part).map(|o| {
+                let on_disk = installed.contains(&o.id);
+                (
+                    PartChoice::Option { id: o.id.clone() },
+                    format!(
+                        "{}{}",
+                        o.label,
+                        if o.runs == Runs::Gpu {
+                            ", on the graphics card"
+                        } else {
+                            ""
+                        }
+                    ),
+                    format!(
+                        "{} · {} · {} download · needs {}{}",
+                        o.name,
+                        o.detail,
+                        companion::gigabytes(o.download),
+                        mb_text(if o.runs == Runs::Gpu {
+                            o.vram_mb
+                        } else {
+                            o.ram_mb
+                        }),
+                        if on_disk { " · downloaded" } else { "" },
+                    ),
+                )
+            }))
+            .chain(std::iter::once((
+                PartChoice::Off,
+                format!("{title}: off"),
+                "Not used.".to_owned(),
+            )));
+            for (value, label, detail) in choices {
+                let right = if value == choice {
+                    text(theme::CAPTION)
+                        .text_color(t.muted)
+                        .child("In use")
+                        .into_any_element()
+                } else {
+                    let id = SharedString::from(format!("companion-part-{label}"));
+                    button(id, "Use", Kind::Secondary, &t)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            let s = &mut this.companion.settings;
+                            match part {
+                                Part::Classifier => s.classifier = value.clone(),
+                                Part::SpeechToText => s.speech_to_text = value.clone(),
+                                _ => s.text_to_speech = value.clone(),
+                            }
+                            this.companion.save();
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                };
+                rows = rows.child(index_row(
+                    next(),
+                    label,
+                    Some(div().child(detail).into_any_element()),
+                    Some(right),
+                    &t,
+                ));
+            }
         }
 
         // Another AI program on this PC.
@@ -1014,37 +1119,32 @@ impl Launcher {
             ));
         }
         for (model, size) in models {
-            let id = model.id;
+            let (repo, revision) = model.source();
             rows = rows.child(index_row(
                 next(),
-                model.name,
+                model.name(),
                 Some(
                     div()
                         .font_family(theme::MONO)
                         .child(format!(
                             "{}  ·  {}  ·  {} at {}",
                             companion::gigabytes(size),
-                            model.license,
-                            model.repo,
-                            &model.revision[..8]
+                            model.license(),
+                            repo,
+                            &revision[..8]
                         ))
                         .into_any_element(),
                 ),
                 Some(
                     button(
-                        SharedString::from(format!("companion-delete-{id}")),
+                        SharedString::from(format!("companion-delete-{}", model.id())),
                         "Delete",
                         Kind::Ghost,
                         &t,
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if let Some(model) = horizon_companion::catalogue::MODELS
-                            .iter()
-                            .find(|m| m.id == id)
-                        {
-                            if let Err(e) = companion::delete_model(model) {
-                                this.companion.error = Some(e);
-                            }
+                        if let Err(e) = companion::delete_model(model) {
+                            this.companion.error = Some(e);
                         }
                         this.companion.detect = None;
                         this.companion.detect();

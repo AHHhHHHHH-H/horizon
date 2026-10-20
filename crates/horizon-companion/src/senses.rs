@@ -3,8 +3,11 @@
 //! asset digests and the Hugging Face tree API (the LFS oid is the file's SHA-256). Each entry says
 //! what it needs and how fast it was on the machines it was measured on (docs/companions.md, "Voice").
 //!
-//! The types mirror `horizon-companion`'s catalogue (`ModelFile` is the same shape) so the brain's
-//! `plan()` can take these options as more kinds of the same thing.
+//! They share the brain's [`Backend`] and [`ModelFile`], and `plan::sense_options` turns them into
+//! the plan's options, so one plan covers the brain, the classifier, speech recognition and the
+//! voice. The sidecars that run them are in the `horizon-senses` crate.
+
+use crate::catalogue::{Backend, ModelFile};
 
 /// The audio.cpp release the voice runs (`audiocpp_server --version`: 0.9.2, git 0097d365).
 pub const AUDIOCPP_VERSION: &str = "v0.9.2";
@@ -12,45 +15,14 @@ pub const AUDIOCPP_COMMIT: &str = "0097d365";
 pub const AUDIOCPP_LICENSE: &str = "Apache-2.0";
 pub const AUDIOCPP_CREDIT: &str = "audio.cpp by 0xShug0 and contributors (ggml-based)";
 
-/// What runs the model inside the sidecar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Backend {
-    /// Apple's GPU API; the macOS builds also have the CPU backend.
-    Metal,
-    /// Any GPU with a Vulkan driver; the build also has the CPU backend.
-    Vulkan,
-    /// NVIDIA only; a much larger download (the CUDA runtime comes in a second archive).
-    Cuda,
-    Cpu,
-}
-
-impl Backend {
-    pub fn label(self) -> &'static str {
-        match self {
-            Backend::Metal => "Metal",
-            Backend::Vulkan => "Vulkan",
-            Backend::Cuda => "CUDA",
-            Backend::Cpu => "CPU",
-        }
+/// audio.cpp's name for a backend (its server config's `backend`).
+pub fn audiocpp_backend(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Metal => "metal",
+        Backend::Vulkan => "vulkan",
+        Backend::Cuda => "cuda",
+        Backend::Cpu => "cpu",
     }
-
-    /// The value of audio.cpp's `backend` setting.
-    pub fn audiocpp_name(self) -> &'static str {
-        match self {
-            Backend::Metal => "metal",
-            Backend::Vulkan => "vulkan",
-            Backend::Cuda => "cuda",
-            Backend::Cpu => "cpu",
-        }
-    }
-}
-
-/// One file of a download: a release asset or a file of a Hugging Face repository.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModelFile {
-    pub path: &'static str,
-    pub size: u64,
-    pub sha256: &'static str,
 }
 
 /// One prebuilt audio.cpp archive (the `bin` package: `audiocpp_server`, the CLI and the model specs).
@@ -84,7 +56,7 @@ impl AudioCppBuild {
             "{AUDIOCPP_VERSION}-{}-{}-{}",
             self.os,
             self.arch,
-            self.backend.audiocpp_name()
+            audiocpp_backend(self.backend)
         )
     }
 
@@ -264,6 +236,11 @@ pub struct SenseModel {
     pub needs: Needs,
     /// What was measured, in plain words for Advanced.
     pub latency: &'static str,
+    /// The wait before its first word or sound on a typical PC of its kind, in ms, from the same
+    /// measurements: what `plan()` compares.
+    pub first_ms: u32,
+    /// Higher is better among the models of its kind: the plan takes the best that fits.
+    pub quality: u8,
     /// Text to speech: the PCM rate it returns. Speech to text: the rate it is sent.
     pub sample_rate: u32,
     pub voices: &'static [Voice],
@@ -364,6 +341,8 @@ macro_rules! pocket {
             languages: &[$lang],
             needs: POCKET_NEEDS,
             latency: POCKET_LATENCY,
+            first_ms: 120,
+            quality: 1,
             sample_rate: 24000,
             voices: POCKET_VOICES,
             instruct: false,
@@ -404,6 +383,8 @@ pub const MODELS: &[SenseModel] = &[
         },
         latency: "A 3.5 s sentence in 0.3 s on 2 cores of an Apple M4 Pro (0.04 s on its GPU), \
                   0.7 s on 2 cores of a 2016 laptop (Core i7-7500U)",
+        first_ms: 500,
+        quality: 2,
         sample_rate: 16000,
         voices: &[],
         instruct: false,
@@ -435,6 +416,8 @@ pub const MODELS: &[SenseModel] = &[
             backends: &[Backend::Cpu],
         },
         latency: "A 3.5 s sentence in 0.14 s on 2 cores of an Apple M4 Pro",
+        first_ms: 200,
+        quality: 1,
         sample_rate: 16000,
         voices: &[],
         instruct: false,
@@ -666,6 +649,8 @@ pub const MODELS: &[SenseModel] = &[
             backends: &[Backend::Metal, Backend::Cuda, Backend::Vulkan],
         },
         latency: "First sound in 0.06–0.09 s, about 2.2× faster than real time on an Apple M4 Pro GPU",
+        first_ms: 90,
+        quality: 2,
         sample_rate: 24000,
         voices: &[
             Voice {
@@ -734,6 +719,8 @@ pub const MODELS: &[SenseModel] = &[
         },
         latency: "3 ms a line on 1 core of an Apple M4 Pro, 16 ms on 1 core of a 2016 laptop \
                   (Core i7-7500U)",
+        first_ms: 16,
+        quality: 2,
         sample_rate: 0,
         voices: &[],
         instruct: false,
@@ -763,6 +750,8 @@ pub const MODELS: &[SenseModel] = &[
             backends: &[Backend::Cpu],
         },
         latency: "2.6 ms a line on 1 core of an Apple M4 Pro",
+        first_ms: 16,
+        quality: 1,
         sample_rate: 0,
         voices: &[],
         instruct: false,

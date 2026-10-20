@@ -14,10 +14,8 @@ use horizon_client::{
     keybinds,
     text::Text,
 };
-use horizon_senses::{
-    catalogue::{self, Backend},
-    voice::{Installed, Speak, Tone, VoiceServer, VoiceSetup},
-};
+use horizon_companion::{catalogue::Backend, senses};
+use horizon_senses::voice::{Installed, Speak, Tone, VoiceServer, VoiceSetup};
 use std::{io, sync::mpsc, time::Instant};
 use winit::keyboard::KeyCode;
 
@@ -310,7 +308,7 @@ fn dev_setup(path: &std::path::Path) -> Result<(VoiceSetup, bool), String> {
         .iter()
         .map(|(id, dir)| {
             Ok(Installed {
-                model: catalogue::model(id).ok_or(format!("unknown model {id}"))?,
+                model: senses::model(id).ok_or(format!("unknown model {id}"))?,
                 dir: dir.as_str().ok_or("a model folder is not a string")?.into(),
             })
         })

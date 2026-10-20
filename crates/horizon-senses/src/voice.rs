@@ -3,9 +3,10 @@
 //!
 //! Speech arrives as server-sent events of base64 PCM (`stream_format: "sse"`) rather than a raw PCM
 //! body, because an error after the first chunk then still arrives as an event.
-use crate::catalogue::{Backend, Engine, SenseKind, SenseModel};
 use crate::sidecar::{Launch, Sidecar};
 use base64::Engine as _;
+use horizon_companion::catalogue::Backend;
+use horizon_companion::senses::{Engine, SenseKind, SenseModel, audiocpp_backend};
 use serde_json::{Value, json};
 use std::{
     io::{self, BufRead, BufReader},
@@ -74,7 +75,7 @@ pub fn server_config(setup: &VoiceSetup) -> Value {
     json!({
         "host": "127.0.0.1",
         "port": "{port}",
-        "backend": setup.backend.audiocpp_name(),
+        "backend": audiocpp_backend(setup.backend),
         "threads": setup.threads.max(1),
         "lazy_load": true,
         "log_request_body": false,
@@ -537,7 +538,7 @@ pub fn model_dir(models: &Path, model: &SenseModel) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalogue::{model, pocket_for};
+    use horizon_companion::senses::{model, pocket_for};
 
     fn setup() -> VoiceSetup {
         let models = Path::new("/data/companion/models");

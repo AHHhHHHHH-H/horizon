@@ -1431,6 +1431,7 @@ dependencies = [
  "glam",
  "horizon-assets",
  "horizon-bench",
+ "horizon-companion",
  "horizon-core",
  "horizon-dualsense",
  "horizon-friends",
@@ -1595,6 +1596,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "horizon-companion",
  "libc",
  "serde",
  "serde_json",

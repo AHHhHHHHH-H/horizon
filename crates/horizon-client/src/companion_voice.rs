@@ -3,8 +3,8 @@
 //! and its lines out (speech streamed into the mixer from where the companion stands). Nothing here
 //! exists until voice is turned on: the game holds none of it otherwise.
 use crate::audio::{Audio, VoiceId};
+use horizon_companion::senses::SenseModel;
 use horizon_senses::{
-    catalogue::SenseModel,
     dsp::To16k,
     voice::{RecognitionClient, Speak, SpeechClient, SpeechEvent, Transcript},
 };
@@ -414,7 +414,7 @@ fn subtitle(name: &str, text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_senses::catalogue::model;
+    use horizon_companion::senses::model;
     use std::io::{Read, Write};
 
     /// A stand-in server answering one request with `reply`.

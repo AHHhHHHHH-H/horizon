@@ -497,27 +497,33 @@ backend and download size. The parts are the brain, the classifier, speech to te
 ## Code layout
 
 - `crates/horizon-companion`: no game dependency, unit-tested. It holds:
-  - the catalogue (models, runtime builds, URLs, SHA-256, sizes, licences);
-  - hardware detection and tier choice;
-  - download and verify with resume and progress;
+  - the catalogue (models, runtime builds, URLs, SHA-256, sizes, licences) for the brain
+    (`catalogue.rs`) and for the senses (`senses.rs`: audio.cpp builds, speech to text, voices,
+    classifier models, each with its measured needs and first-word time);
+  - hardware detection, and `plan()` over every part's options (`plan::options`: the brain's and
+    the senses');
+  - download and verify with resume and progress, for llama.cpp, audio.cpp and every model;
+  - setup (`setup.rs`): the PC, the plan, "Set up companion" as a job with progress, deleting
+    models, the brain test, and which installed parts the game starts (`Setup::parts`). The
+    launcher's card and the game's Companion section both run it;
   - the runtime supervisor (start, stop, health, priority);
   - the OpenAI-compatible streaming client (`ureq`, server-sent events), for local, Ollama, LM Studio and
     cloud;
   - the prompt builder and the JSON schema;
   - the reflex pipeline (rules → classifier → brain) and phrase banks;
-  - `plan()` and `CompanionSettings` (simple and Advanced), with the cloud key in the OS keychain;
+  - `CompanionSettings` (simple and Advanced), with the cloud key in the OS keychain;
   - the benchmark (`examples/companion_bench.rs`) and an installer for tests
     (`examples/companion_install.rs`);
   - presets.
-
-  Both the game and the launcher use it.
-- `crates/horizon-senses`: no game dependency either. The senses' catalogue (audio.cpp builds, speech
-  to text, voices, classifier models, with their needs and measured latency; the same `ModelFile`
-  shape as the brain's catalogue, so `plan()` can take them as more parts), the sidecar supervisor,
-  the streaming voice and push-to-talk clients, the classifier and its example bank, the radio and the
-  resampler. `examples/senses_bench.rs` measures all of it. It is a crate of its own, not part of
-  `horizon-companion`, so the senses and the brain were built side by side; the classifier runs on the
-  brain's pinned llama.cpp (the same b11756).
+- `crates/horizon-senses`: what runs the senses, without the game: the sidecar supervisor, the
+  audio.cpp voice server and its streaming voice and push-to-talk clients, the classifier (its example
+  bank, the embedding server and the reflexes' `IntentClassifier` on top of it), the radio and the
+  resampler. `examples/senses_bench.rs` measures all of it.
+  - **Why it stays a crate of its own (integration, 2026-10-20):** the launcher plans and downloads
+    the senses but never runs them, so their catalogue moved into `horizon-companion` and the launcher
+    depends on that crate alone. What only the game runs (audio.cpp's client, the microphone's DSP,
+    the classifier's vectors) stays here, and `horizon-senses` depends on `horizon-companion`, not the
+    other way round.
 - `crates/horizon-client/src/companion_voice.rs` (the microphone, push-to-talk, the speakers) and
   `game/companion_voice.rs` (the key, the mic icon, routing what was heard); the mixer's voice streams
   are in `audio.rs`. `HORIZON_COMPANION_VOICE=<file.json>` turns voice on without the setup screens.

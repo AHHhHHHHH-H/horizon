@@ -6,6 +6,8 @@ license.workspace = true
 description = "The companion's senses without the game: the audio.cpp and embedding sidecars, streaming text to speech, push-to-talk speech recognition, the intent classifier and the voice DSP (docs/companions.md)"
 
 [dependencies]
+# The pinned models and audio.cpp builds, and the reflexes' classifier seam.
+horizon-companion = { path = "../horizon-companion" }
 # The sidecars' HTTP APIs (blocking, on worker threads), as in the rest of the workspace.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 serde = { version = "1", features = ["derive"] }

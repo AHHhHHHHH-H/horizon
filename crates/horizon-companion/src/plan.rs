@@ -2,13 +2,14 @@
 //! the player's PC"): which option runs each part and where, what it downloads, what it takes from RAM
 //! and VRAM while the game runs, and a sentence that says so.
 //!
-//! The parts' options come from lists: the brain's from the catalogue ([`brain_options`]); the
-//! classifier's, speech recognition's and the voice's from the sidecar that runs them, added at
-//! integration. `plan` only needs each option's needs.
+//! The parts' options come from lists: the brain's from its catalogue ([`brain_options`]), the
+//! classifier's, speech recognition's and the voice's from the senses' ([`sense_options`]); [`options`]
+//! is all of them. `plan` only needs each option's needs.
 
 use crate::catalogue::{self, Backend, Model, ModelKind, Tier};
 use crate::hardware::{GAME_VRAM_MB, Gpu, GpuKind, Hardware};
 use crate::runtime;
+use crate::senses::{self, Engine, SenseKind, SenseModel};
 
 /// RAM the game itself keeps (chunks, textures, the JVM-free client still needs room).
 pub const GAME_RAM_MB: u64 = 3072;
@@ -145,6 +146,83 @@ pub fn brain_options() -> Vec<PartOption> {
         }
     }
     out
+}
+
+/// Every part's options for a game language (`fr_fr`): the brain's and the senses'.
+pub fn options(language: &str) -> Vec<PartOption> {
+    let mut out = brain_options();
+    out.extend(sense_options(language));
+    out
+}
+
+/// The senses' options from their catalogue: the classifier (on the brain's llama.cpp), speech
+/// recognition and the voice (on audio.cpp). Of the natural voice's packs only the game language's is
+/// offered (English when it has none); the expressive voice speaks every language in one model.
+pub fn sense_options(language: &str) -> Vec<PartOption> {
+    let llama = catalogue::runtime_builds_here()
+        .into_iter()
+        .next()
+        .map(|b| (b.key(), b.size));
+    let audio = senses::audiocpp_builds(std::env::consts::OS, std::env::consts::ARCH)
+        .into_iter()
+        .next()
+        .map(|b| (b.key(), b.size()));
+    let pocket = senses::pocket_for(language).id;
+    senses::MODELS
+        .iter()
+        .filter(|m| m.kind != SenseKind::TextToSpeech || m.instruct || m.id == pocket)
+        .flat_map(|m| {
+            let runtime = match m.engine {
+                Engine::LlamaEmbeddings => llama.clone(),
+                Engine::AudioCpp { .. } => audio.clone(),
+            };
+            let gpu: Vec<Backend> = m
+                .needs
+                .backends
+                .iter()
+                .copied()
+                .filter(|b| *b != Backend::Cpu)
+                .collect();
+            let on_cpu = m.needs.backends.contains(&Backend::Cpu);
+            let base = sense_option(m, runtime);
+            let gpu_option = (!gpu.is_empty()).then(|| PartOption {
+                id: format!("{}@gpu", m.id),
+                runs: Runs::Gpu,
+                backends: gpu,
+                vram_mb: m.needs.vram_mb,
+                ..base.clone()
+            });
+            gpu_option.into_iter().chain(on_cpu.then_some(base))
+        })
+        .collect()
+}
+
+fn sense_option(m: &SenseModel, runtime: Option<(String, u64)>) -> PartOption {
+    let part = match m.kind {
+        SenseKind::Classifier => Part::Classifier,
+        SenseKind::SpeechToText => Part::SpeechToText,
+        SenseKind::TextToSpeech => Part::TextToSpeech,
+    };
+    PartOption {
+        id: format!("{}@cpu", m.id),
+        part,
+        // "Natural voice", from "Natural voice — runs on the processor".
+        label: m.label.split(" — ").next().unwrap_or(m.label).to_owned(),
+        name: m.name.to_owned(),
+        quality: m.quality,
+        runs: Runs::Cpu,
+        backends: Vec::new(),
+        download: m.size(),
+        runtime,
+        ram_mb: m.needs.ram_mb,
+        vram_mb: 0,
+        threads: m.needs.cores,
+        // Recognition and the classifier finish before the brain starts; the voice speaks while it
+        // still writes.
+        before_brain: part != Part::TextToSpeech,
+        latency_ms: m.first_ms,
+        detail: format!("{}, {}", m.quantisation, m.latency),
+    }
 }
 
 /// First-word time of the Light brain on the CPU, times its thread count, on a current desktop CPU:
@@ -623,101 +701,8 @@ pub fn part_of(kind: ModelKind) -> Option<Part> {
 mod tests {
     use super::*;
 
-    /// The senses sidecar's options as the design describes them; the real list comes from its crate.
-    fn senses() -> Vec<PartOption> {
-        let base = PartOption {
-            id: String::new(),
-            part: Part::Classifier,
-            label: String::new(),
-            name: String::new(),
-            quality: 1,
-            runs: Runs::Cpu,
-            backends: Vec::new(),
-            download: 0,
-            runtime: None,
-            ram_mb: 0,
-            vram_mb: 0,
-            threads: 1,
-            before_brain: true,
-            latency_ms: 0,
-            detail: String::new(),
-        };
-        let audio_runtime = Some(("audio.cpp".to_owned(), 40 << 20));
-        vec![
-            PartOption {
-                id: "multilingual-e5-small@cpu".into(),
-                label: "Command recognition".into(),
-                download: 132 << 20,
-                runtime: Some((
-                    catalogue::runtime_builds_here()
-                        .into_iter()
-                        .find(|b| b.backend == Backend::Cpu)
-                        .or_else(|| catalogue::runtime_builds_here().into_iter().next())
-                        .unwrap()
-                        .key(),
-                    20 << 20,
-                )),
-                ram_mb: 250,
-                latency_ms: 20,
-                ..base.clone()
-            },
-            PartOption {
-                id: "parakeet-tdt-0.6b-v3@cpu".into(),
-                part: Part::SpeechToText,
-                label: "Accurate speech recognition".into(),
-                quality: 2,
-                download: 512 << 20,
-                runtime: audio_runtime.clone(),
-                ram_mb: 900,
-                threads: 2,
-                latency_ms: 300,
-                ..base.clone()
-            },
-            PartOption {
-                id: "whisper-base@cpu".into(),
-                part: Part::SpeechToText,
-                label: "Basic speech recognition".into(),
-                download: 200 << 20,
-                runtime: audio_runtime.clone(),
-                ram_mb: 350,
-                latency_ms: 600,
-                ..base.clone()
-            },
-            PartOption {
-                id: "pocket-tts@cpu".into(),
-                part: Part::TextToSpeech,
-                label: "Natural voice".into(),
-                download: 125 << 20,
-                runtime: audio_runtime.clone(),
-                ram_mb: 400,
-                threads: 2,
-                before_brain: false,
-                latency_ms: 200,
-                ..base.clone()
-            },
-            PartOption {
-                id: "qwen3-tts-1.7b@gpu".into(),
-                part: Part::TextToSpeech,
-                label: "Expressive voice".into(),
-                quality: 2,
-                runs: Runs::Gpu,
-                backends: vec![Backend::Metal, Backend::Vulkan, Backend::Cuda],
-                download: 2800 << 20,
-                runtime: audio_runtime,
-                ram_mb: 500,
-                vram_mb: 3500,
-                threads: 1,
-                before_brain: false,
-                latency_ms: 400,
-                ..base
-            },
-        ]
-    }
-
     fn all() -> Vec<PartOption> {
-        let mut options = brain_options();
-        options.extend(senses());
-        options
+        options("en_us")
     }
 
     fn gpu(id: &str, name: &str, total_gb: u64, free_mb: u64, kind: GpuKind) -> Gpu {
@@ -852,8 +837,8 @@ mod tests {
         // The expressive voice would not fit next to it: the natural one runs on the CPU.
         assert_eq!(voice(&plan), Some(("Natural voice", Runs::Cpu)));
         assert_eq!(
-            plan.pick(Part::SpeechToText).unwrap().option.label,
-            "Accurate speech recognition"
+            plan.pick(Part::SpeechToText).unwrap().option.name,
+            "NVIDIA Parakeet TDT 0.6B v3"
         );
         assert!(
             plan.summary
@@ -863,6 +848,69 @@ mod tests {
         );
         assert!(plan.summary.ends_with("GB to download"), "{}", plan.summary);
         stays_within(&plan, &hw);
+    }
+
+    #[test]
+    fn parakeet_needs_its_3_gb_or_the_light_recognition_is_used() {
+        // 8 GB and a 4 GB card: the brain fits on the card, Parakeet's 3.3 GB doesn't fit in what
+        // the game and the system leave, Canary's 0.8 GB does.
+        let hw = pc(
+            8,
+            4,
+            8,
+            vec![gpu(
+                "Vulkan0",
+                "NVIDIA GeForce GTX 1650",
+                4,
+                3_700,
+                GpuKind::Discrete,
+            )],
+        );
+        let plan = plan(&hw, &all(), &[], None);
+        assert_eq!(voice(&plan), Some(("Natural voice", Runs::Cpu)));
+        assert_eq!(
+            plan.pick(Part::SpeechToText).unwrap().option.name,
+            "NVIDIA Canary 180M Flash"
+        );
+        stays_within(&plan, &hw);
+        // With 16 GB, Parakeet.
+        let hw = Hardware {
+            ram_mb: 16 * 1024 - 300,
+            ..hw
+        };
+        let plan = super::plan(&hw, &all(), &[], None);
+        assert_eq!(
+            plan.pick(Part::SpeechToText).unwrap().option.name,
+            "NVIDIA Parakeet TDT 0.6B v3"
+        );
+    }
+
+    #[test]
+    fn the_natural_voice_speaks_the_game_language() {
+        let ids: Vec<String> = options("fr_fr").into_iter().map(|o| o.id).collect();
+        assert!(
+            ids.iter().any(|i| i.starts_with("pocket-tts-fr-")),
+            "{ids:?}"
+        );
+        assert!(
+            !ids.iter().any(|i| i.starts_with("pocket-tts-en")),
+            "{ids:?}"
+        );
+        // Expressive voice on a GPU only, the classifier on the brain's llama.cpp build.
+        assert!(
+            ids.iter()
+                .any(|i| i == "qwen3-tts-12hz-1.7b-customvoice-q8_0@gpu")
+        );
+        assert!(
+            !ids.iter()
+                .any(|i| i == "qwen3-tts-12hz-1.7b-customvoice-q8_0@cpu")
+        );
+        let classifier = options("en_us")
+            .into_iter()
+            .find(|o| o.part == Part::Classifier)
+            .unwrap();
+        let brain = brain_options().into_iter().next().unwrap();
+        assert_eq!(classifier.runtime, brain.runtime);
     }
 
     #[test]

@@ -10,8 +10,11 @@
 //!     --runtime <audio.cpp dir> --backend cpu --threads 2 --out <dir> \
 //!     --model pocket-tts-en-q8_0=<dir> --model parakeet-tdt-0.6b-v3-q8_0=<dir> [--tones]
 //! ```
+use horizon_companion::{
+    catalogue::Backend,
+    senses::{self as catalogue, SenseKind},
+};
 use horizon_senses::{
-    catalogue::{self, Backend, SenseKind},
     classifier::{self, Classifier, EmbedServer, Example, Intent, Tuning},
     dsp,
     voice::{Installed, Speak, SpeechStats, Tone, VoiceServer, VoiceSetup},

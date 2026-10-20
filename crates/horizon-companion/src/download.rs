@@ -1,4 +1,5 @@
-//! Downloads and installs under `<Horizon data>/companion/`: `runtime/<build>/` and `models/<id>/`.
+//! Downloads and installs under `<Horizon data>/companion/`: `runtime/<build>/` (llama.cpp),
+//! `voice-runtime/<build>/` (audio.cpp) and `models/<id>/` (the brain's and the senses' models).
 //!
 //! A download goes to a `.part` file that survives a cancel, a lost connection or a closed game, and
 //! resumes from where it stopped with an HTTP Range request (the bytes already there are hashed first,
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::catalogue::{Model, RuntimeBuild};
+use crate::senses::{AudioCppBuild, SenseModel};
 
 const INSTALLED: &str = ".installed";
 /// Lost connections are resumed this many times before the download fails.
@@ -200,6 +202,86 @@ impl Layout {
     /// Removes a model, its unfinished download included.
     pub fn delete_model(&self, model: &Model) -> io::Result<()> {
         let dir = self.model_dir(model);
+        remove_all(&partial_dir(&dir))?;
+        remove_all(&dir)
+    }
+
+    /// audio.cpp, the voice's sidecar: `voice-runtime/<build>/`.
+    pub fn voice_runtime_dir(&self, build: &AudioCppBuild) -> PathBuf {
+        self.root.join("voice-runtime").join(build.key())
+    }
+
+    /// The folder `audiocpp_server` is in (its `model_specs/` beside it), once installed.
+    pub fn installed_voice_runtime(&self, build: &AudioCppBuild) -> Option<PathBuf> {
+        let dir = self.voice_runtime_dir(build);
+        dir.join(INSTALLED).exists().then_some(dir)
+    }
+
+    /// Installs an audio.cpp build. Builds that need a second archive (CUDA's runtime, an Advanced
+    /// option on Windows) are not installed here yet.
+    pub fn install_voice_runtime(
+        &self,
+        build: &AudioCppBuild,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, Error> {
+        if build.runtime.is_some() {
+            return Err(Error::Archive(format!(
+                "{} needs a second archive, which setup doesn't install yet",
+                build.key()
+            )));
+        }
+        let fetch = Fetch {
+            url: AudioCppBuild::url(&build.archive),
+            path: build.archive.path.to_owned(),
+            size: build.archive.size,
+            sha256: build.archive.sha256.to_owned(),
+        };
+        let dir = self.voice_runtime_dir(build);
+        install_archive(&fetch, build.server_exe(), &dir, progress, cancel)?;
+        Ok(dir)
+    }
+
+    pub fn sense_model_dir(&self, model: &SenseModel) -> PathBuf {
+        self.root.join("models").join(model.id)
+    }
+
+    /// The folder of a sense model, once every file is installed (the engines find the files in it
+    /// by `SenseModel::local_path`).
+    pub fn installed_sense_model(&self, model: &SenseModel) -> Option<PathBuf> {
+        let dir = self.sense_model_dir(model);
+        dir.join(INSTALLED).exists().then_some(dir)
+    }
+
+    pub fn install_sense_model(
+        &self,
+        model: &SenseModel,
+        progress: &mut dyn FnMut(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, Error> {
+        let files: Vec<Fetch> = model
+            .files
+            .iter()
+            .map(|f| Fetch {
+                url: model.url(f),
+                path: model.local_path(f).to_owned(),
+                size: f.size,
+                sha256: f.sha256.to_owned(),
+            })
+            .collect();
+        let dir = self.sense_model_dir(model);
+        install_files(&files, &dir, progress, cancel)?;
+        Ok(dir)
+    }
+
+    pub fn delete_voice_runtime(&self, build: &AudioCppBuild) -> io::Result<()> {
+        let dir = self.voice_runtime_dir(build);
+        remove_all(&partial_dir(&dir))?;
+        remove_all(&dir)
+    }
+
+    pub fn delete_sense_model(&self, model: &SenseModel) -> io::Result<()> {
+        let dir = self.sense_model_dir(model);
         remove_all(&partial_dir(&dir))?;
         remove_all(&dir)
     }
