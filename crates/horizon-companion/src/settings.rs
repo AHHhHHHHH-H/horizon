@@ -20,7 +20,8 @@ pub const VERSION: u32 = 1;
 #[serde(default)]
 pub struct CompanionSettings {
     pub version: u32,
-    /// Hides every AI feature, in the launcher and in the game. The launcher also passes `--no-ai`.
+    /// Hides every AI feature, in the launcher and in the game. Also kept in the game's extras file
+    /// ([`sync_extras`]).
     pub no_ai: bool,
     /// The player pressed "Set up companion": the game offers companions once the parts are on disk.
     pub set_up: bool,
@@ -196,14 +197,35 @@ impl CompanionSettings {
             .collect()
     }
 
-    /// The game's command line for these settings.
-    pub fn game_args(&self) -> Vec<String> {
-        if self.no_ai {
-            vec!["--no-ai".into()]
-        } else {
-            Vec::new()
-        }
+}
+
+/// The game's extras file in its home, and the key No AI is kept under there.
+pub const EXTRAS_FILE: &str = "horizon-extras.txt";
+pub const EXTRAS_KEY: &str = "noAi";
+
+/// Writes `noAi:true|false` into the game's `horizon-extras.txt`, keeping every other line, so the
+/// game sees No AI even before it reads the companion's settings. The launcher calls it on every
+/// change and before each start, since the game rewrites that file with the keys it knows. (A
+/// `--no-ai` flag is not passed: today's game refuses options it doesn't know.)
+pub fn sync_extras(game_home: &Path, no_ai: bool) -> io::Result<()> {
+    let path = game_home.join(EXTRAS_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let line = format!("{EXTRAS_KEY}:{no_ai}");
+    let mut lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.split_once(':').is_none_or(|(k, _)| k.trim() != EXTRAS_KEY))
+        .collect();
+    if !no_ai && lines.is_empty() && !path.exists() {
+        // Nothing to say yet: the game's default is off.
+        return Ok(());
     }
+    lines.push(&line);
+    fs::create_dir_all(game_home)?;
+    fs::write(&path, lines.join("\n") + "\n")
 }
 
 /// Secrets in the OS keychain: the macOS login keychain (`security`), the Secret Service on Linux
@@ -436,7 +458,6 @@ mod tests {
         assert!(text.contains("\"use\": \"server\""), "{text}");
         assert!(!text.contains("key"), "no key in the file: {text}");
         assert_eq!(CompanionSettings::load(&dir), settings);
-        assert_eq!(settings.game_args(), ["--no-ai"]);
 
         // Fields from a newer or older version: unknown ones are ignored, missing ones default.
         fs::write(
@@ -454,6 +475,24 @@ mod tests {
             CompanionSettings::path(&dir)
                 .with_extension("json.bad")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn no_ai_reaches_the_games_extras_file_and_keeps_its_lines() {
+        let home = crate::download::tests::scratch("extras");
+        sync_extras(&home, false).unwrap();
+        assert!(!home.join(EXTRAS_FILE).exists(), "nothing written for the default");
+        fs::write(home.join(EXTRAS_FILE), "zoom:true\nfps:false\n").unwrap();
+        sync_extras(&home, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(home.join(EXTRAS_FILE)).unwrap(),
+            "zoom:true\nfps:false\nnoAi:true\n"
+        );
+        sync_extras(&home, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(home.join(EXTRAS_FILE)).unwrap(),
+            "zoom:true\nfps:false\nnoAi:false\n"
         );
     }
 

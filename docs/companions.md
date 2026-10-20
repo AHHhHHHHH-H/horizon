@@ -409,8 +409,11 @@ backend and download size. The parts are the brain, the classifier, speech to te
 - `crates/horizon-client/src/companion/`: the virtual guest, the skills, perception (the state summary),
   the chat hook, the Companion options section and persistence. The brain is called from a std-thread
   worker over channels, polled once per tick, never blocking (the `skins::Downloader` pattern).
-- The launcher holds the Settings card (No AI, Set up companion, progress, Advanced) and passes
-  `--no-ai` / extras to the game.
+- The launcher holds the Settings card (No AI, Set up companion, progress, Advanced). It hands its
+  choices to the game through files in the game's home: `companion/settings.json` (the shared
+  `CompanionSettings`) and `noAi:true|false` in `horizon-extras.txt`, written on every change and
+  before each start because the game rewrites that file with the keys it knows. There is no `--no-ai`
+  flag yet: today's game refuses options it doesn't know, so the integration slice adds it.
 
 ## Slices
 

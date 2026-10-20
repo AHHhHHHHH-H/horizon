@@ -2638,6 +2638,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-companion"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "getrandom 0.3.4",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "ureq",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
 name = "horizon-friends"
 version = "0.1.0"
 dependencies = [
@@ -2663,6 +2679,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gpui",
  "horizon-bench",
+ "horizon-companion",
  "horizon-friends",
  "horizon-port-pack",
  "horizon-prepare",
