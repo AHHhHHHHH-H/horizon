@@ -208,6 +208,10 @@ struct Args {
     family: Family,
     /// One personality for all twenty turns: a long session, where old exchanges start to drop.
     one_persona: bool,
+    /// No warm-up: the first turn of each persona processes the system prompt itself.
+    cold: bool,
+    /// Extra runtime arguments, to try settings.
+    extra: Vec<String>,
 }
 
 fn args() -> Args {
@@ -220,6 +224,8 @@ fn args() -> Args {
         out: None,
         family: Family::Qwen35,
         one_persona: false,
+        cold: false,
+        extra: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -232,6 +238,8 @@ fn args() -> Args {
             "--out" => a.out = it.next().map(PathBuf::from),
             "--gemma" => a.family = Family::Gemma4,
             "--one-persona" => a.one_persona = true,
+            "--cold" => a.cold = true,
+            "--arg" => a.extra.push(it.next().expect("--arg value")),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -282,6 +290,7 @@ fn main() {
     if args.cpu {
         config.offload = Offload::None;
     }
+    config.extra_args.extend(args.extra.iter().cloned());
     if let Some(threads) = args.threads {
         config.threads = threads;
     }
@@ -352,6 +361,35 @@ fn main() {
             history.clear();
             if let Some(real) = tokenize(&endpoint, &system) {
                 calibration.push((prompt::estimate_tokens(&system), real));
+            }
+            if !args.cold {
+                // What the game does once the runtime is ready or the persona changes.
+                let sent = prompt::messages(
+                    &system,
+                    memory,
+                    "",
+                    &[],
+                    &Input::Event(String::new()),
+                    language,
+                    &Budget::default(),
+                );
+                let warm = Instant::now();
+                let id = brain.ask(ChatRequest::warm_up(sent[0].clone()));
+                loop {
+                    match brain.try_recv() {
+                        Some(Event::Done { id: got, .. } | Event::Failed { id: got, .. })
+                            if got == id =>
+                        {
+                            break;
+                        }
+                        _ => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+                eprintln!(
+                    "warm-up for {}: {} ms",
+                    personality.label(),
+                    warm.elapsed().as_millis()
+                );
             }
         }
         let line = if args.lang == "fr" { turn.fr } else { turn.en };

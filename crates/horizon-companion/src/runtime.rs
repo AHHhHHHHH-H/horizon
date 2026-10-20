@@ -128,6 +128,13 @@ impl LaunchConfig {
                         "--cache-prompt",
                         "--cache-reuse",
                         "256",
+                        // No extra copies of past prompts in RAM (up to 8 GiB by default): the one
+                        // conversation lives in the slot and its checkpoints. Measured on Qwen3.5 4B,
+                        // a 20-turn session peaked at 3.9 GB instead of 6.8 GB with the same cache hits.
+                        // The default 32 checkpoints stay: with 12 or fewer the one at the end of the
+                        // system prompt was lost and every fourth turn processed it again.
+                        "--cache-ram",
+                        "0",
                         "--jinja",
                         // Thinking off: replies start at once (Qwen3.5 thinks by default).
                         "--reasoning",
@@ -646,6 +653,7 @@ mod tests {
             Some(r#"{"enable_thinking":false}"#)
         );
         assert!(args.iter().any(|a| a == "--no-webui"));
+        assert!(args.windows(2).any(|w| w == ["--cache-ram", "0"]));
 
         config.offload = Offload::None;
         config.mode = Mode::Chat(Family::Gemma4);

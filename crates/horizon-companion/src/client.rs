@@ -91,6 +91,18 @@ impl ChatRequest {
             structured: true,
         }
     }
+
+    /// Processes the system prompt (and memory) ahead of the first turn, so the runtime has it cached:
+    /// send it once the runtime is ready and ignore the answer. On a 2-core laptop the prefix takes
+    /// about 20 s to process; after this the first real turn starts as fast as the later ones.
+    pub fn warm_up(system: Message) -> ChatRequest {
+        ChatRequest {
+            messages: vec![system, Message::new(Role::User, "[event] Loading.")],
+            max_tokens: 1,
+            temperature: 0.0,
+            structured: false,
+        }
+    }
 }
 
 /// How long a reply took, from the request being sent.
