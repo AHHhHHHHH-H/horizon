@@ -254,6 +254,9 @@ pub struct Model {
     pub files: &'static [ModelFile],
     pub license: &'static str,
     pub credit: &'static str,
+    /// Memory while it runs at the runtime's 8K context, all on the GPU, after a 20-turn session:
+    /// measured on the Mac mini (Metal, whole process) except where marked.
+    pub memory_mb: u64,
 }
 
 impl Model {
@@ -297,6 +300,8 @@ pub const MODELS: &[Model] = &[
         }],
         license: "Apache-2.0",
         credit: QWEN_CREDIT,
+        // Measured: 1.9 GB peak.
+        memory_mb: 1950,
     },
     Model {
         id: "qwen3.5-4b-q4_k_m",
@@ -314,6 +319,8 @@ pub const MODELS: &[Model] = &[
         }],
         license: "Apache-2.0",
         credit: QWEN_CREDIT,
+        // Measured: 3.9 GB peak.
+        memory_mb: 3950,
     },
     Model {
         id: "qwen3.5-9b-q4_k_m",
@@ -331,6 +338,8 @@ pub const MODELS: &[Model] = &[
         }],
         license: "Apache-2.0",
         credit: QWEN_CREDIT,
+        // Estimated from Standard: weights plus 1.8 GB. Not measured.
+        memory_mb: 7300,
     },
     Model {
         id: "gemma-4-12b-it-qat-q4_0",
@@ -348,6 +357,8 @@ pub const MODELS: &[Model] = &[
         }],
         license: "Apache-2.0",
         credit: "Gemma 4 by Google DeepMind; quantisation-aware Q4_0 GGUF by Google",
+        // Measured with --swa-full: 9.6 GB peak, flat.
+        memory_mb: 9700,
     },
 ];
 

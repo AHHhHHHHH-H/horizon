@@ -173,10 +173,9 @@ fn tier_label(tier: Tier) -> &'static str {
     }
 }
 
-/// Weights plus 10 %, plus the context and compute buffers.
+/// The catalogue's measured working set.
 fn brain_vram_mb(model: &Model) -> u64 {
-    let mb = model.size() >> 20;
-    mb + mb / 10 + runtime::extra_vram_mb(model.size())
+    model.memory_mb
 }
 
 /// Where a picked option runs.

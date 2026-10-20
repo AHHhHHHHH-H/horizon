@@ -73,6 +73,32 @@ impl LaunchConfig {
         }
     }
 
+    /// The brain as [`crate::plan::plan`] placed it: all of it on the picked GPU, or the processor
+    /// with the plan's thread count.
+    pub fn for_pick(
+        server: &Path,
+        model: &Path,
+        family: Family,
+        pick: &crate::plan::Pick,
+        log: &Path,
+    ) -> LaunchConfig {
+        let (threads, offload) = match &pick.device {
+            // On a GPU the CPU threads only feed it: two are plenty.
+            crate::plan::Device::Gpu { id, .. } => (2, Offload::All { device: id.clone() }),
+            crate::plan::Device::Cpu { threads } => (*threads, Offload::None),
+        };
+        LaunchConfig {
+            server: server.to_owned(),
+            model: model.to_owned(),
+            mode: Mode::Chat(family),
+            threads,
+            offload,
+            context: CONTEXT,
+            log: log.to_owned(),
+            extra_args: Vec::new(),
+        }
+    }
+
     /// An embedding model on `threads` CPU threads, leaving the GPU to the game and the brain.
     pub fn embeddings(
         server: &Path,
@@ -142,11 +168,18 @@ impl LaunchConfig {
                     ]
                     .map(String::from),
                 );
-                if family == Family::Qwen35 {
-                    args.extend([
+                match family {
+                    Family::Qwen35 => args.extend([
                         "--chat-template-kwargs".into(),
                         r#"{"enable_thinking":false}"#.into(),
-                    ]);
+                    ]),
+                    // Gemma's sliding-window layers keep only the last window by default, so after
+                    // the conversation's start changes the runtime falls back on checkpoints: 32 of
+                    // them took a session from 7.5 to 12.4 GB, and turns that dropped old exchanges
+                    // reprocessed 600 tokens. The full cache costs 2 GB once and is reused by shifting
+                    // (measured: 9.6 GB flat, 170 tokens on those turns).
+                    Family::Gemma4 => args.push("--swa-full".into()),
+                    Family::None => {}
                 }
             }
             Mode::Embeddings => args.push("--embeddings".into()),
@@ -661,6 +694,7 @@ mod tests {
         assert_eq!(flag(&args, "--device"), Some("none"));
         assert_eq!(flag(&args, "--gpu-layers"), Some("0"));
         assert_eq!(flag(&args, "--chat-template-kwargs"), None);
+        assert!(args.iter().any(|a| a == "--swa-full"));
 
         let embed = LaunchConfig::embeddings(
             Path::new("s"),
