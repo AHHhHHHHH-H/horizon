@@ -101,7 +101,10 @@ impl Game<'_> {
         while bi < host.companions.len() {
             let mut b = host.companions.remove(bi);
             let keep = match owner {
-                Some(owner) => self.tick_companion(host, &mut b, owner),
+                Some(owner) => {
+                    let owner = self.owner_for(&b, owner);
+                    self.tick_companion(host, &mut b, owner)
+                }
                 // The owner is travelling or dead: the bodies wait.
                 None => {
                     b.keys = Keys::default();
@@ -171,7 +174,8 @@ impl Game<'_> {
             return true;
         }
         let (pos, health, food) = (g.position, g.health, g.food);
-        b.near_owner = c::distance(pos, owner) <= c::COME_ALONG;
+        // A watched body has its owner's view with it: through a portal too.
+        b.near_owner = c::distance(pos, owner) <= c::COME_ALONG || self.watched(b);
         self.companion_notice_hurt(host, b, pos, health);
         if b.ticks.is_multiple_of(10) {
             horizon_client::spans::time("companion_callouts", || {

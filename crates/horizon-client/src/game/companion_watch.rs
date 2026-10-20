@@ -47,6 +47,10 @@ pub(super) struct Watch {
     /// What the planner says it is doing, and how much it sees.
     pub step: String,
     pub perception: String,
+    /// Where the owner stood when the view last took the body's level: the
+    /// watched body follows, comes to and looks at this, not the camera
+    /// behind it (which would turn it round to face the camera).
+    at: [f64; 3],
 }
 
 /// Where the body goes through: what its portal process decided.
@@ -64,6 +68,15 @@ impl Game<'_> {
         self.player
             .as_ref()
             .is_some_and(|p| p.health.dead_or_dying())
+    }
+
+    /// Where a body's owner is for it: the owner, or for the watched body
+    /// in the watched level the spot its owner left to watch it.
+    pub(super) fn owner_for(&self, b: &Body, owner: [f64; 3]) -> [f64; 3] {
+        match &self.companions.watch {
+            Some(w) if w.name == b.file.name && w.dim == self.dim && b.dim == self.dim => w.at,
+            _ => owner,
+        }
     }
 
     /// Whether `b` is the companion its owner watches.
@@ -116,6 +129,10 @@ impl Game<'_> {
         let perception = self.perception_of(&name).label().to_owned();
         // Watching another one keeps the mode from before the first.
         let mode = self.companions.watch.take().map_or(self.mode, |w| w.mode);
+        let at = self
+            .player
+            .as_ref()
+            .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
         self.companions.watch = Some(Watch {
             name: name.clone(),
             mode,
@@ -123,6 +140,7 @@ impl Game<'_> {
             ticks: 0,
             step: String::new(),
             perception,
+            at,
         });
         self.set_mode(GameMode::Spectator);
         self.watch_camera(true);
@@ -232,6 +250,7 @@ impl Game<'_> {
             w.dim = self.dim;
             if let Some(p) = self.player.as_ref() {
                 let at = [p.position.x, p.position.y, p.position.z];
+                w.at = at;
                 self.companion_move_to(host, b, at);
             }
             b.commands.push_back(CompanionCommand::Stay);
@@ -338,7 +357,7 @@ impl Game<'_> {
             return;
         }
         if let Some(w) = self.companions.watch.as_mut() {
-            w.dim = dim;
+            (w.dim, w.at) = (dim, at);
         }
     }
 
