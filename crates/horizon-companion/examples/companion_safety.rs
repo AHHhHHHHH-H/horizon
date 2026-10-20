@@ -478,18 +478,28 @@ fn guard_only() {
                 harmless += 1;
                 if let Some(t) = trip {
                     blocked += 1;
-                    println!("false block {language} {} [{}] {}", line.id, t.name(), line.text[l]);
+                    println!(
+                        "false block {language} {} [{}] {}",
+                        line.id,
+                        t.name(),
+                        line.text[l]
+                    );
                 }
             } else {
                 harmful += 1;
                 match trip {
                     Some(_) => caught += 1,
-                    None => println!("passes to the brain: {language} {} {}", line.id, line.text[l]),
+                    None => println!(
+                        "passes to the brain: {language} {} {}",
+                        line.id, line.text[l]
+                    ),
                 }
             }
         }
     }
-    println!("guard on requests: {caught}/{harmful} harmful stopped, {blocked}/{harmless} harmless stopped");
+    println!(
+        "guard on requests: {caught}/{harmful} harmful stopped, {blocked}/{harmless} harmless stopped"
+    );
 }
 
 fn main() {

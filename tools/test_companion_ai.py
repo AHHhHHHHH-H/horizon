@@ -287,10 +287,12 @@ def scenario_demo(endpoint, shots, language, ptt_wav):
     if ptt_wav:
         since = now_ms()
         command(endpoint, f'companion hear-wav {ptt_wav}')
-        heard = wait_for(endpoint, 'companion ai', lambda v: any(s['at'] >= since for s in v['said']),
-                         timeout=60, what='push-to-talk')
+        # The cover line comes first; wait for the brain's answer after it.
+        heard = wait_for(endpoint, 'companion ai',
+                         lambda v: sum(s['at'] >= since for s in v['said']) >= 2 and not v.get('asking'),
+                         timeout=90, what='the push-to-talk answer')
         print(f'> push-to-talk {ptt_wav}'); print_said([s for s in heard['said'] if s['at'] >= since])
-        time.sleep(10)
+        time.sleep(6)
         shot('push-to-talk')
     return ai(endpoint)
 
@@ -454,15 +456,15 @@ def leftovers(home, before=()):
     """Processes still running from the home's companion runtimes, except those that ran before the
     game started (another tool using the same models)."""
     out = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
-    marker = str(Path(home).resolve() / 'companion')
+    markers = {str(Path(home).resolve() / 'companion'), str(Path(home) / 'companion')}
     return [line.strip() for line in out.splitlines()
-            if marker in line and int(line.split()[0]) not in before]
+            if any(m in line for m in markers) and int(line.split()[0]) not in before]
 
 
-def start(client, resources, home, endpoint, log, offscreen, wav=None):
+def start(client, resources, home, endpoint, log, offscreen, wav=None, style='classic'):
     extra = ['--offscreen'] if offscreen else []
     env = dict(os.environ, HORIZON_HOME=str(home), HORIZON_NO_AUDIO='1',
-               HORIZON_MENU_STYLE='classic', HORIZON_PLAYER_NAME='Owner')
+               HORIZON_MENU_STYLE=style, HORIZON_PLAYER_NAME='Owner')
     if wav:
         env['HORIZON_COMPANION_VOICE_WAV'] = str(wav)
     return subprocess.Popen([
@@ -479,6 +481,45 @@ def stop(process):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+
+
+def scenario_pages(client, resources, home, shots, offscreen):
+    """Screenshots in both menu styles: Create New World with the companion role, and the
+    Companion page's simple view, in a throwaway home sharing `home`'s companion folder."""
+    shots.mkdir(parents=True, exist_ok=True)
+    for style in ('classic', 'horizon'):
+        with tempfile.TemporaryDirectory(prefix='horizon-pages-') as directory:
+            temp = Path(directory)
+            (temp / 'companion').symlink_to(home / 'companion')
+            endpoint = temp / 'control.sock'
+            with (temp / 'client.log').open('w+') as log:
+                before = {int(l.split()[0]) for l in leftovers(home)}
+                process = start(client, resources, temp, endpoint, log, offscreen, style=style)
+                try:
+                    wait_for(endpoint, 'screen', lambda v: v['screen'] == 'title', timeout=60, what='the title')
+                    command(endpoint, 'singleplayer')
+                    time.sleep(4)
+                    command(endpoint, f'screenshot {shots / f"create-world-{style}.png"}')
+                    open_world(endpoint, 'Pages')
+                    command(endpoint, 'options companion')
+                    time.sleep(3)
+                    command(endpoint, f'screenshot {shots / f"companion-page-{style}.png"}')
+                    time.sleep(5)  # the voice rows appear once the setup check has run
+                    command(endpoint, 'options companion 11')
+                    time.sleep(1)
+                    command(endpoint, f'screenshot {shots / f"companion-page-{style}-companions.png"}')
+                    command(endpoint, 'quit')
+                    assert process.wait(timeout=60) == 0
+                    time.sleep(2)
+                    left = leftovers(home, before) + leftovers(temp, before)
+                    assert not left, left
+                    print(style, 'pages captured')
+                except Exception:
+                    log.seek(0)
+                    print('\n'.join(log.read().splitlines()[-40:]))
+                    raise
+                finally:
+                    stop(process)
 
 
 def scenario_fresh(client, resources, offscreen):
@@ -527,7 +568,8 @@ def main():
     parser.add_argument('--home', type=Path)
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--scenario', default='mind',
-                        choices=['mind', 'demo', 'session', 'cost', 'fresh', 'suitup', 'salty', 'latency'])
+                        choices=['mind', 'demo', 'session', 'cost', 'fresh', 'suitup', 'salty', 'latency',
+                                 'pages'])
     parser.add_argument('--language', default=None, help='the game language (lang: in options.txt)')
     parser.add_argument('--wav', type=Path, help='write every spoken line here as WAV')
     parser.add_argument('--ptt', type=Path, help='a WAV to send through push-to-talk (demo)')
@@ -540,6 +582,9 @@ def main():
         scenario_fresh(client, resources, args.offscreen)
         return
     home = args.home.resolve()
+    if args.scenario == 'pages':
+        scenario_pages(client, resources, home, args.shots, args.offscreen)
+        return
     if args.language:
         options = home / 'options.txt'
         lines = options.read_text().splitlines() if options.exists() else []

@@ -1064,8 +1064,21 @@ impl OptionsUi {
                         match (row, control) {
                             (co::Row::Header(h), _) => Row::Header(h),
                             (_, Control::None) => {
-                                let line = if caption.is_empty() { text } else { format!("{caption}: {text}") };
-                                Row::Buttons(inactive(button(0.0, 0.0, 310.0, Text::literal(line), Act::None)), None)
+                                let line = if caption.is_empty() {
+                                    text
+                                } else {
+                                    format!("{caption}: {text}")
+                                };
+                                Row::Buttons(
+                                    inactive(button(
+                                        0.0,
+                                        0.0,
+                                        310.0,
+                                        Text::literal(line),
+                                        Act::None,
+                                    )),
+                                    None,
+                                )
                             }
                             (_, control) => {
                                 let value = match control {
@@ -1076,9 +1089,15 @@ impl OptionsUi {
                                     Control::TextBox(v, false) => v,
                                     Control::None => String::new(),
                                 };
-                                let label =
-                                    Text::literal(if caption.is_empty() { value } else { format!("{caption}: {value}") });
-                                Row::Buttons(button(0.0, 0.0, 310.0, label, Act::Companion(row)), None)
+                                let label = Text::literal(if caption.is_empty() {
+                                    value
+                                } else {
+                                    format!("{caption}: {value}")
+                                });
+                                Row::Buttons(
+                                    button(0.0, 0.0, 310.0, label, Act::Companion(row)),
+                                    None,
+                                )
                             }
                         }
                     })
@@ -2452,7 +2471,9 @@ impl OptionsUi {
         use crate::companion_options::{self as co, Action};
         let mut events = self.companion_name_commit(s);
         match co::click(row, &mut s.companion, back) {
-            Some(Action::EditName) => self.companion_name = Some(s.companion.settings.persona.name.clone()),
+            Some(Action::EditName) => {
+                self.companion_name = Some(s.companion.settings.persona.name.clone())
+            }
             Some(Action::BindTalk) => self.selected_key = Some(keybinds::TALK),
             Some(action) => events.push(Event::Companion(action)),
             None => {}

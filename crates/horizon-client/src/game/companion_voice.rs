@@ -88,7 +88,10 @@ impl Game<'_> {
     }
 
     /// Tests and demos: a WAV file goes through push-to-talk as if spoken into the microphone.
-    pub(super) fn companion_voice_hear_wav(&mut self, path: &std::path::Path) -> Result<(), String> {
+    pub(super) fn companion_voice_hear_wav(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let (samples, rate) =
             horizon_senses::dsp::read_wav_pcm16(&bytes).ok_or("not a 16-bit PCM WAV file")?;

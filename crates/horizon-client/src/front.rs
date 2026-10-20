@@ -13,6 +13,7 @@ use crate::{
         self as t, BODY, CONTROL, CONTROL_LARGE, Face, Kind, SIDEBAR, SMALL, Ui, color, id,
     },
 };
+use horizon_companion::prompt::Role;
 use std::time::Instant;
 
 const NAV: u64 = id("title.nav", 0);
@@ -30,6 +31,8 @@ const NAME: u64 = id("create.name", 0);
 const SEED: u64 = id("create.seed", 0);
 const MODE: u64 = id("create.mode", 0);
 const MAKE: u64 = id("create.make", 0);
+const COMPANION: u64 = id("create.companion", 0);
+const ROLE: u64 = id("create.role", 0);
 const SERVER: u64 = id("mp.row", 0);
 const JOIN: u64 = id("mp.join", 0);
 const DIRECT: u64 = id("mp.direct", 0);
@@ -154,10 +157,11 @@ impl Title {
                     seed,
                     creative,
                     focus,
-                    ..
+                    options,
                 } => {
                     let caret = (self.started.elapsed().as_millis() / 500).is_multiple_of(2);
-                    create_page(ui, x, w, name, seed, *creative, *focus, caret);
+                    let companion = options.companion.map(|on| (on, options.companion_role));
+                    create_page(ui, x, w, name, seed, *creative, *focus, caret, companion);
                 }
                 Mode::Delete { world } => delete_page(ui, x, w, world),
                 Mode::Error { message, .. } => error_page(ui, x, w, message),
@@ -399,12 +403,21 @@ impl Title {
                 _ => {}
             },
             Mode::Create {
-                creative, focus, ..
+                creative,
+                focus,
+                options,
+                ..
             } => match hit {
                 BACK => self.mode = select(&saves),
                 NAME => *focus = 0,
                 SEED => *focus = 1,
                 h if h == MODE || h == MODE + 1 => *creative = h == MODE + 1,
+                h if (h == COMPANION || h == COMPANION + 1) && options.companion.is_some() => {
+                    options.companion = Some(h == COMPANION + 1);
+                }
+                h if (ROLE..ROLE + Role::ALL.len() as u64).contains(&h) => {
+                    options.companion_role = Role::ALL[(h - ROLE) as usize];
+                }
                 MAKE => return self.create_action(),
                 _ => {}
             },
@@ -763,6 +776,7 @@ fn create_page(
     creative: bool,
     focus: u8,
     caret: bool,
+    companion: Option<(bool, Role)>,
 ) {
     let mut y = header(
         ui,
@@ -799,6 +813,31 @@ fn create_page(
                 );
             }
         }
+        y += rh;
+        ui.divider(x, y, w);
+    }
+    // The AI companion, offered once it is set up (create_world.rs's companion_offer).
+    let Some((on, role)) = companion else {
+        return;
+    };
+    let rh = 12.0 + CONTROL + 12.0;
+    ui.text_line(Face::Regular, BODY, rh, x, y, color::MUTED, "Companion");
+    ui.segmented(COMPANION, fx, y + 12.0, &["Off", "On"], usize::from(on));
+    y += rh;
+    ui.divider(x, y, w);
+    if on {
+        ui.text_line(
+            Face::Regular,
+            BODY,
+            rh,
+            x,
+            y,
+            color::MUTED,
+            "Companion role",
+        );
+        let labels: Vec<&str> = Role::ALL.iter().map(|r| r.label()).collect();
+        let selected = Role::ALL.iter().position(|r| *r == role).unwrap_or(0);
+        ui.segmented(ROLE, fx, y + 12.0, &labels, selected);
         y += rh;
         ui.divider(x, y, w);
     }

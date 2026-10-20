@@ -378,7 +378,8 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
   progress, the status, then name, personality, role, perception, language (Clean, Salty 18+ with its
   confirmation, Kid-friendly), chattiness, voice with its picker and Play sample, the push-to-talk key and
   Spawn / Dismiss; Advanced picks every part, Salty's brain, and deletes the models. Create World has
-  "Start with a companion" and "Companion role". No AI (Extras, or the launcher) hides all of it, sends
+  "Start with a companion" and "Companion role" in both styles (buttons in the classic screen, two
+  segmented rows in Horizon's). No AI (Extras, or the launcher) hides all of it, sends
   the companions away saved, and stops the worker.
 - **Not the owner's advancements.** The companion's own advancements were never shown on the owner's
   screen: `as_guest` keeps toasts for `lan_acting.is_none()`. The "Suit Up" seen in a test screenshot
@@ -387,7 +388,8 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
   count), `companion persona`, `companion hear <text>`, `companion hear-voice <text>`, `companion hear-wav
   <file>`, `companion sample`, `companion notes|forget [name]`. `HORIZON_COMPANION_VOICE_WAV=<dir>`
   writes every spoken line to a WAV (tests never play audio aloud). `tools/test_companion_ai.py` drives it
-  all offscreen (scenarios mind, demo, session, cost, fresh).
+  all offscreen (scenarios mind, demo, session, cost, fresh, suitup, salty, latency, pages). `options
+  companion ROWS` opens the page scrolled down; `singleplayer` presses the title's Singleplayer button.
 
 ## Models and runtime
 
