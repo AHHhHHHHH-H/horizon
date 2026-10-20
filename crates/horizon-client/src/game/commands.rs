@@ -1146,7 +1146,7 @@ impl Game<'_> {
     }
     /// Teleport the local player into the command source's dimension. Unlike
     /// portal travel, `/tp` keeps the coordinates given by the command.
-    fn teleport_player_to_dimension(
+    pub(super) fn teleport_player_to_dimension(
         &mut self,
         dimension: Dim,
         pos: [f64; 3],
