@@ -83,7 +83,7 @@ held item and animations.
   - Its name tag and tab-list name carry an aqua "[AI]" marker, so nobody mistakes it for a person.
 - **Life.** It has health, hunger and armour like a player. It dies, drops its items (keepInventory is
   respected), and respawns next to its owner 10 seconds later, then comments on it.
-- **Saving.** `companions/<uuid>.json` in the world folder holds its name, personality, level, memory
+- **Saving.** `companions/<uuid>.json` in the world folder holds its name, personality, role, perception, memory
   notes, owner, whether it was in the world (`active`), and its standing order (follow, stay with its
   post, defend, idle; hold fire). Its inventory, position, health and food are saved like a guest's
   player data, `players/data/<uuid>.dat`. An active companion comes back when the world is opened.
@@ -168,10 +168,12 @@ action, a callout or a brain call.
   - When the owner addresses it with something the reflexes don't take.
   - On important events: its death, the owner's death, a new dimension, an advancement, a boss, low
     health, a skill finishing or failing.
-  - Unprompted remarks are limited to one every 20 s by default. A chattiness setting goes from Quiet to
-    Talkative.
+  - Unprompted remarks follow the chattiness setting: Quiet never remarks (danger callouts only, every
+    60 s per kind), Normal remarks at most every 90 s (callouts every 30 s), Chatty every 30 s (callouts
+    every 15 s).
 - **What it is given:**
-  1. A static system prompt: game rules, safety rules, the personality, the level and the action list.
+  1. A static system prompt: game rules, safety rules, the personality, the role, the perception rule
+     and the action list.
      This stays the same and is reused from the runtime's prompt cache.
   2. Memory notes, at most about 300 tokens: who the owner is, what happened, and live persona changes
      such as "you're a cat now".
@@ -203,16 +205,34 @@ action, a callout or a brain call.
 - **Memory** is a short rolling summary in the world folder. "Forget everything" in the Companion screen
   clears it.
 
-### Levels and personalities
+### Roles, perception and personalities
 
-- **Levels:**
-  - **Helper** does what you ask, defends itself and you, and otherwise stays back.
-  - **Super strong** fights everything near you, protects you and gathers gear fast. It is visibly
-    boosted: Strength II, Resistance II and Regeneration I, shown as effects and particles.
-  - **Partner to beat the game** plays alongside you through the progression, using a milestone graph
-    read from advancements and inventories: wood → stone tools → iron → diamonds → Nether → blaze rods
-    and pearls → stronghold → End → dragon. It picks the next milestone, works on it when you don't
-    command it, and tells you the plan.
+Roles replaced the three levels (Ludovic, 2026-10-20). Saves and settings from before roles still load:
+Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
+
+- **Roles** (`prompt::Role`) say what the companion does beside the player. It is picked in the Companion
+  screen (simple view), in the launcher and at world creation ("Companion role"). Each companion's save
+  file (`companions/<uuid>.json`, `role`) keeps its own role; an empty one follows the settings. A
+  deterministic planner that makes each role competent comes in a later slice: for now the role sets the
+  prompt and the hooks below.
+  - **Assistant** does what you ask (gather, craft, guard, fetch) and otherwise stays back.
+  - **Teammate** plays alongside you with initiative, shares loot and progresses with you.
+  - **Speedrunner** plays to beat the game fast, takes you along and explains the route.
+  - **Bodyguard** protects you and fights everything. It is visibly boosted: Strength II, Resistance
+    II and Regeneration I, shown as effects and particles, renewed every 10 s.
+  - **Coach** teaches: it says what to do next and why, then lets you do it.
+
+  Teammate, Speedrunner and Coach follow the milestone plan (`partner.rs`), read from the owner's and the
+  companion's inventories and the dimension: wood → stone tools → iron → diamonds → Nether → blaze rods →
+  ender pearls → stronghold → End → dragon. The state carries "Plan: step N/10, goal", and the brain
+  hears when the step changes. More roles (Gatherer, Builder) add a variant, a label, a blurb and a
+  prompt text.
+- **Perception** (`prompt::Perception`, default Fair) says how much of the world it may know. The setting
+  and the prompt rule are in; the senses behind the stronger levels come with the planner.
+  - **Fair:** only what a player in its place would see.
+  - **Sharp senses:** mobs, ores and chests through walls, within about 16 blocks.
+  - **Scout:** also where the structures are (villages, fortresses, the stronghold).
+  - **All-knowing:** everything about the world.
 - **Personalities:**
   - Veteran: grumpy and sarcastic.
   - Coach: friendly and explains things.
@@ -221,14 +241,34 @@ action, a callout or a brain call.
   - Quiet.
   - A custom description field.
 
-  It talks in the game's language. Personality and level can be changed live from the Companion screen,
-  or by telling it ("you're a pirate now").
+  It talks in the game's language. Personality, role and perception can be changed live from the
+  Companion screen, or by telling it ("you're a pirate now", kept as a memory note).
+- **Voices.** Each text-to-speech model lists its voices with a short label ("Gruff, deep") and a
+  description (`senses::Voice`). Each personality has a default voice on each model
+  (`senses::default_voice`: on Qwen3-TTS the Veteran is uncle_fu, the Coach aiden, the Expert serena, the
+  Joker ryan; on Pocket TTS javert, marius, alba and cosette). The player can pick another one per model
+  (`CompanionSettings::voices`, model id → voice id) in the Companion screen, which also has **Play
+  sample**, and in the launcher's Advanced view. The defaults were picked from the descriptions and still
+  need a listening check.
 - **Safety:**
-  - Models are the official instruction-tuned ones. Uncensored models are never offered.
-  - The system prompt keeps it inside Minecraft, with no real-world harmful instructions and no sexual
-    content. It refuses in character.
-  - **Language: Clean** is the default, and **Salty** allows mild swearing.
-  - **Kid-friendly** softens the humour.
+  - The brain is the official instruction-tuned model of its tier, except in Salty mode (below).
+  - The system prompt keeps it inside Minecraft, with no real-world harmful instructions, no sexual
+    content and no hate. It refuses in character.
+  - **A hard guard outside the model** (`guard.rs`, a word list in five languages) checks what the
+    companion hears and every sentence it is about to say. A request it catches never reaches the
+    brain; a reply it catches is replaced by an in-character refusal (`Ack::Refuse`), or by a caring line
+    pointing to someone they trust or a helpline for self-harm (`Ack::Care`), and the rest of the reply,
+    its actions and its memory note are dropped. It catches real-world harm (drugs, weapons, explosives,
+    poisons, hacking), self-harm, sexual content and slurs against real groups. It lets in-game violence
+    (kill, TNT, lava, poison potions) and swearing at the player through.
+  - **Language: Clean** is the default.
+  - **Salty (18+)** is real swearing and attitude, trash talk aimed at the player included. It asks once
+    for an explicit "I'm 18 or older" confirmation (`Persona::adult_confirmed`), and is never on with
+    Kid-friendly (`Persona::salty_on`). In Salty mode the brain is the tier's uncensored variant
+    (`catalogue::UNCENSORED`: Heretic abliterations of the same base models, Apache-2.0, ungated), which
+    Set up downloads only once Salty is on. Advanced shows it with its licence and can turn it off
+    (`salty_uncensored`), keeping the normal model with the Salty prompt. The guard applies the same.
+  - **Kid-friendly** softens the humour and turns Salty off.
   - Nothing is recorded or sent anywhere on the local path.
 
 ### Multiplayer rules
@@ -304,6 +344,51 @@ action, a callout or a brain call.
   about 4 ms, and only a handful run each second. When macOS runs the cores slowly, the same work
   measures up to 0.2–0.29 ms.
 
+### In the game (integration slice, 2026-10-20)
+
+- **The worker** (`game/companion_ai.rs`). A world with a companion in it starts one std thread. It
+  detects the PC, works out `Setup::parts` from the settings, starts the voice (audio.cpp) through
+  `companion_voice`, then llama-server for the brain and llama-server `--embeddings` for the classifier
+  (its example vectors cached on disk). Requests and answers go over channels, polled once a tick; the
+  game thread never waits. Leaving the world, dismissing the last companion, No AI or a changed part
+  drops the channel, and the thread stops every process it started. Nothing starts in a world without a
+  companion, nor before "Set up companion" (checked with a fresh data dir: no folder, no process).
+- **Routing.** `@Name …`, "Name, …" and the chat mode (`@Name` alone toggles talking to it, `@` alone
+  ends it) are caught in `handle_chat_input`; LAN guests' lines reach the host through `Hub::handle_chat`
+  (`HostEvent::Said`). Push-to-talk text takes the same path. A line goes through the guard, then the
+  rules (`reflex::parse`, microseconds), then the classifier on the worker (about 6 ms), then the brain.
+  A matched command runs as a `CompanionCommand` at once with a phrase-bank line.
+- **The brain's turn.** `say` streams sentence by sentence to the owner's chat, to the guests' (a
+  DisguisedChat line with the `@Name ` insertion and the AI marker, which No AI clients drop) and to the
+  voice with its `tone`. Its actions become the body's command words (`companion::parse_command`); a
+  skill the body doesn't have yet answers "not yet" (`Ack::NotYet`) and the brain hears it with the next
+  state, so `collect`, `give`, `craft`, `smelt` and `sleep` start working as soon as the skills land.
+  `remember` goes into the companion's notes (24 kept), fed back as Memory.
+- **Light runs only `craft` from the brain** (`Skill::allowed_for`). The benchmark gave the 2B 40–80 %
+  sensible actions against 70–100 % for the 4B: most of its misses were commands the rules and the
+  classifier catch anyway (follow, stay, attack, collect, give), so on Light those come from the reflexes
+  and only crafting chains, which the reflexes can't plan, come from the brain.
+- **The wait is always covered.** When the plan expects the first word in 1.5 s or more, a "thinking"
+  line (`Ack::Think`, "Hm. Give me a second.") is said at once; otherwise it is said if no sentence came
+  within 1.2 s. Lines heard while the brain still loads get it too.
+- **Events.** Hostiles near the owner become callouts with the chattiness cooldowns. The companion's
+  death, a new dimension, staying behind, a failed skill and finished ones, and the owner's big hits (6
+  health or more), death and advancements become brain remarks, at most one per `remark_cooldown`.
+- **The Companion section** (both menu styles, `companion_options.rs`): the PC, the plan, Set up with
+  progress, the status, then name, personality, role, perception, language (Clean, Salty 18+ with its
+  confirmation, Kid-friendly), chattiness, voice with its picker and Play sample, the push-to-talk key and
+  Spawn / Dismiss; Advanced picks every part, Salty's brain, and deletes the models. Create World has
+  "Start with a companion" and "Companion role". No AI (Extras, or the launcher) hides all of it, sends
+  the companions away saved, and stops the worker.
+- **Not the owner's advancements.** The companion's own advancements were never shown on the owner's
+  screen: `as_guest` keeps toasts for `lan_acting.is_none()`. The "Suit Up" seen in a test screenshot
+  was the owner's own, earned when the body test gave the owner an iron helmet to drop.
+- **Dev words** on the control socket: `companion ai` (what runs, timings, what was said, the guard's
+  count), `companion persona`, `companion hear <text>`, `companion hear-voice <text>`, `companion hear-wav
+  <file>`, `companion sample`, `companion notes|forget [name]`. `HORIZON_COMPANION_VOICE_WAV=<dir>`
+  writes every spoken line to a WAV (tests never play audio aloud). `tools/test_companion_ai.py` drives it
+  all offscreen (scenarios mind, demo, session, cost, fresh).
+
 ## Models and runtime
 
 **The runtime is llama.cpp's `llama-server`, as a separate process.** It is MIT-licensed, has prebuilt
@@ -371,7 +456,8 @@ ungated and without an account, then checked against pinned SHA-256:
 - **Rejected:**
   - kev-4b: 14 GB of VRAM, English-only, a classifier.
   - Liquid LFM2.5: licence limited to companies under $10M revenue.
-  - Uncensored fine-tunes.
+  - Uncensored fine-tunes as the default brain. Salty mode (18+, opt-in) is the one exception: it runs
+    each tier's Heretic abliteration, behind the hard guard (see Safety).
   - Models gated behind a Hugging Face login.
 
 **Measured on 2026-10-20** with `examples/companion_bench.rs`: the real runtime started through the
@@ -533,8 +619,9 @@ backend and download size. The parts are the brain, the classifier, speech to te
 - The launcher holds the Settings card (No AI, Set up companion, progress, Advanced). It hands its
   choices to the game through files in the game's home: `companion/settings.json` (the shared
   `CompanionSettings`) and `noAi:true|false` in `horizon-extras.txt`, written on every change and
-  before each start because the game rewrites that file with the keys it knows. There is no `--no-ai`
-  flag yet: today's game refuses options it doesn't know, so the integration slice adds it.
+  before each start because the game rewrites that file with the keys it knows. The game reads both
+  (Extras has its own No AI switch, under "AI"), and its Companion section writes the same
+  `settings.json`, so a change on either side shows on the other. No flag is needed.
 
 ## Slices
 
