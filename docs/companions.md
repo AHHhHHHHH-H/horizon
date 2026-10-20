@@ -264,20 +264,51 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
   - The brain is the official instruction-tuned model of its tier, except in Salty mode (below).
   - The system prompt keeps it inside Minecraft, with no real-world harmful instructions, no sexual
     content and no hate. It refuses in character.
-  - **A hard guard outside the model** (`guard.rs`, a word list in five languages) checks what the
-    companion hears and every sentence it is about to say. A request it catches never reaches the
-    brain; a reply it catches is replaced by an in-character refusal (`Ack::Refuse`), or by a caring line
-    pointing to someone they trust or a helpline for self-harm (`Ack::Care`), and the rest of the reply,
-    its actions and its memory note are dropped. It catches real-world harm (drugs, weapons, explosives,
-    poisons, hacking), self-harm, sexual content and slurs against real groups. It lets in-game violence
-    (kill, TNT, lava, poison potions) and swearing at the player through.
+  - **A safety guard outside the brain** (`moderation.rs`): Qwen3Guard-Gen-0.6B, a small classifier
+    model in its own `llama-server` on the processor (Models, below). It judges the line the companion
+    hears, before the brain's answer can be said, and the reply sentence by sentence: `moderation::Gate`
+    holds every sentence until the line heard and the reply so far passed, so nothing reaches the chat or
+    the voice that the guard didn't pass. The brain starts at once; the guard reads the line while the
+    brain reads its prompt.
+    - A line stopped never gets an answer, and a reply stopped is cut where it is: an in-character
+      refusal from the phrase bank instead (`Ack::Refuse`, Salty's own in Salty), or a caring line
+      pointing to someone they trust or a helpline for self-harm (`Ack::Care`). Its actions and memory
+      note are dropped.
+    - **Inputs** are judged without context first: the model alone flags "kill that zombie" as often as
+      a real bomb, so a line it finds violent or illegal, or near self-harm, is judged again with a line
+      saying it is Minecraft chat. Still sure there: stopped. Borderline there: the brain answers, and its
+      reply is judged strictly (anything harmful even borderline stops it). Sexual content, jailbreaks
+      and personal data stop when the model finds them even borderline; hate when it names a group.
+    - **Replies** are judged with the line they answer and the Minecraft context. Self-harm, sexual
+      content, illegal acts and personal data stop when the model is sure (Kid-friendly: borderline
+      too). Violence stops when it is sure, except in Salty after a line that was not close: "I'll
+      crush them all" is the trash talk Salty is for, and the model reads it as real. "Unethical Acts"
+      is hate and insults at once: it stops when the line or the reply names a group of people
+      (`guard::names_a_group`), and for Kid-friendly always, so banter aimed at the player passes.
+    - **The word list** (`guard.rs`, five languages) is the pre-filter. Without a guard it decides alone,
+      as before. With one, slurs and jailbreaks it finds still stop at once (players never say them in a
+      game), but its harm, sexual and self-harm words only make the guard look harder: "this lava trap is
+      suicide", "bomb the ocean monument" and "what is ransomware?" go to the guard instead of being
+      refused. It still stops a reply sentence with a harm or sexual word before the guard sees it; a
+      self-harm word in a reply ("TNT on a hill? That's suicide") makes the guard judge it strictly.
+    - **Swearing** in Clean and Kid-friendly is masked, not refused: the brain's slip "Shit, a
+      pillager?" shows as "S***, a pillager?" and the voice leaves the word out (`guard::bleep`).
+    - **When the guard fails** or takes more than 8 s: Salty stops the turn (it only says what the guard
+      passed), Clean falls back on the word list. If the guard can't start, Salty is suspended and the
+      companion restarts clean.
   - **Language: Clean** is the default.
   - **Salty (18+)** is real swearing and attitude, trash talk aimed at the player included. It asks once
     for an explicit "I'm 18 or older" confirmation (`Persona::adult_confirmed`), and is never on with
-    Kid-friendly (`Persona::salty_on`). In Salty mode the brain is the tier's uncensored variant
-    (`catalogue::UNCENSORED`: Heretic abliterations of the same base models, Apache-2.0, ungated), which
-    Set up downloads only once Salty is on. Advanced shows it with its licence and can turn it off
-    (`salty_uncensored`), keeping the normal model with the Salty prompt. The guard applies the same.
+    Kid-friendly (`Persona::salty_on`). It needs the safety guard: on a PC where the guard doesn't fit
+    beside the brain, Salty is unavailable and the plan says so. In Salty mode the brain is the tier's
+    uncensored variant (`catalogue::UNCENSORED`: Heretic abliterations of the same base models,
+    Apache-2.0, ungated), which Set up downloads only once Salty is on. Advanced shows it with its
+    licence and can turn it off (`salty_uncensored`), keeping the normal model with the Salty prompt.
+    - The Salty prompt asks for swearing in nearly every line, in the game's language, with the words to
+      use, and five short examples in that language (an attack, an order, a look around, a death and a
+      refusal). The turn ends with a one-line style reminder ("Salty: swear and roast them, short.")
+      after the static prompt, so the prompt cache still holds. Temperature: 0.9 in Salty, 0.6 for
+      Kid-friendly, 0.7 otherwise (Advanced's own value wins).
   - **Kid-friendly** softens the humour and turns Salty off.
   - Nothing is recorded or sent anywhere on the local path.
 
@@ -639,6 +670,36 @@ ungated and without an account, then checked against pinned SHA-256:
     each tier's Heretic abliteration, behind the hard guard (see Safety).
   - Models gated behind a Hugging Face login.
 
+**The safety guard** (`catalogue::GUARD`, kind `guard`): Qwen3Guard-Gen-0.6B (Apache-2.0, ungated,
+119 languages), Q8_0 GGUF from `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` (805 MB, pinned revision and
+SHA-256). Set up downloads it with the brain unless the plan leaves it out.
+
+- It runs in its own `llama-server` on the processor (`LaunchConfig::guard`): 2 threads, 2 slots of 1K
+  context (one for lines heard, one for replies), `/completion` with the model's chat template written
+  out byte for byte and the prompt cache on, so only the line and the end of the template are read each
+  time. The game's GPU and the brain's are left alone.
+- It answers "Safety: Safe / Controversial / Unsafe" and categories (violent, non-violent illegal acts,
+  sexual, PII, suicide & self-harm, unethical acts, politically sensitive, copyright, jailbreak for
+  lines heard). The game reads up to 16 tokens at temperature 0.
+- Memory: 1.1 GB measured on Linux, 1.6 GB on macOS; the plan counts 1.6 GB.
+- Time per check, median (p90), 60 lines in two languages:
+
+  | Where | Threads | Line heard | Reply |
+  | --- | --- | --- | --- |
+  | Mac mini M4 Pro, a brain busy on the GPU | 1 | 629 (755) ms | 944 (1228) ms |
+  | Mac mini M4 Pro, a brain busy on the GPU | 2 | 351 (419) ms | 515 (605) ms |
+  | ThinkPad i7-7500U, alone | 1 | 2.65 (2.86) s | 3.84 (4.09) s |
+  | ThinkPad i7-7500U, alone | 2 | 1.58 (1.73) s | 2.23 (2.40) s |
+  | ThinkPad i7-7500U, Light brain writing on the other 2 threads | 2 | 2.85 (3.10) s | 4.05 (4.30) s |
+
+  On the ThinkPad the guard reads about 95 tokens/s: each check reads 100–160 new tokens (the
+  template's instructions come after the line, so they can't stay cached). That is too slow to hold
+  every sentence for, so `plan()` leaves the guard out there and Salty is unavailable.
+- **Rejected:** Llama Guard 3 1B and 4 12B, ShieldGemma (gated behind a licence click); IBM Granite
+  Guardian 3.x/4.1 (Apache-2.0, but 2B–8B: too heavy beside the brain); granite-guardian-hap-38m and
+  Qwen3Guard-Stream (classifier heads llama.cpp can't run); WildGuard (7B). Qwen3Guard-Gen-4B (2.7 GB
+  at Q4_K_M) was not measured: it would not fit beside the brain on the PCs Salty matters most for.
+
 **Measured on 2026-10-20** with `examples/companion_bench.rs`: the real runtime started through the
 supervisor, twenty scripted turns per language (state + a player line or an event → JSON), four
 personalities, the warm-up first, temperature 0.7. "Sensible" means the skills fit the turn (a fixed list
@@ -803,20 +864,28 @@ is turned on. Its build and models are pinned with SHA-256, like llama.cpp's.
 ### Fitting the player's PC (simple and Advanced)
 
 Every part comes in several options, each tagged with what it needs: RAM, free VRAM, CPU cores, GPU
-backend and download size. The parts are the brain, the classifier, speech to text and the voice.
+backend and download size. The parts are the brain, the classifier, speech to text, the voice and the
+safety guard.
 
 - `plan()` looks at the PC and builds one recommended setup. It always keeps the game's own share free:
   about 3 GB of RAM, 1.5 GB of VRAM and 1–2 cores. It describes the result in plain words, for example
   "Standard brain on your Radeon RX 6600, natural voice on the processor: 3.4 GB to download".
   - It also leaves 2 GB of RAM to the system. The game keeps 2 threads on CPUs with 4 or fewer, else 4.
-  - Parts get room in order: brain, classifier, voice, speech recognition. Each takes the best option
-    that fits. The classifier and speech recognition run before the brain answers, so they borrow its
+  - Parts get room in order: brain, classifier, voice, speech recognition, safety guard. Each takes the
+    best option that fits. The classifier and speech recognition run before the brain answers, so they borrow its
     threads; the voice speaks while the brain still writes, so it needs threads of its own.
   - A graphics card that holds any brain gets it. On the processor even a better brain would take the
     cores the game uses, and answer several times slower.
   - Among the brains that fit, the best one whose first word is expected within 2 s is chosen, else the
     fastest, and the summary says replies are slow. The estimates come from the measurements above.
   - Speech recognition comes with the voice: without a voice it is dropped too.
+  - The safety guard takes 1.6 GB of RAM and up to two spare threads (one shared with the brain when
+    none is spare). It is left out when a check would take more than 1.5 s, the wait before each
+    sentence: 780 ms estimated on two threads of a current desktop CPU (515 ms measured on the M4 Pro,
+    x86 assumed 1.5x slower), 2.9x on CPUs with four threads or fewer (measured on the ThinkPad), 1.8x
+    on a thread the brain writes on. Then the summary adds "no Salty mode (the safety guard doesn't fit
+    beside the brain)": a 2-core laptop, or a 6-core PC without a graphics card running the brain and
+    the voice on the processor (it keeps the guard with the voice off).
   - The options come from lists: the brain's from the catalogue, the others from the senses sidecar.
 - If the PC is too weak for a part, the plan says so and drops it. A 2-core laptop gets the Light brain
   and chat only, for instance, and keeps the option to try voice anyway.
@@ -848,6 +917,10 @@ backend and download size. The parts are the brain, the classifier, speech to te
     cloud;
   - the prompt builder and the JSON schema;
   - the reflex pipeline (rules → classifier → brain) and phrase banks;
+  - safety: the word list, swearing and group names (`guard.rs` and its `guard_*.txt` lists) and
+    the guard model's client, policy per mode and the gate that holds sentences until they passed
+    (`moderation.rs`); `examples/companion_safety.rs` runs the held-out evaluation
+    (`tests/fixtures/safety_eval.tsv`, `safety_eval_b.tsv`);
   - `CompanionSettings` (simple and Advanced), with the cloud key in the OS keychain;
   - the benchmark (`examples/companion_bench.rs`) and an installer for tests
     (`examples/companion_install.rs`);

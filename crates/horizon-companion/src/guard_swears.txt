@@ -1,5 +1,6 @@
 # Swearing (guard::swears): what Clean and Kid-friendly never say. Folded like guard_words.txt
 # (lowercase, no accents); a trailing * matches any ending. Censored spellings (f***, sh*t) count too.
+# "@fr" after an entry: a swear only in that language ("con" is "with" in Spanish).
 damn*
 dammit
 goddam*
@@ -29,8 +30,8 @@ putain*
 merde*
 merdique*
 bordel
-con
-cons
+con @fr
+cons @fr
 conne
 connard*
 connasse*
@@ -39,13 +40,13 @@ chier
 chiant*
 enfoir*
 foutre
-fous
-fout
+fous @fr
+fout @fr
 foutu*
 salaud*
 salope*
 encul*
-bite
+bite @fr
 nique*
 niquer
 batard*
@@ -54,7 +55,7 @@ mierda*
 joder
 jodid*
 jodete
-cono
+cono @es
 hostia*
 cabron*
 gilipollas
@@ -70,7 +71,7 @@ scheiss*
 scheis*
 verdammt*
 arsch*
-mist
+mist @de
 kacke*
 fick*
 wichser*

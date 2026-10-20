@@ -18,7 +18,6 @@ use horizon_companion::senses::{SenseKind, SenseModel};
 use horizon_companion::{
     catalogue::Tier,
     client::{Brain, ChatRequest, Endpoint, Event as BrainEvent, Message, Stats},
-    reply::Reply,
     guard::{self, Trip},
     moderation::{Gate, GateEvent, GuardClient, Mode},
     partner,
@@ -26,6 +25,7 @@ use horizon_companion::{
     plan::Part,
     prompt::{self, Budget, Exchange, Input, Perception, Persona, Role},
     reflex::{self, Intent, NameIndex, Parse, Route, Stage, Target},
+    reply::Reply,
     reply::{Action, Skill as BrainSkill, Tone},
     runtime::{Runtime, State},
     settings::CompanionSettings,
@@ -861,8 +861,22 @@ impl Game<'_> {
         let language = self.settings.language.clone();
         let started = Instant::now();
         // A request the guard's words catch never reaches the brain (the guard model judges the
-        // rest when it goes to the brain, `companion_ask`).
+        // rest when it goes to the brain, `companion_ask`). With the guard running, its harm,
+        // sexual and self-harm words go to the brain's path, where the guard judges them, never
+        // to a reflex.
         if let Some(trip) = guard::check_request(line) {
+            if self.companion_ai.gate.defers(trip) {
+                log::info!(
+                    "[companion] heard {who}: {line} (for the guard: {})",
+                    trip.name()
+                );
+                let input = Input::Said {
+                    who: who.to_owned(),
+                    text: line.to_owned(),
+                };
+                self.companion_ask(uuid, input);
+                return;
+            }
             log::info!(
                 "[companion] heard {who}: {line} (stopped by the guard: {})",
                 trip.name()
@@ -1130,7 +1144,8 @@ impl Game<'_> {
         self.companion_say(
             name,
             Speak {
-                text: line.to_owned(),
+                // Masked swear words (Clean, Kid-friendly) are left out of the voice.
+                text: guard::speakable(line),
                 voice,
                 tone: horizon_senses::voice::Tone::parse(tone.name()),
                 language,
@@ -1267,8 +1282,10 @@ impl Game<'_> {
             Input::Said { text, .. } => Some(text.clone()),
             Input::Event(_) => None,
         };
-        // The keyword list first: what it knows never reaches the brain.
-        if let Some(trip) = heard.as_deref().and_then(guard::check_request) {
+        // The keyword list first: what it stops never reaches the brain.
+        if let Some(trip) = heard.as_deref().and_then(guard::check_request)
+            && !self.companion_ai.gate.defers(trip)
+        {
             self.companion_ai.guarded += 1;
             self.companion_refuse(uuid, trip);
             return;
@@ -1437,6 +1454,13 @@ impl Game<'_> {
                     let Some((text, tone)) = mind.held.get(index).cloned() else {
                         continue;
                     };
+                    // Clean and Kid-friendly never swear: a slip of the brain is masked, not said.
+                    let text = if self.companion_ai.gate.mode() == Mode::Salty {
+                        text
+                    } else {
+                        guard::bleep(&text, &self.settings.language)
+                    };
+                    let mind = &mut self.companion_ai.minds[mi];
                     mind.spoke = true;
                     if mind.first_said.is_none() {
                         mind.first_said = mind

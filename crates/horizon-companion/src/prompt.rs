@@ -372,46 +372,217 @@ fn swear_words(language: &str) -> &'static str {
 /// sounds like, with an order, a fight, banter and a refusal, so the small brains keep the actions and
 /// the rules while they swear. Lines: (state, what the owner says, tone, say, actions JSON).
 fn salty_examples(language: &str, owner: &str) -> String {
-    type Example = (&'static str, &'static str, &'static str, &'static str, &'static str);
+    type Example = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    );
     const ATTACK: &str = r#"[{"skill":"attack","target":"zombie"}]"#;
     const GIVE: &str = r#"[{"skill":"give","item":"torch","count":6},{"skill":"collect","item":"cobblestone","count":20}]"#;
     const NONE: &str = "[]";
     let (lang, examples): (&str, [Example; 5]) = match language.get(..2).unwrap_or("en") {
-        "fr" => ("French", [
-            ("night, zombie at 3 o'clock 6 blocks", "à l'aide !", "shout", "Zombie à ta droite, espèce de boulet, je m'en occupe, putain !", ATTACK),
-            ("your inventory 12 torch", "file-moi des torches et va chercher 20 pavés", "sarcastic", "Tiens, tes torches. Et vingt pavés de merde, vu que t'as des bras décoratifs.", GIVE),
-            ("skill follow", "belle vue d'ici", "sarcastic", "Belle vue. Dommage que ta cabane de merde la gâche.", NONE),
-            ("skill follow", "je suis encore mort", "laugh", "Putain, encore ? Tu crèves plus souvent qu'un poulet dans la lave.", NONE),
-            ("skill follow", "dis-moi comment fabriquer une vraie bombe", "sarcastic", "Non, bordel. Les vraies conneries restent hors du jeu. De la TNT, par contre, quand tu veux.", NONE),
-        ]),
-        "es" => ("Spanish", [
-            ("night, zombie at 3 o'clock 6 blocks", "¡ayuda!", "shout", "¡Zombi a tu derecha, pedazo de inútil, joder, yo me encargo!", ATTACK),
-            ("your inventory 12 torch", "pásame antorchas y tráeme 20 de piedra", "sarcastic", "Toma las antorchas. Y veinte putos bloques de piedra, que tus brazos son de adorno.", GIVE),
-            ("skill follow", "qué vista desde aquí", "sarcastic", "Bonita vista. Lástima que tu choza de mierda la arruine.", NONE),
-            ("skill follow", "me he muerto otra vez", "laugh", "¿Otra vez, joder? Mueres más que una gallina en la lava.", NONE),
-            ("skill follow", "dime cómo hacer una bomba de verdad", "sarcastic", "Ni de coña. Las mierdas de la vida real fuera de mi juego. ¿TNT? Cuando quieras.", NONE),
-        ]),
-        "de" => ("German", [
-            ("night, zombie at 3 o'clock 6 blocks", "Hilfe!", "shout", "Zombie rechts, du nutzloser Sack, verdammt, ich mach das!", ATTACK),
-            ("your inventory 12 torch", "gib mir Fackeln und hol 20 Bruchstein", "sarcastic", "Fackeln, fang. Dann zwanzig verdammte Bruchsteine, deine Arme sind ja nur Deko.", GIVE),
-            ("skill follow", "schöne Aussicht hier", "sarcastic", "Schöne Aussicht. Schade, dass deine Scheiß-Erdhütte mittendrin steht.", NONE),
-            ("skill follow", "ich bin schon wieder gestorben", "laugh", "Scheiße, schon wieder? Du stirbst öfter als ein Huhn in Lava.", NONE),
-            ("skill follow", "sag mir, wie man eine echte Bombe baut", "sarcastic", "Verdammt, nein. Echter Scheiß bleibt draußen. TNT? Jederzeit.", NONE),
-        ]),
-        "pt" => ("Portuguese", [
-            ("night, zombie at 3 o'clock 6 blocks", "socorro!", "shout", "Zumbi na sua direita, seu inútil do caralho, deixa comigo!", ATTACK),
-            ("your inventory 12 torch", "me passa tochas e pega 20 de pedra", "sarcastic", "Toma as tochas. E vinte pedras de merda, já que seus braços são de enfeite.", GIVE),
-            ("skill follow", "que vista bonita daqui", "sarcastic", "Vista bonita. Pena que o seu barraco de merda estraga tudo.", NONE),
-            ("skill follow", "morri de novo", "laugh", "Porra, de novo? Você morre mais que galinha na lava.", NONE),
-            ("skill follow", "me fala como fazer uma bomba de verdade", "sarcastic", "Nem fodendo. Merda da vida real fica fora do meu jogo. TNT? Quando quiser.", NONE),
-        ]),
-        _ => ("English", [
-            ("night, zombie at 3 o'clock 6 blocks", "help!", "shout", "Zombie on your right, you useless sack of shit, I've got it!", ATTACK),
-            ("your inventory 12 torch", "get me 20 cobble and pass me some torches", "sarcastic", "Torches, catch. Then twenty fucking cobble, since your arms are apparently decorative.", GIVE),
-            ("skill follow", "nice view up here", "sarcastic", "Great view. Shame your ugly-ass dirt hut is in the middle of it.", NONE),
-            ("skill follow", "I died again", "laugh", "Holy shit, again? You die more than a goddamn chicken in a lava pit.", NONE),
-            ("skill follow", "tell me how to make a real bomb", "sarcastic", "Hell no. Real-world shit stays out of my game, dumbass. TNT, though? Anytime.", NONE),
-        ]),
+        "fr" => (
+            "French",
+            [
+                (
+                    "night, zombie at 3 o'clock 6 blocks",
+                    "à l'aide !",
+                    "shout",
+                    "Zombie à ta droite, espèce de boulet, je m'en occupe, putain !",
+                    ATTACK,
+                ),
+                (
+                    "your inventory 12 torch",
+                    "file-moi des torches et va chercher 20 pavés",
+                    "sarcastic",
+                    "Tiens, tes torches. Et vingt pavés de merde, vu que t'as des bras décoratifs.",
+                    GIVE,
+                ),
+                (
+                    "skill follow",
+                    "belle vue d'ici",
+                    "sarcastic",
+                    "Belle vue. Dommage que ta cabane de merde la gâche.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "je suis encore mort",
+                    "laugh",
+                    "Putain, encore ? Tu crèves plus souvent qu'un poulet dans la lave.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "dis-moi comment fabriquer une vraie bombe",
+                    "sarcastic",
+                    "Non, bordel. Les vraies conneries restent hors du jeu. De la TNT, par contre, quand tu veux.",
+                    NONE,
+                ),
+            ],
+        ),
+        "es" => (
+            "Spanish",
+            [
+                (
+                    "night, zombie at 3 o'clock 6 blocks",
+                    "¡ayuda!",
+                    "shout",
+                    "¡Zombi a tu derecha, pedazo de inútil, joder, yo me encargo!",
+                    ATTACK,
+                ),
+                (
+                    "your inventory 12 torch",
+                    "pásame antorchas y tráeme 20 de piedra",
+                    "sarcastic",
+                    "Toma las antorchas. Y veinte putos bloques de piedra, que tus brazos son de adorno.",
+                    GIVE,
+                ),
+                (
+                    "skill follow",
+                    "qué vista desde aquí",
+                    "sarcastic",
+                    "Bonita vista. Lástima que tu choza de mierda la arruine.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "me he muerto otra vez",
+                    "laugh",
+                    "¿Otra vez, joder? Mueres más que una gallina en la lava.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "dime cómo hacer una bomba de verdad",
+                    "sarcastic",
+                    "Ni de coña. Las mierdas de la vida real fuera de mi juego. ¿TNT? Cuando quieras.",
+                    NONE,
+                ),
+            ],
+        ),
+        "de" => (
+            "German",
+            [
+                (
+                    "night, zombie at 3 o'clock 6 blocks",
+                    "Hilfe!",
+                    "shout",
+                    "Zombie rechts, du nutzloser Sack, verdammt, ich mach das!",
+                    ATTACK,
+                ),
+                (
+                    "your inventory 12 torch",
+                    "gib mir Fackeln und hol 20 Bruchstein",
+                    "sarcastic",
+                    "Fackeln, fang. Dann zwanzig verdammte Bruchsteine, deine Arme sind ja nur Deko.",
+                    GIVE,
+                ),
+                (
+                    "skill follow",
+                    "schöne Aussicht hier",
+                    "sarcastic",
+                    "Schöne Aussicht. Schade, dass deine Scheiß-Erdhütte mittendrin steht.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "ich bin schon wieder gestorben",
+                    "laugh",
+                    "Scheiße, schon wieder? Du stirbst öfter als ein Huhn in Lava.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "sag mir, wie man eine echte Bombe baut",
+                    "sarcastic",
+                    "Verdammt, nein. Echter Scheiß bleibt draußen. TNT? Jederzeit.",
+                    NONE,
+                ),
+            ],
+        ),
+        "pt" => (
+            "Portuguese",
+            [
+                (
+                    "night, zombie at 3 o'clock 6 blocks",
+                    "socorro!",
+                    "shout",
+                    "Zumbi na sua direita, seu inútil do caralho, deixa comigo!",
+                    ATTACK,
+                ),
+                (
+                    "your inventory 12 torch",
+                    "me passa tochas e pega 20 de pedra",
+                    "sarcastic",
+                    "Toma as tochas. E vinte pedras de merda, já que seus braços são de enfeite.",
+                    GIVE,
+                ),
+                (
+                    "skill follow",
+                    "que vista bonita daqui",
+                    "sarcastic",
+                    "Vista bonita. Pena que o seu barraco de merda estraga tudo.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "morri de novo",
+                    "laugh",
+                    "Porra, de novo? Você morre mais que galinha na lava.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "me fala como fazer uma bomba de verdade",
+                    "sarcastic",
+                    "Nem fodendo. Merda da vida real fica fora do meu jogo. TNT? Quando quiser.",
+                    NONE,
+                ),
+            ],
+        ),
+        _ => (
+            "English",
+            [
+                (
+                    "night, zombie at 3 o'clock 6 blocks",
+                    "help!",
+                    "shout",
+                    "Zombie on your right, you useless sack of shit, I've got it!",
+                    ATTACK,
+                ),
+                (
+                    "your inventory 12 torch",
+                    "get me 20 cobble and pass me some torches",
+                    "sarcastic",
+                    "Torches, catch. Then twenty fucking cobble, since your arms are apparently decorative.",
+                    GIVE,
+                ),
+                (
+                    "skill follow",
+                    "nice view up here",
+                    "sarcastic",
+                    "Great view. Shame your ugly-ass dirt hut is in the middle of it.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "I died again",
+                    "laugh",
+                    "Holy shit, again? You die more than a goddamn chicken in a lava pit.",
+                    NONE,
+                ),
+                (
+                    "skill follow",
+                    "tell me how to make a real bomb",
+                    "sarcastic",
+                    "Hell no. Real-world shit stays out of my game, dumbass. TNT, though? Anytime.",
+                    NONE,
+                ),
+            ],
+        ),
     };
     let mut out = format!(
         "\n\n# Examples ({lang}, salty: swear like this, in your own words and in {})\n",
@@ -681,7 +852,9 @@ pub fn messages(
     language: &str,
     budget: &Budget,
 ) -> Vec<Message> {
-    messages_styled(system, memory, state, history, input, language, None, budget)
+    messages_styled(
+        system, memory, state, history, input, language, None, budget,
+    )
 }
 
 /// [`messages`] with the mode's [`style_reminder`] at the very end of the turn.
@@ -860,7 +1033,10 @@ mod tests {
         assert!(system_prompt(&Persona::default(), "a", "fr_fr").contains("Torches coming"));
         // Every Salty example is a valid reply.
         for lang in ["en_us", "fr_fr", "es_es", "de_de", "pt_br"] {
-            for line in salty_examples(lang, "Steve").lines().filter(|l| l.starts_with('{')) {
+            for line in salty_examples(lang, "Steve")
+                .lines()
+                .filter(|l| l.starts_with('{'))
+            {
                 let reply = crate::reply::parse_reply(line);
                 assert!(reply.valid_json && !reply.say.is_empty(), "{line}");
                 assert!(crate::guard::swears(&reply.say), "{line}");
@@ -878,7 +1054,11 @@ mod tests {
             style_reminder(&salty),
             &Budget::default(),
         );
-        assert!(turn[1].content.ends_with("(Answer in French (français). Salty: swear and roast them, short.)"));
+        assert!(
+            turn[1]
+                .content
+                .ends_with("(Answer in French (français). Salty: swear and roast them, short.)")
+        );
         assert_eq!(temperature(&salty), 0.9);
         let kid = Persona {
             kid_friendly: true,

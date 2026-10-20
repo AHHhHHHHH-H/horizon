@@ -491,12 +491,13 @@ pub const GUARD: Model = Model {
     }],
     license: "Apache-2.0",
     credit: "Qwen3Guard by the Qwen team (Alibaba Cloud); GGUF quantisation by mradermacher",
-    // Measured on the Mac mini, CPU, 2 threads, 2 slots of 1K context: see docs/companions.md.
+    // Measured on the processor, 2 threads, 2 slots of 1K context: see docs/companions.md.
     memory_mb: GUARD_RAM_MB,
 };
 
-/// The guard's resident memory while it runs (measured, `GUARD`).
-pub const GUARD_RAM_MB: u64 = 1100;
+/// The guard's resident memory while it runs (`GUARD`): 1.1 GB measured on Linux (the ThinkPad),
+/// 1.6 GB on macOS (the Mac mini); the larger is counted everywhere.
+pub const GUARD_RAM_MB: u64 = 1600;
 
 /// The models of one kind (for chat, use [`Tier::model`]).
 pub fn models(kind: ModelKind) -> impl Iterator<Item = &'static Model> {

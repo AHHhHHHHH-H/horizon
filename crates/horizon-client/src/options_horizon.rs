@@ -11,10 +11,11 @@
 //! place. Everything else (sliders dragging, scrolling, Done) is handled here.
 use crate::{
     companion_options::{self, Control},
-    extras, keybinds,
+    extras,
     graphics_style::Cost,
     graphics_ui::{self, Item, Level},
     hud::{HudAtlas, HudBatch},
+    keybinds,
     options_ui::{self, Event, Kind, Opt, OptionsUi, Page, apply_preset},
     settings::{SOUND_SOURCES, Settings},
     ui_theme::{self as t, CONTROL, Kind as Button, MenuStyle, ROW_LABEL, SIDEBAR, Ui, color, id},
@@ -353,7 +354,10 @@ impl OptionsUi {
         let section = self.section.min(shown_sections(s) - 1);
         // The sidebar.
         ui.sidebar_frame("Options");
-        let names: Vec<&str> = SECTIONS[..shown_sections(s)].iter().map(|s| s.name).collect();
+        let names: Vec<&str> = SECTIONS[..shown_sections(s)]
+            .iter()
+            .map(|s| s.name)
+            .collect();
         ui.sidebar_list(NAV, 12.0, 72.0, SIDEBAR - 24.0, &names, section);
         let dy = h - 12.0 - CONTROL;
         ui.button(
@@ -587,7 +591,16 @@ impl OptionsUi {
                         }
                         Control::Button(value) | Control::Inactive(value) => {
                             let bw = ui.button_width(&value, false).max(96.0);
-                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - bw - 24.0);
+                            ui.described_row(
+                                x,
+                                y,
+                                &caption,
+                                "",
+                                0.0,
+                                (0, ""),
+                                &text,
+                                cw - bw - 24.0,
+                            );
                             ui.button(
                                 id,
                                 [control_x - bw, y + 12.0, bw, CONTROL],
@@ -599,7 +612,12 @@ impl OptionsUi {
                         Control::TextBox(value, focused) => {
                             let shown = if focused { format!("{value}_") } else { value };
                             ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 220.0);
-                            ui.text_field(id, [control_x - 200.0, y + 12.0, 200.0, CONTROL], &shown, focused);
+                            ui.text_field(
+                                id,
+                                [control_x - 200.0, y + 12.0, 200.0, CONTROL],
+                                &shown,
+                                focused,
+                            );
                         }
                     }
                 }
@@ -865,7 +883,9 @@ impl OptionsUi {
                         events.push(Event::ButtonClick);
                         events.push(Event::OpenModFolder);
                     }
-                    Some(HRow::Companion(row)) => events.extend(self.companion_click(s, row, right)),
+                    Some(HRow::Companion(row)) => {
+                        events.extend(self.companion_click(s, row, right))
+                    }
                     _ => {}
                 }
             }

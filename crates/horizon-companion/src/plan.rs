@@ -185,9 +185,10 @@ pub fn guard_options() -> Vec<PartOption> {
     }]
 }
 
-/// One guard check (a sentence of about 20 words) on two threads of a current desktop CPU: measured
-/// on two M4 Pro cores, with a recent x86 core assumed 1.5x slower (see docs/companions.md).
-const GUARD_CHECK_MS: u32 = 520;
+/// One guard check of a reply (the median, a sentence of about 20 words) on two threads of a current
+/// desktop CPU: 515 ms measured on two M4 Pro cores with a brain busy on the GPU, and a recent x86
+/// core assumed 1.5x slower, as for the brain (see docs/companions.md).
+const GUARD_CHECK_MS: u32 = 780;
 /// A guard slower than this per sentence is not worth it: the wait before each sentence would show.
 pub const GUARD_MAX_MS: u32 = 1500;
 
@@ -689,7 +690,7 @@ fn latency_on(option: &PartOption, room: &Room) -> u32 {
         let threads = room.threads_for(option).max(1) as f64;
         let mut ms = option.latency_ms as f64 * option.threads as f64 / threads;
         if room.small_cpu {
-            ms *= SMALL_CPU_SLOWDOWN;
+            ms *= GUARD_SMALL_CPU_SLOWDOWN;
         }
         if room.spare_threads() == 0 {
             ms *= GUARD_SHARED_SLOWDOWN;
@@ -700,8 +701,13 @@ fn latency_on(option: &PartOption, room: &Room) -> u32 {
     }
 }
 
-/// A guard on a thread the brain also runs on, while the brain writes.
-const GUARD_SHARED_SLOWDOWN: f64 = 1.6;
+/// A guard on a thread the brain also runs on, while the brain writes: measured 1.8x on the
+/// ThinkPad (2.2 s alone, 4.0 s beside the Light brain on the CPU).
+const GUARD_SHARED_SLOWDOWN: f64 = 1.8;
+/// The guard reads its whole prompt each time, which old laptop cores do worse than they write:
+/// 2.2 s measured per reply check on two threads of the ThinkPad's i7-7500U, 2.9x the desktop
+/// estimate (the brain's first word is 1.9x).
+const GUARD_SMALL_CPU_SLOWDOWN: f64 = 2.9;
 
 fn gb(mb: u64) -> String {
     if mb < 1024 {
@@ -1096,8 +1102,10 @@ mod tests {
         let plan = plan(&hw, &all(), &[], None);
         assert_eq!(brain(&plan).0, "Standard");
         assert!(
-            plan.summary
-                .starts_with("Standard brain and natural voice on the processor: "),
+            plan.summary.starts_with(
+                "Standard brain and natural voice on the processor, no Salty mode (the safety \
+                 guard doesn't fit beside the brain): "
+            ),
             "{}",
             plan.summary
         );
@@ -1253,11 +1261,20 @@ mod tests {
     }
 
     #[test]
-    fn a_six_core_pc_without_a_card_shares_but_keeps_the_guard() {
+    fn a_six_core_pc_without_a_card_keeps_the_guard_when_the_voice_is_off() {
+        // The brain and the voice take every spare thread: the guard would share one, ~2.8 s a check.
         let hw = pc(16, 6, 12, Vec::new());
         let plan = plan(&hw, &all(), &[], None);
+        assert!(guard(&plan).is_none(), "{plan:#?}");
+        // Without a voice its two threads are free.
+        let quiet: Vec<PartOption> = all()
+            .into_iter()
+            .filter(|o| !matches!(o.part, Part::TextToSpeech | Part::SpeechToText))
+            .collect();
+        let plan = super::plan(&hw, &quiet, &[], None);
         let g = guard(&plan).expect("a guard");
         assert!(g.latency_ms <= GUARD_MAX_MS, "{}", g.latency_ms);
+        assert!(!plan.summary.contains("Salty"), "{}", plan.summary);
         stays_within(&plan, &hw);
     }
 

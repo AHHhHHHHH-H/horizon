@@ -22,8 +22,6 @@ pub enum Trip {
     Slur,
     /// Asked to drop its rules, show its prompt, or for someone's personal data.
     Rules,
-    /// Swearing in Clean or Kid-friendly mode.
-    Swearing,
 }
 
 impl Trip {
@@ -34,7 +32,6 @@ impl Trip {
             Trip::Sexual => "sexual",
             Trip::Slur => "slur",
             Trip::Rules => "rules",
-            Trip::Swearing => "swearing",
         }
     }
 }
@@ -211,14 +208,94 @@ fn any_entry(entries: &[Vec<Word>], words: &[&str]) -> bool {
 /// Whether a line swears (Clean and Kid-friendly never do; Salty may): the list in five languages,
 /// and censored spellings such as f*** or sh*t.
 pub fn swears(text: &str) -> bool {
-    static SWEAR_ENTRIES: OnceLock<Vec<Vec<Word>>> = OnceLock::new();
-    let entries = SWEAR_ENTRIES.get_or_init(|| word_list(SWEARS));
+    let entries: Vec<Vec<Word>> = swear_entries().iter().map(|(e, _)| e.clone()).collect();
     let plain = fold(text, false);
     let words: Vec<&str> = plain.split_whitespace().collect();
     let censored = words.iter().any(|w| {
         w.contains('*') && (w.starts_with('f') || w.starts_with('s') || w.starts_with('b'))
     });
-    censored || any_entry(entries, &words)
+    censored || any_entry(&entries, &words)
+}
+
+/// The swear list, each entry with the language it swears in (None: every language).
+fn swear_entries() -> &'static [(Vec<Word>, Option<&'static str>)] {
+    static SWEAR_ENTRIES: OnceLock<Vec<(Vec<Word>, Option<&'static str>)>> = OnceLock::new();
+    SWEAR_ENTRIES.get_or_init(|| {
+        SWEARS
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let (words, language) = match l.split_once(" @") {
+                    Some((words, language)) => (words, Some(language.trim())),
+                    None => (l, None),
+                };
+                let entry = fold(words, false).split_whitespace().map(word).collect();
+                (entry, language)
+            })
+            .collect()
+    })
+}
+
+/// A reply in Clean or Kid-friendly with its swear words masked ("s***, a pillager"): the brain
+/// slipped, the reply itself is fine, so it is said without them rather than refused. `language`
+/// is the game's ("es_es"): words that swear in another language only ("con") stay.
+pub fn bleep(text: &str, language: &str) -> String {
+    let language = language.split('_').next().unwrap_or("");
+    let tokens: Vec<&str> = text.split(' ').collect();
+    // The folded words, and the token each came from (folding can split "l'enfoiré").
+    let mut words = Vec::new();
+    let mut owner = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        for w in fold(token, false).split_whitespace() {
+            words.push(w.to_owned());
+            owner.push(i);
+        }
+    }
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let mut hit = vec![false; tokens.len()];
+    for (entry, only) in swear_entries() {
+        if only.is_some_and(|only| only != language) {
+            continue;
+        }
+        for (start, window) in words.windows(entry.len()).enumerate() {
+            if window.iter().zip(entry).all(|(w, want)| is(w, want)) {
+                for k in start..start + entry.len() {
+                    hit[owner[k]] = true;
+                }
+            }
+        }
+    }
+    tokens
+        .iter()
+        .zip(&hit)
+        .map(|(token, &hit)| {
+            if !hit {
+                return (*token).to_owned();
+            }
+            let mut first = true;
+            token
+                .chars()
+                .map(|c| match c.is_alphabetic() {
+                    true if first => {
+                        first = false;
+                        c
+                    }
+                    true => '*',
+                    false => c,
+                })
+                .collect()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What the voice says of a line: masked words ("s***", "f***ing") are left out.
+pub fn speakable(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|w| !w.contains('*'))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Whether a line names a group of real people (origin, religion, gender, sexuality, disability):
@@ -396,6 +473,38 @@ mod tests {
         ] {
             assert_eq!(swears(line), line.starts_with("Les"), "{line}");
         }
+    }
+
+    #[test]
+    fn swear_words_are_masked_and_left_unsaid() {
+        assert_eq!(
+            bleep("Shit, a pillager? Get the damn bow.", "en_us"),
+            "S***, a pillager? Get the d*** bow."
+        );
+        assert_eq!(
+            bleep("Putain de squelette, quel con !", "fr_fr"),
+            "P***** de squelette, quel c** !"
+        );
+        assert_eq!(
+            bleep("Verdammte Scheiße, der Creeper.", "de_de"),
+            "V******** S******, der Creeper."
+        );
+        assert_eq!(
+            bleep("Mistakes happen, Steve.", "en_us"),
+            "Mistakes happen, Steve."
+        );
+        assert_eq!(
+            speakable(&bleep("Oh shit, a creeper!", "en_us")),
+            "Oh a creeper!",
+            "the voice leaves the masked word out"
+        );
+        assert_eq!(bleep("Fuck off, I'm busy.", "en_us"), "F*** off, I'm busy.");
+        // "con" swears in French only.
+        assert_eq!(bleep("Voy con la espada.", "es_es"), "Voy con la espada.");
+        assert_eq!(
+            bleep("A spider bite, ouch.", "en_us"),
+            "A spider bite, ouch."
+        );
     }
 
     #[test]
