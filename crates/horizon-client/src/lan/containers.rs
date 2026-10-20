@@ -21,15 +21,17 @@ impl Hub {
 
     /// Send to every placed guest within `range` blocks of `at`.
     pub fn broadcast_near(&self, at: [f64; 3], range: f64, packet: &C, except: Option<u32>) {
-        let body = packet.encode();
+        // Encoded once, and only when someone is near to hear it.
+        let mut body = None;
         for g in self
             .guests
             .iter()
-            .filter(|g| self.here(g) && Some(g.conn) != except)
+            .filter(|g| self.here(g) && !g.companion && Some(g.conn) != except)
         {
             let d: f64 = (0..3).map(|k| (g.position[k] - at[k]).powi(2)).sum();
             if d <= range * range {
-                g.sender.send(body.clone());
+                g.sender
+                    .send(body.get_or_insert_with(|| packet.encode()).clone());
             }
         }
     }
