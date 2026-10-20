@@ -712,6 +712,7 @@ impl Game<'_> {
                 "food": p.health.food.food,
                 // level.dat's spawn, where a player without a bed respawns.
                 "world_spawn": self.level.world_spawn,
+                "game_mode": self.mode_id(),
             })
         });
         let target = self.pick().map(|hit| {

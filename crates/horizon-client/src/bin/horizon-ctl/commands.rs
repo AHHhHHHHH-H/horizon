@@ -325,12 +325,14 @@ pub const COMMANDS: &[Cmd] = &[
         &[p("ticks", Ty::Int, "day time")], mcp: true, local: false),
     cmd!("setblock", World, "setblock X Y Z BLOCK[props]", "set a block (with neighbour updates)", "", ["horizon-ctl setblock 0 64 0 stone"],
         &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], p("block", Ty::Str, "block state such as oak_stairs[facing=east]")], mcp: true, local: false),
-    cmd!("companion", World, "companion spawn [NAME] | dismiss [NAME] | do [NAME] COMMAND | list | summary | reports | cost",
+    cmd!("companion", World, "companion spawn [NAME] | dismiss [NAME] | do [NAME] COMMAND | list | summary | reports | cost | watch [NAME|off] | strike [NAME] ID",
         "spawn, command and inspect AI companions (virtual players in the world)",
         "do takes follow, stay, come, goto X Y Z | goto there, stop, attack [ID|nearest], defend, holdfire on|off, jump, crouch, eat. \
-         list is each body's state, summary what its brain reads, reports what it did, cost the hub's tick time.",
+         list is each body's state, summary what its brain reads, reports what it did, cost the hub's tick time. \
+         watch NAME makes you a spectator camera on it (its portals take your view along; HUD: watch step TEXT, \
+         watch perception LABEL, watch timer reset, watch status), watch off ends it. strike hits an entity id once (dev).",
         ["horizon-ctl companion spawn Ari", "horizon-ctl companion do Ari attack nearest", "horizon-ctl companion list"],
-        &[p("action", Ty::Enum(&["spawn", "dismiss", "do", "list", "status", "summary", "reports", "cost"]), "what to do"),
+        &[p("action", Ty::Enum(&["spawn", "dismiss", "do", "list", "status", "summary", "reports", "cost", "watch", "strike"]), "what to do"),
           opt("rest", Ty::Rest, "a name, then for do the command words")], mcp: true, local: false),
     cmd!("summon", World, "summon KIND [X Y Z] [baby]", "spawn a mob", "", ["horizon-ctl summon cow"], &[p("kind", Ty::Str, "mob type")], mcp: true, local: false),
     cmd!("effect", World, "effect ID SECONDS [AMPLIFIER] | effect clear", "give a status effect", "", ["horizon-ctl effect speed 30 1"], &[], mcp: false, local: false),

@@ -26,6 +26,7 @@ mod command_harness;
 mod commands;
 mod companion;
 mod companion_body;
+mod companion_watch;
 mod composter;
 mod consume;
 mod control;
@@ -4030,6 +4031,7 @@ impl Game<'_> {
         }
         self.tick_companion_arrivals();
         horizon_client::spans::time("tick_lan", || self.tick_lan());
+        self.tick_companion_watch();
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
@@ -4522,6 +4524,7 @@ impl Game<'_> {
             self.draw_titles(&mut batch);
             self.draw_scoreboard(&mut batch);
             self.draw_subtitles(&mut batch);
+            self.draw_companion_watch(&mut batch);
         }
         let atlas = &self.gui.atlas;
         if show_hud

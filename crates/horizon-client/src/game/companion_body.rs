@@ -150,7 +150,8 @@ impl Game<'_> {
             return true;
         };
         if g.dead {
-            let with_owner = c::distance(g.position, owner) <= c::COME_ALONG;
+            // A watched body's owner is only its camera.
+            let with_owner = c::distance(g.position, owner) <= c::COME_ALONG && !self.watched(b);
             let t = b.dead_ticks.get_or_insert(0);
             *t += 1;
             if *t >= c::RESPAWN_TICKS {
@@ -864,7 +865,7 @@ impl Game<'_> {
 
     /// A blow at mob `id` once the attack is charged (`getAttackStrengthScale`
     /// near 1): the guest's attack, aimed at it.
-    fn companion_strike(&mut self, host: &mut LanHost, b: &mut Body, id: u32) {
+    pub(super) fn companion_strike(&mut self, host: &mut LanHost, b: &mut Body, id: u32) {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
             return;
         };
