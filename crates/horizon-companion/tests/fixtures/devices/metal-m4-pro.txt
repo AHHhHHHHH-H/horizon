@@ -1,0 +1,54 @@
+0.00.016.590 I ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+0.00.016.609 I ggml_metal_library_init: using embedded metal library
+0.00.028.198 D ggml_metal_library_compile_all: compiled 'fa_aux' library in 0.001 sec
+0.00.028.201 D ggml_metal_library_compile_all: compiled 'fa_f16' library in 0.002 sec
+0.00.028.201 D ggml_metal_library_compile_all: compiled 'fa_f32' library in 0.001 sec
+0.00.028.201 D ggml_metal_library_compile_all: compiled 'fa_q4_0' library in 0.005 sec
+0.00.028.202 D ggml_metal_library_compile_all: compiled 'fa_q4_1' library in 0.005 sec
+0.00.028.202 D ggml_metal_library_compile_all: compiled 'fa_q5_0' library in 0.007 sec
+0.00.028.202 D ggml_metal_library_compile_all: compiled 'fa_q5_1' library in 0.002 sec
+0.00.028.203 D ggml_metal_library_compile_all: compiled 'fa_q8_0' library in 0.007 sec
+0.00.028.203 D ggml_metal_library_compile_all: compiled 'fa_tensor' library in 0.002 sec
+0.00.028.203 D ggml_metal_library_compile_all: compiled 'fa_vec_f16' library in 0.003 sec
+0.00.028.203 D ggml_metal_library_compile_all: compiled 'fa_vec_f32' library in 0.008 sec
+0.00.028.203 D ggml_metal_library_compile_all: compiled 'fa_vec_q4_0' library in 0.003 sec
+0.00.028.204 D ggml_metal_library_compile_all: compiled 'fa_vec_q4_1' library in 0.009 sec
+0.00.028.204 D ggml_metal_library_compile_all: compiled 'fa_vec_q5_0' library in 0.008 sec
+0.00.028.204 D ggml_metal_library_compile_all: compiled 'fa_vec_q5_1' library in 0.010 sec
+0.00.028.204 D ggml_metal_library_compile_all: compiled 'fa_vec_q8_0' library in 0.007 sec
+0.00.028.205 D ggml_metal_library_compile_all: compiled 'mul_mv' library in 0.004 sec
+0.00.028.205 D ggml_metal_library_compile_all: compiled 'mul_mv_mma' library in 0.006 sec
+0.00.028.205 D ggml_metal_library_compile_all: compiled 'mul_mm' library in 0.011 sec
+0.00.028.206 D ggml_metal_library_compile_all: compiled 'quantize' library in 0.009 sec
+0.00.028.206 D ggml_metal_library_compile_all: compiled 'softmax' library in 0.011 sec
+0.00.028.206 D ggml_metal_library_compile_all: compiled 'norm' library in 0.007 sec
+0.00.028.206 D ggml_metal_library_compile_all: compiled 'unary' library in 0.011 sec
+0.00.028.209 D ggml_metal_library_compile_all: compiled 'binbcast' library in 0.007 sec
+0.00.028.209 D ggml_metal_library_compile_all: compiled 'reduce' library in 0.009 sec
+0.00.028.209 D ggml_metal_library_compile_all: compiled 'tri' library in 0.009 sec
+0.00.028.209 D ggml_metal_library_compile_all: compiled 'ssm' library in 0.006 sec
+0.00.028.210 D ggml_metal_library_compile_all: compiled 'wkv' library in 0.006 sec
+0.00.028.210 D ggml_metal_library_compile_all: compiled 'gated_delta_net' library in 0.007 sec
+0.00.028.210 D ggml_metal_library_compile_all: compiled 'solve_tri' library in 0.007 sec
+0.00.028.210 D ggml_metal_library_compile_all: compiled 'rope' library in 0.006 sec
+0.00.028.211 D ggml_metal_library_compile_all: compiled 'conv' library in 0.006 sec
+0.00.028.211 D ggml_metal_library_compile_all: compiled 'upscale' library in 0.004 sec
+0.00.028.211 D ggml_metal_library_compile_all: compiled 'argsort' library in 0.004 sec
+0.00.028.211 D ggml_metal_library_compile_all: compiled 'pool' library in 0.004 sec
+0.00.028.212 D ggml_metal_library_compile_all: compiled 'misc' library in 0.004 sec
+0.00.028.212 I ggml_metal_library_compile_all: loaded 36 libraries from embedded data in 0.012 sec (max single = 0.011 sec)
+0.00.028.456 I ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+0.00.029.086 I ggml_metal_device_init: GPU name:   MTL0 (Apple M4 Pro)
+0.00.029.088 I ggml_metal_device_init: GPU family: MTLGPUFamilyApple9  (1009)
+0.00.029.088 I ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+0.00.029.089 I ggml_metal_device_init: simdgroup reduction   = true
+0.00.029.089 I ggml_metal_device_init: simdgroup matrix mul. = true
+0.00.029.089 I ggml_metal_device_init: has unified memory    = true
+0.00.029.089 I ggml_metal_device_init: has bfloat            = true
+0.00.029.089 I ggml_metal_device_init: has tensor            = false
+0.00.029.089 I ggml_metal_device_init: use residency sets    = true
+0.00.029.095 I ggml_metal_device_init: use shared buffers    = true
+0.00.029.096 I ggml_metal_device_init: recommendedMaxWorkingSetSize  = 55662.79 MB
+Available devices:
+  MTL0: Apple M4 Pro (53084 MiB, 53083 MiB free)
+  BLAS: Accelerate (0 MiB, 0 MiB free)

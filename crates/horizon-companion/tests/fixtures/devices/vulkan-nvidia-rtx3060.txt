@@ -1,0 +1,7 @@
+0.00.001.802 I load_backend: loaded RPC backend from C:\Users\player\AppData\Roaming\Horizon\companion\runtime\b11756-windows-x86_64-vulkan\ggml-rpc.dll
+0.00.112.420 D ggml_vulkan: Found 1 Vulkan devices:
+0.00.113.051 D ggml_vulkan: 0 = NVIDIA GeForce RTX 3060 (NVIDIA) | uma: 0 | fp16: 1 | bf16: 1 | fp4: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: NV_coopmat2
+0.00.113.090 I load_backend: loaded Vulkan backend from C:\Users\player\AppData\Roaming\Horizon\companion\runtime\b11756-windows-x86_64-vulkan\ggml-vulkan.dll
+0.00.121.311 I load_backend: loaded CPU backend from C:\Users\player\AppData\Roaming\Horizon\companion\runtime\b11756-windows-x86_64-vulkan\ggml-cpu-alderlake.dll
+Available devices:
+  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11520 MiB free)

@@ -1,0 +1,9 @@
+0.00.001.911 I load_backend: loaded RPC backend from /home/player/.local/share/horizon/companion/runtime/b11756-linux-x86_64-vulkan/libggml-rpc.so
+0.00.041.208 D ggml_vulkan: Found 2 Vulkan devices:
+0.00.041.734 D ggml_vulkan: 0 = AMD Radeon RX 7800 XT (RADV NAVI32) (radv) | uma: 0 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+0.00.042.102 D ggml_vulkan: 1 = AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) (radv) | uma: 1 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: none
+0.00.042.131 I load_backend: loaded Vulkan backend from /home/player/.local/share/horizon/companion/runtime/b11756-linux-x86_64-vulkan/libggml-vulkan.so
+0.00.049.870 I load_backend: loaded CPU backend from /home/player/.local/share/horizon/companion/runtime/b11756-linux-x86_64-vulkan/libggml-cpu-zen4.so
+Available devices:
+  Vulkan0: AMD Radeon RX 7800 XT (RADV NAVI32) (16368 MiB, 15890 MiB free)
+  Vulkan1: AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) (15921 MiB, 15402 MiB free)
