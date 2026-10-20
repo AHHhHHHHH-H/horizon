@@ -183,6 +183,8 @@ pub struct Settings {
     pub extras: crate::extras::Extras,
     /// The Horizon mods turned on (`horizon-mods.txt`), all off by default.
     pub mods: crate::mod_list::ModList,
+    /// The Companion section's view (not saved here: the companion's settings are its own file).
+    pub companion: crate::companion_options::CompanionView,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -255,6 +257,7 @@ impl Default for Settings {
             horizon: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
+            companion: Default::default(),
             mods: Default::default(),
         }
     }
@@ -421,6 +424,7 @@ impl Settings {
             horizon: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
+            companion: Default::default(),
             mods: Default::default(),
             auto_jump: f.bool("autoJump"),
             language: f.string("lang"),

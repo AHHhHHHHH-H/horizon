@@ -25,7 +25,9 @@ mod command_blocks;
 mod command_harness;
 mod commands;
 mod companion;
+mod companion_ai;
 mod companion_body;
+mod companion_setup;
 mod companion_voice;
 mod composter;
 mod consume;
@@ -1425,6 +1427,8 @@ struct Game<'a> {
     tab_list: horizon_client::tab_list::TabList,
     subtitles: subtitle_hud::SubtitleState,
     companion_voice: companion_voice::VoiceState,
+    companion_ai: companion_ai::AiState,
+    companion_setup: companion_setup::SetupState,
     adv: advancements::AdvState,
     restore_player_state: bool,
     stats_ui: stats_screen::StatsUi,
@@ -4027,6 +4031,8 @@ impl Game<'_> {
                 self.resolve_arrivals();
             });
         }
+        horizon_client::spans::time("tick_companion_ai", || self.tick_companion_ai());
+        self.tick_companion_setup();
         self.tick_companion_arrivals();
         horizon_client::spans::time("tick_lan", || self.tick_lan());
         self.tick_friends();
@@ -6777,6 +6783,8 @@ impl Game<'_> {
         if integrated::wanted(&self.options, &save_root) {
             return self.open_integrated(folder, name, seed, creative, create);
         }
+        // "Start with a companion": it joins once the player stands in the new world.
+        self.companion_ai.spawn_on_arrival = create.is_some_and(|o| o.companion == Some(true));
         self.perf.world_opening();
         horizon_client::save::upgrade_older_world(&save_root)?;
         horizon_client::save::migrate_legacy(&save_root)?;
@@ -7269,6 +7277,7 @@ impl Game<'_> {
             self.stats.custom("leave_game", 1);
         }
         self.companions_leave_world();
+        self.companion_ai_world_closed();
         self.lan_close(false);
         self.save_game()
     }
@@ -7284,6 +7293,7 @@ impl Game<'_> {
         self.finish_perf();
         self.stats.custom("leave_game", 1);
         self.companions_leave_world();
+        self.companion_ai_world_closed();
         self.save_game()?;
         self.lan_close(false);
         // Closing the level storage: once the last writes are on disk the
@@ -11140,6 +11150,8 @@ impl<'a> Game<'a> {
             tab_list: Default::default(),
             subtitles: Default::default(),
             companion_voice: Default::default(),
+            companion_ai: Default::default(),
+            companion_setup: Default::default(),
             adv: Default::default(),
             restore_player_state: true,
             stats_ui: Default::default(),

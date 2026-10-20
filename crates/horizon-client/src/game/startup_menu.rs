@@ -373,7 +373,8 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
-                Event::ButtonClick => {}
+                // The first-run menu has no Companion section (`CompanionView::ready`).
+                Event::ButtonClick | Event::Companion(_) => {}
             }
         }
     }

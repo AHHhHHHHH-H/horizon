@@ -64,6 +64,7 @@ impl Game<'_> {
                 std::mem::swap(&mut settings.horizon, &mut self.settings.horizon);
                 std::mem::swap(&mut settings.controller, &mut self.settings.controller);
                 std::mem::swap(&mut settings.extras, &mut self.settings.extras);
+                std::mem::swap(&mut settings.companion, &mut self.settings.companion);
                 self.settings = settings;
                 // As the options screen applies a change.
                 self.handle_option_events(vec![Event::Changed])?;
@@ -110,6 +111,7 @@ impl Game<'_> {
         self.refresh_pack_lists();
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
+        self.companion_view_refresh();
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
@@ -200,7 +202,9 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
                     self.sync_mods();
+                    self.companion_sync_no_ai();
                 }
+                Event::Companion(action) => self.companion_action(action),
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
                     self.settings.save(&Self::options_path());

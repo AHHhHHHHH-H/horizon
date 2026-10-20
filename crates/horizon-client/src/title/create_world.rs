@@ -34,6 +34,9 @@ pub struct WorldOptions {
     pub flat: bool,
     pub structures: bool,
     pub bonus_chest: bool,
+    /// Horizon: "Start with a companion", offered once a companion is set up and No AI is off
+    /// (`None`: not offered).
+    pub companion: Option<bool>,
 }
 impl Default for WorldOptions {
     fn default() -> Self {
@@ -45,8 +48,20 @@ impl Default for WorldOptions {
             flat: false,
             structures: true,
             bonus_chest: false,
+            companion: companion_offered().then_some(true),
         }
     }
+}
+/// Whether the game's home has a companion set up, without No AI.
+fn companion_offered() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    let Ok(home) = std::env::current_dir() else {
+        return false;
+    };
+    let settings = horizon_companion::settings::CompanionSettings::load(&home);
+    settings.set_up && !settings.no_ai && !crate::extras::Extras::load(&home).no_ai
 }
 impl WorldOptions {
     /// Re-Create: the saved world's choices.
@@ -104,6 +119,7 @@ impl WorldOptions {
             25 => self.flat = !self.flat,
             27 => self.structures = !self.structures,
             28 => self.bonus_chest = !self.bonus_chest,
+            32 => self.companion = self.companion.map(|on| !on),
             _ => {}
         }
     }
@@ -226,7 +242,19 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 !o.hardcore,
                 24,
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(o.companion.map(|on| {
+            b(
+                gx,
+                gy + 125.0,
+                210.0,
+                format!("Start with a companion: {}", on_off(on)),
+                true,
+                32,
+            )
+        }))
+        .collect(),
         1 => vec![
             b(
                 gx,

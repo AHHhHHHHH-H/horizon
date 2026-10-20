@@ -38,6 +38,7 @@ pub mod clouds;
 pub mod collisions;
 pub mod command;
 pub mod companion;
+pub mod companion_options;
 pub mod command_block;
 pub mod command_storage;
 pub mod companion_voice;

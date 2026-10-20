@@ -10,7 +10,8 @@
 //! of control belong in `ui_theme` so the launcher-matching look stays in one
 //! place. Everything else (sliders dragging, scrolling, Done) is handled here.
 use crate::{
-    extras,
+    companion_options::{self, Control},
+    extras, keybinds,
     graphics_style::Cost,
     graphics_ui::{self, Item, Level},
     hud::{HudAtlas, HudBatch},
@@ -38,6 +39,8 @@ pub enum HRow {
     Mod(usize),
     /// Opens the directory where Horizon mods are installed.
     OpenModFolder,
+    /// A row of the Companion section (`companion_options`).
+    Companion(companion_options::Row),
 }
 /// A sidebar section: name, description, rows.
 pub struct Section {
@@ -205,7 +208,30 @@ pub const SECTIONS: &[Section] = &[
             rows
         },
     },
+    // Last, so hiding it (No AI, or no game to set it up from) moves no other section.
+    Section {
+        name: "Companion",
+        blurb: "An AI teammate that plays beside you, runs on this PC and works offline. Talk to it in chat with @name, or hold the push-to-talk key.",
+        rows: |s| {
+            companion_options::rows(&s.companion)
+                .into_iter()
+                .map(|r| match r {
+                    companion_options::Row::Header(h) => HRow::Header(h),
+                    r => HRow::Companion(r),
+                })
+                .collect()
+        },
+    },
 ];
+
+/// The sections shown: the Companion section only once the game has filled it and without No AI.
+pub(crate) fn shown_sections(s: &Settings) -> usize {
+    if s.companion.ready && !s.extras.no_ai {
+        SECTIONS.len()
+    } else {
+        SECTIONS.len() - 1
+    }
+}
 
 const NAV: u64 = id("options.nav", 0);
 const DONE: u64 = id("options.done", 0);
@@ -324,10 +350,10 @@ impl OptionsUi {
             }
             ui.atmosphere(horizon_theme::VEIL, 1.0);
         }
-        let section = self.section.min(SECTIONS.len() - 1);
+        let section = self.section.min(shown_sections(s) - 1);
         // The sidebar.
         ui.sidebar_frame("Options");
-        let names: Vec<&str> = SECTIONS.iter().map(|s| s.name).collect();
+        let names: Vec<&str> = SECTIONS[..shown_sections(s)].iter().map(|s| s.name).collect();
         ui.sidebar_list(NAV, 12.0, 72.0, SIDEBAR - 24.0, &names, section);
         let dy = h - 12.0 - CONTROL;
         ui.button(
@@ -536,6 +562,47 @@ impl OptionsUi {
                         );
                     }
                 }
+                HRow::Companion(row) => {
+                    let talk = if self.selected_key == Some(keybinds::TALK) {
+                        "Press a key".to_owned()
+                    } else {
+                        keybinds::display_name(s.keys.get(keybinds::TALK)).plain()
+                    };
+                    let (caption, text, control) = companion_options::row_parts(
+                        row,
+                        &s.companion,
+                        &talk,
+                        self.companion_name.as_deref(),
+                    );
+                    let id = ROW + i as u64;
+                    let cy = y + ROW_H / 2.0;
+                    let active = !matches!(control, Control::Inactive(_));
+                    match control {
+                        Control::None => {
+                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 60.0);
+                        }
+                        Control::Switch(on) => {
+                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 60.0);
+                            ui.switch(id, control_x, cy, on);
+                        }
+                        Control::Button(value) | Control::Inactive(value) => {
+                            let bw = ui.button_width(&value, false).max(96.0);
+                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - bw - 24.0);
+                            ui.button(
+                                id,
+                                [control_x - bw, y + 12.0, bw, CONTROL],
+                                &value,
+                                Button::Secondary,
+                                active,
+                            );
+                        }
+                        Control::TextBox(value, focused) => {
+                            let shown = if focused { format!("{value}_") } else { value };
+                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 220.0);
+                            ui.text_field(id, [control_x - 200.0, y + 12.0, 200.0, CONTROL], &shown, focused);
+                        }
+                    }
+                }
                 HRow::Style => {
                     ui.row(x, y, "Menu style", "", 0.0);
                     let labels = ["Horizon", "Classic"];
@@ -622,8 +689,8 @@ impl OptionsUi {
         if hit == SEARCH {
             return (Some(Target::Search), scrollbar, cursor);
         }
-        let section = self.section.min(SECTIONS.len() - 1);
-        if (NAV..NAV + SECTIONS.len() as u64).contains(&hit) {
+        let section = self.section.min(shown_sections(s) - 1);
+        if (NAV..NAV + shown_sections(s) as u64).contains(&hit) {
             return (Some(Target::Nav((hit - NAV) as usize)), scrollbar, cursor);
         }
         if hit == DONE {
@@ -724,6 +791,9 @@ impl OptionsUi {
         }
         let (target, scrollbar, cursor) = self.horizon_target(s, atlas, x, y, framebuffer);
         self.settings_search.focused = false;
+        if !matches!(target, Some(Target::Row(_))) {
+            events.extend(self.companion_name_commit(s));
+        }
         // AbstractScrollArea.updateScrolling grabs anywhere in the scrollbar column.
         if !right
             && let Some(scrollbar) = scrollbar
@@ -766,11 +836,11 @@ impl OptionsUi {
                 events.push(Event::Changed);
             }
             Some(Target::Row(i)) => {
-                let section = self.section.min(SECTIONS.len() - 1);
-                match self.horizon_rows(s, section).get(i) {
+                let section = self.section.min(shown_sections(s) - 1);
+                match self.horizon_rows(s, section).get(i).copied() {
                     Some(HRow::Opt(opt)) => {
                         opt.cycle(s, right, framebuffer);
-                        if *opt == Opt::Preset {
+                        if opt == Opt::Preset {
                             apply_preset(s);
                         }
                         events.push(Event::Changed);
@@ -779,7 +849,7 @@ impl OptionsUi {
                         item.cycle(s, right, framebuffer);
                         events.push(Event::Changed);
                     }
-                    Some(HRow::Page(_, _, page)) => self.open_page(*page),
+                    Some(HRow::Page(_, _, page)) => self.open_page(page),
                     Some(HRow::Extra(item)) if item.key_name().is_some() => {
                         self.selected_key = item.key_name();
                     }
@@ -788,13 +858,14 @@ impl OptionsUi {
                         events.push(Event::Changed);
                     }
                     Some(HRow::Mod(m)) => {
-                        s.mods.toggle(*m);
+                        s.mods.toggle(m);
                         events.push(Event::Changed);
                     }
                     Some(HRow::OpenModFolder) if !right => {
                         events.push(Event::ButtonClick);
                         events.push(Event::OpenModFolder);
                     }
+                    Some(HRow::Companion(row)) => events.extend(self.companion_click(s, row, right)),
                     _ => {}
                 }
             }
