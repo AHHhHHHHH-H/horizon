@@ -254,6 +254,11 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
   - Without it, each model's built-in voices with a short label (`senses::Voice`), and each personality
     has its default (`senses::default_voice`: on Qwen3-TTS CustomVoice the Veteran is uncle_fu, the Coach
     aiden, the Expert serena, the Joker ryan; on Pocket TTS javert, marius, alba and george).
+  - The line under "Sounds like" (and under each voice in the launcher) is the shown voice's own
+    description: the character's (`cast::Character::description`) or the model's voice's
+    (`senses::Voice::description`, plain words that agree with its label: no language, no model, no
+    recording id). A built-in voice's recording source and licence are `senses::Voice::source`, for
+    the credits, never the caption.
   - The choice is kept per model (`CompanionSettings::voices`, model id → voice id); one the model no
     longer offers falls back to the default. The launcher's Advanced view lists the built-in voices only
     (it doesn't carry the cast).

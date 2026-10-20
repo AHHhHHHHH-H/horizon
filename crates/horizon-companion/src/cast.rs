@@ -312,6 +312,51 @@ mod tests {
     }
 
     #[test]
+    fn the_shown_voice_has_its_own_caption() {
+        // The row's button and caption come from one entry: the chosen (or default) voice, a
+        // cast character or the model's own, never another list's.
+        for id in [
+            "qwen3-tts-12hz-1.7b-base-q8_0",
+            "pocket-tts-en-q8_0",
+            "qwen3-tts-12hz-1.7b-customvoice-q8_0",
+        ] {
+            let model = senses::model(id).unwrap();
+            for cast in [false, true] {
+                let choices = voice_choices(model, cast);
+                for p in [
+                    Personality::Veteran,
+                    Personality::Coach,
+                    Personality::Expert,
+                    Personality::Joker,
+                    Personality::Quiet,
+                ] {
+                    let Some(voice) = default_voice_id(model, p, cast) else {
+                        assert!(choices.is_empty(), "{id} cast={cast}");
+                        continue;
+                    };
+                    let (_, label, caption) = choices
+                        .iter()
+                        .find(|(v, ..)| *v == voice)
+                        .unwrap_or_else(|| panic!("{id}: default {voice} is not offered"));
+                    let expected = CAST
+                        .iter()
+                        .find(|c| c.id == voice && cast && model.clone)
+                        .map(|c| (c.label, c.description))
+                        .or_else(|| {
+                            model
+                                .voices
+                                .iter()
+                                .find(|v| v.id == voice)
+                                .map(|v| (v.label, v.description))
+                        })
+                        .unwrap();
+                    assert_eq!((label.as_str(), caption.as_str()), expected, "{id} {voice}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_sample_is_the_neutral_clip_in_the_language_or_english() {
         let dir = std::env::temp_dir().join(format!("horizon-cast-sample-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
