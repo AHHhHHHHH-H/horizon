@@ -359,8 +359,13 @@ is turned on. Its build and models are pinned with SHA-256, like llama.cpp's.
     On the same 4 characters, 1.7B Base scored 0.685 and VoiceDesign-per-line 0.669, with VoiceDesign
     drifting more on its worst lines and never whispering. `mem_saver` saved 165 MB of the 1.7B's
     footprint, not its peak, and changed no latency: left off. Speeds while the GPU was shared:
-    real-time factor 1.47 (1.7B), 1.35 (0.6B), 1.31 (VoiceDesign), 0.95 (VoxCPM2); the 1.7B
-    VoiceDesign model ran at 0.32 (offline) before the GPU was shared, and CustomVoice at 0.42–0.48 streaming.
+    real-time factor 1.47 (1.7B), 1.35 (0.6B), 1.31 (VoiceDesign), 0.95 (VoxCPM2).
+    **With the GPU to itself** (3 characters × the 10 lines, clips prepared first): 1.7B Base starts
+    speaking in 0.16 s (at most 0.19 s) and runs 2.1× faster than real time (RTF 0.49), 3.8 GB
+    (peak 4.5 GB); 0.6B Base 0.13 s and RTF 0.43, 2.8 GB (peak 3.4 GB); VoiceDesign per line
+    0.09 s and RTF 0.49, 3.6 GB. Preparing a clip takes 1.2 s, so a character's 5 clips in one
+    language are ready 6 s after the voice is chosen. On the M4 Pro the 0.6B is barely faster
+    (generation is bound by its per-step latency): its gain is the 1 GB of memory.
     - **High end (an RTX 4080 class card): Qwen3-TTS 1.7B Base with the clips.** The fewest errors,
       the emotions of the clips, steady across lines.
     - **Mid-range GPUs: Qwen3-TTS 0.6B Base with the same clips.** As consistent, 1 GB less, a few

@@ -879,13 +879,13 @@ const POCKET_VOICES_ES: &[Voice] = &[
 const QWEN3_TTS_CREDIT: &str = "Qwen3-TTS by the Qwen team (Alibaba Cloud, Apache-2.0); GGUF conversion by the audio.cpp project";
 const QWEN3_TTS_LANGUAGES: &[&str] = &["zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"];
 // Measured on the Mac mini (M4 Pro GPU, Metal; unified memory, so the peak footprint stands for
-// the GPU memory), streaming 120 short lines of the cast while another model shared the GPU.
-const BASE_17_VRAM_MB: u64 = 4300;
-const BASE_17_LATENCY: &str = "First sound in 0.3 s once a character's clips are prepared (0.9 s for a \
-     clip's first line), on an Apple M4 Pro GPU shared with another model";
-const BASE_06_VRAM_MB: u64 = 3300;
-const BASE_06_LATENCY: &str = "First sound in 0.24 s once a character's clips are prepared (0.8 s for \
-     a clip's first line), on an Apple M4 Pro GPU shared with another model";
+// the GPU memory), streaming the cast's short lines with its clips prepared.
+const BASE_17_VRAM_MB: u64 = 4500;
+const BASE_17_LATENCY: &str = "First sound in 0.16 s and 2× faster than real time on an Apple M4 Pro \
+     GPU, once the character's clips are prepared (1.2 s each, when the voice is chosen)";
+const BASE_06_VRAM_MB: u64 = 3400;
+const BASE_06_LATENCY: &str = "First sound in 0.13 s and 2.3× faster than real time on an Apple M4 Pro \
+     GPU, once the character's clips are prepared (1.2 s each, when the voice is chosen)";
 
 macro_rules! pocket {
     ($id:literal, $lang:literal, $name:literal, $load:literal, $voices:expr, $files:expr) => {

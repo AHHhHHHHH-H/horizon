@@ -393,7 +393,7 @@ impl SpeechClient {
     }
 
     /// Get a character's clips in `language` ready: a cloning model encodes a clip the first time a
-    /// line is said from it (about 0.7 s on an M4 Pro GPU, which delays that line's first sound) and
+    /// line is said from it (0.6–0.7 s on an M4 Pro GPU, which delays that line's first sound) and
     /// keeps it prepared afterwards. Call it on a worker thread when the companion's voice is chosen
     /// or the game's language changes. Nothing to do on a model that doesn't clone.
     pub fn prepare(&self, character: &str, language: &str) -> io::Result<()> {
