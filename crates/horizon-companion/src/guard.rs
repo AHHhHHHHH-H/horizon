@@ -307,4 +307,18 @@ mod tests {
             assert_eq!(check_request(line), None, "{line}");
         }
     }
+
+    #[test]
+    fn trash_talk_never_tells_the_player_to_die() {
+        for line in [
+            "You're useless, go kill yourself.",
+            "lol kys",
+            "T'es nul, tue-toi.",
+            "Eres un inútil, mátate.",
+            "Bring dich um, du Idiot.",
+        ] {
+            assert_eq!(check(line), Some(Trip::SelfHarm), "{line}");
+        }
+        assert_eq!(check("Kill it yourself, I'm busy."), None);
+    }
 }

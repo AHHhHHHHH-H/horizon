@@ -93,6 +93,13 @@ overdos*
 sobredosis
 uberdosis
 me suicider
+# Said at the player (Salty's trash talk must never go there).
+kill yourself
+kys
+tue toi
+va te pendre
+matate
+bring dich um
 
 [sexual]
 sex
