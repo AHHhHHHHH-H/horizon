@@ -301,7 +301,7 @@ impl Setup {
 
     /// Every part's options (`plan::options`).
     pub fn options(&self) -> Vec<PartOption> {
-        plan::options(&self.language)
+        plan::options_with(&self.language, senses::voice_pack_dir(&self.home).is_some())
     }
 
     /// Whether an option's model is on disk.

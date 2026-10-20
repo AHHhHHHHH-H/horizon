@@ -150,15 +150,20 @@ pub fn brain_options() -> Vec<PartOption> {
 
 /// Every part's options for a game language (`fr_fr`): the brain's and the senses'.
 pub fn options(language: &str) -> Vec<PartOption> {
+    options_with(language, false)
+}
+
+/// The same, with the cloning voices when the voice pack (the cast's clips) is installed.
+pub fn options_with(language: &str, cast: bool) -> Vec<PartOption> {
     let mut out = brain_options();
-    out.extend(sense_options(language));
+    out.extend(sense_options(language, cast));
     out
 }
 
 /// The senses' options from their catalogue: the classifier (on the brain's llama.cpp), speech
 /// recognition and the voice (on audio.cpp). Of the natural voice's packs only the game language's is
 /// offered (English when it has none); the expressive voice speaks every language in one model.
-pub fn sense_options(language: &str) -> Vec<PartOption> {
+pub fn sense_options(language: &str, cast: bool) -> Vec<PartOption> {
     let llama = catalogue::runtime_builds_here()
         .into_iter()
         .next()
@@ -170,7 +175,13 @@ pub fn sense_options(language: &str) -> Vec<PartOption> {
     let pocket = senses::pocket_for(language).id;
     senses::MODELS
         .iter()
-        .filter(|m| m.kind != SenseKind::TextToSpeech || m.instruct || m.id == pocket)
+        .filter(|m| {
+            m.kind != SenseKind::TextToSpeech
+                || m.instruct
+                || m.id == pocket
+                // Qwen3-TTS Base has no voice of its own: only with the cast's clips.
+                || (cast && m.clone && m.voices.is_empty())
+        })
         .flat_map(|m| {
             let runtime = match m.engine {
                 Engine::LlamaEmbeddings => llama.clone(),
@@ -1068,6 +1079,31 @@ mod tests {
         assert!(plan.download <= 3 << 30);
         assert_eq!(brain(&plan).0, "Standard");
         assert!(plan.missing.iter().any(|m| m.reason.contains("disk space")));
+    }
+
+    #[test]
+    fn cloning_voices_are_offered_only_with_the_voice_pack() {
+        let ids = |cast| -> Vec<String> {
+            options_with("en_us", cast)
+                .into_iter()
+                .filter(|o| o.part == Part::TextToSpeech)
+                .map(|o| o.id)
+                .collect()
+        };
+        let base = |ids: &[String]| {
+            ids.iter()
+                .any(|id| id.starts_with("qwen3-tts-12hz-1.7b-base"))
+        };
+        assert!(!base(&ids(false)));
+        assert!(base(&ids(true)));
+        assert_eq!(
+            ids(false),
+            options("en_us")
+                .into_iter()
+                .filter(|o| o.part == Part::TextToSpeech)
+                .map(|o| o.id)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

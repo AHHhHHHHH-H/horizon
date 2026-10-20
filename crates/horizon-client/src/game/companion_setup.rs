@@ -2,7 +2,11 @@
 //! plan, the setup's progress, who is here) and what its buttons do. Setting up runs
 //! `horizon_companion::setup`, the launcher's code, on its own thread; the settings are the
 //! launcher's file, so a change on either side shows on the other.
-use super::{Game, Screen, companion_ai::home};
+use super::{
+    Game, Screen,
+    companion_ai::home,
+    companion_voice::{default_voice_id, voice_choices},
+};
 use horizon_client::{
     companion as c,
     companion_options::Action,
@@ -27,6 +31,8 @@ pub(super) struct SetupState {
     checked: bool,
     /// The voice model the settings would run, for the voice picker.
     tts: Option<&'static SenseModel>,
+    /// The voice pack (the cast's clips) is installed.
+    cast: bool,
 }
 
 struct Checked {
@@ -35,6 +41,7 @@ struct Checked {
     choices: Vec<(Part, Vec<(String, String)>)>,
     disk: u64,
     tts: Option<&'static SenseModel>,
+    cast: bool,
     salty_brain: Option<(String, String)>,
 }
 
@@ -80,25 +87,14 @@ impl Game<'_> {
             view.disk = checked.disk;
             view.salty_brain = checked.salty_brain;
             self.companion_setup.tts = checked.tts;
+            self.companion_setup.cast = checked.cast;
         }
         let view = &mut self.settings.companion;
-        let tts = self.companion_setup.tts;
+        let (tts, cast) = (self.companion_setup.tts, self.companion_setup.cast);
         view.tts_model = tts.map(|m| m.id.to_owned());
-        view.voices = tts.map_or_else(Vec::new, |m| {
-            m.voices
-                .iter()
-                .map(|v| {
-                    (
-                        v.id.to_owned(),
-                        v.label.to_owned(),
-                        v.description.to_owned(),
-                    )
-                })
-                .collect()
-        });
-        view.default_voice = tts
-            .and_then(|m| senses::default_voice(m, view.settings.persona.personality))
-            .map(|v| v.id.to_owned());
+        view.voices = tts.map_or_else(Vec::new, |m| voice_choices(m, cast));
+        view.default_voice =
+            tts.and_then(|m| default_voice_id(m, view.settings.persona.personality, cast));
         self.tick_companion_setup();
         let here_file = self
             .lan
@@ -166,12 +162,14 @@ impl Game<'_> {
                         .map(|m| (m.name.to_owned(), m.license.to_owned())),
                     _ => None,
                 };
+                let cast = senses::voice_pack_dir(&setup.home).is_some();
                 let _ = tx.send(Checked {
                     machine,
                     plan,
                     choices,
                     disk,
                     tts,
+                    cast,
                     salty_brain,
                 });
             });

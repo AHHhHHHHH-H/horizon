@@ -2081,6 +2081,30 @@ pub fn model(id: &str) -> Option<&'static SenseModel> {
     MODELS.iter().find(|m| m.id == id)
 }
 
+/// The voice pack's folder name under `<home>/companion/voices/` (`horizon_senses::cast::VOICE_PACK`).
+pub const VOICE_PACK_VERSION: &str = "v1";
+
+/// The unpacked voice pack, the cast's reference clips: `HORIZON_COMPANION_VOICES=<dir>` (a dev
+/// override until the pack is hosted), else `<home>/companion/voices/<version>/` once it holds clips.
+/// Cloning models speak as the cast only with it.
+pub fn voice_pack_dir(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let has_clips = |dir: &std::path::Path| {
+        std::fs::read_dir(dir).is_ok_and(|mut entries| {
+            entries.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x == "wav")))
+        })
+    };
+    std::env::var_os("HORIZON_COMPANION_VOICES")
+        .map(std::path::PathBuf::from)
+        .filter(|d| has_clips(d))
+        .or_else(|| {
+            let dir = home
+                .join("companion")
+                .join("voices")
+                .join(VOICE_PACK_VERSION);
+            has_clips(&dir).then_some(dir)
+        })
+}
+
 /// The natural voice for a game language (`fr_fr`, `pt_br`, `en_us`…): its pack, else English.
 pub fn pocket_for(game_language: &str) -> &'static SenseModel {
     let code = game_language.get(..2).unwrap_or("en");

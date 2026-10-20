@@ -28,6 +28,8 @@ pub(super) struct VoiceState {
     echo: bool,
     /// `HORIZON_COMPANION_VOICE` was read.
     checked_env: bool,
+    /// The cast character and language whose clips were last prepared.
+    prepared: Option<(String, String)>,
 }
 
 struct VoiceOn {
@@ -108,6 +110,45 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Get the chosen character's clips ready on a worker thread (`SpeechClient::prepare`): when the
+    /// voice starts, and when the player picks another voice or the language changes, never on the
+    /// first line. Nothing happens for a built-in voice or a model that doesn't clone.
+    pub(super) fn companion_voice_prepare(&mut self) {
+        let Some(character) = self
+            .companion_voice_id()
+            .filter(|id| horizon_senses::cast::character(id).is_some())
+        else {
+            return;
+        };
+        let language = self.voice_language();
+        let wanted = (character, language);
+        if self.companion_voice.prepared.as_ref() == Some(&wanted) {
+            return;
+        }
+        let Some(client) = self
+            .companion_voice
+            .on
+            .as_ref()
+            .and_then(|on| on._server.speech())
+        else {
+            return;
+        };
+        self.companion_voice.prepared = Some(wanted.clone());
+        let _ = std::thread::Builder::new()
+            .name("companion voice prepare".into())
+            .spawn(move || {
+                let (character, language) = wanted;
+                let started = Instant::now();
+                match client.prepare(&character, &language) {
+                    Ok(()) => log::info!(
+                        "Horizon: companion voice {character} ({language}) prepared in {:.1} s",
+                        started.elapsed().as_secs_f64()
+                    ),
+                    Err(e) => log::warn!("Horizon: companion voice {character}: {e}"),
+                }
+            });
+    }
+
     /// The game's language as ISO 639-1 (`fr_fr` → `fr`).
     fn voice_language(&self) -> String {
         self.settings
@@ -182,6 +223,8 @@ impl Game<'_> {
                         _server: server,
                         heard: Vec::new(),
                     }));
+                    self.companion_voice.prepared = None;
+                    self.companion_voice_prepare();
                 }
                 Err(e) => log::warn!("Horizon: companion voice did not start: {e}"),
             }
@@ -378,4 +421,109 @@ fn dev_setup(path: &std::path::Path) -> Result<(VoiceSetup, bool), String> {
         },
         v["echo"].as_bool().unwrap_or(false),
     ))
+}
+
+/// The voices a text-to-speech model offers the player, as (id, label, description): the cast's
+/// characters when it clones and the voice pack is installed (`cast`), then its built-in voices.
+pub(super) fn voice_choices(
+    model: &senses::SenseModel,
+    cast: bool,
+) -> Vec<(String, String, String)> {
+    let characters = horizon_senses::cast::CAST
+        .iter()
+        .filter(|_| cast && model.clone)
+        .map(|c| {
+            (
+                c.id.to_owned(),
+                c.label.to_owned(),
+                c.description.to_owned(),
+            )
+        });
+    let built_in = model.voices.iter().map(|v| {
+        (
+            v.id.to_owned(),
+            v.label.to_owned(),
+            v.description.to_owned(),
+        )
+    });
+    characters.chain(built_in).collect()
+}
+
+/// The voice a personality starts with on a model: its character of the cast on a cloning model
+/// with the voice pack, else its built-in default.
+pub(super) fn default_voice_id(
+    model: &senses::SenseModel,
+    personality: horizon_companion::prompt::Personality,
+    cast: bool,
+) -> Option<String> {
+    if cast && model.clone {
+        let id = personality.label().to_ascii_lowercase();
+        return Some(horizon_senses::cast::default_for(&id).id.to_owned());
+    }
+    senses::default_voice(model, personality).map(|v| v.id.to_owned())
+}
+
+/// The voice the companion speaks with: the one chosen for this model if it still offers it, else
+/// the personality's default.
+pub(super) fn chosen_voice_id(
+    settings: &horizon_companion::settings::CompanionSettings,
+    model: &senses::SenseModel,
+    cast: bool,
+) -> Option<String> {
+    settings
+        .voices
+        .get(model.id)
+        .filter(|id| voice_choices(model, cast).iter().any(|(v, ..)| v == *id))
+        .cloned()
+        .or_else(|| default_voice_id(model, settings.persona.personality, cast))
+}
+
+#[cfg(test)]
+mod voice_choice_tests {
+    use super::*;
+    use horizon_companion::{prompt::Personality, settings::CompanionSettings};
+
+    #[test]
+    fn cloning_models_offer_the_cast_once_the_pack_is_here() {
+        let base = senses::model("qwen3-tts-12hz-1.7b-base-q8_0").unwrap();
+        let pocket = senses::model("pocket-tts-en-q8_0").unwrap();
+        assert!(voice_choices(base, false).is_empty());
+        let cast = voice_choices(base, true);
+        assert_eq!(cast.len(), horizon_senses::cast::CAST.len());
+        assert_eq!(cast[0].1, horizon_senses::cast::CAST[0].label);
+        // Pocket clones too: the cast first, then its own voices.
+        let both = voice_choices(pocket, true);
+        assert_eq!(
+            both.len(),
+            horizon_senses::cast::CAST.len() + pocket.voices.len()
+        );
+        assert_eq!(voice_choices(pocket, false).len(), pocket.voices.len());
+
+        assert_eq!(
+            default_voice_id(base, Personality::Coach, true).as_deref(),
+            Some("coach")
+        );
+        assert_eq!(default_voice_id(base, Personality::Coach, false), None);
+        assert_eq!(
+            default_voice_id(pocket, Personality::Veteran, false).as_deref(),
+            Some("javert")
+        );
+
+        let mut settings = CompanionSettings::default();
+        settings.persona.personality = Personality::Joker;
+        assert_eq!(
+            chosen_voice_id(&settings, pocket, true).as_deref(),
+            Some("joker")
+        );
+        settings.voices.insert(pocket.id.into(), "butler".into());
+        assert_eq!(
+            chosen_voice_id(&settings, pocket, true).as_deref(),
+            Some("butler")
+        );
+        // Without the pack the cast's character is gone: back to the built-in default.
+        assert_eq!(
+            chosen_voice_id(&settings, pocket, false).as_deref(),
+            Some("george")
+        );
+    }
 }

@@ -96,6 +96,8 @@ pub(super) struct AiState {
     /// Replies the guard stopped this session (`companion ai`).
     pub guarded: u32,
     /// The text-to-speech model the voice runs, for the voice the settings pick on it.
+    /// The voice runs with the voice pack: cloning models speak as the cast.
+    cast: bool,
     tts: Option<&'static SenseModel>,
 }
 
@@ -234,6 +236,8 @@ impl Game<'_> {
         if settings.no_ai {
             self.companions_hide_for_no_ai();
         }
+        // A newly picked voice (or personality) gets its clips ready before it speaks.
+        self.companion_voice_prepare();
     }
 
     /// No AI: the companions leave, saved as they are, to come back with the world once it is off.
@@ -519,6 +523,8 @@ impl Game<'_> {
                             .find(|m| m.kind == SenseKind::TextToSpeech)
                     });
                     if let Some(voice) = voice {
+                        let voices = horizon_companion::senses::voice_pack_dir(&home());
+                        self.companion_ai.cast = voices.is_some();
                         let setup = VoiceSetup {
                             runtime: voice.runtime,
                             exe: voice.exe,
@@ -530,7 +536,7 @@ impl Game<'_> {
                                 .map(|(model, dir)| Installed { model, dir })
                                 .collect(),
                             work: home().join("companion").join("logs"),
-                            voices: None,
+                            voices,
                         };
                         self.companion_voice_start(setup, false);
                     }
@@ -1018,9 +1024,10 @@ impl Game<'_> {
     }
 
     /// The voice the settings pick on the running voice model (else the personality's default).
-    fn companion_voice_id(&mut self) -> Option<String> {
+    pub(super) fn companion_voice_id(&mut self) -> Option<String> {
         let model = self.companion_ai.tts?;
-        self.companion_settings().voice_id(model).map(str::to_owned)
+        let cast = self.companion_ai.cast;
+        super::companion_voice::chosen_voice_id(self.companion_settings(), model, cast)
     }
 
     /// The Companion screen's "Play sample": a short line in the chosen voice. It plays like any
@@ -1740,7 +1747,7 @@ fn counted(verb: &str, item: &str, count: Option<u32>) -> Vec<String> {
 /// An item or tag in the game's language: `oak_log` → "Oak Log", `#logs` → "logs".
 fn item_display(item: &str) -> String {
     if let Some(tag) = item.strip_prefix('#') {
-        return tag.replace('_', " ");
+        return tag_display(tag, &lang::code());
     }
     let id = item.strip_prefix("minecraft:").unwrap_or(item);
     let fallback = id.replace('_', " ");
@@ -1749,6 +1756,25 @@ fn item_display(item: &str) -> String {
         return name;
     }
     lang::get_or(&format!("block.minecraft.{id}"), &fallback)
+}
+
+/// The generic materials the reflexes name by tag (`reflex::material`), in the game's language:
+/// the language files have no names for tags.
+fn tag_display(tag: &str, language: &str) -> String {
+    let names: &[&str; 5] = match tag {
+        "logs" => &["logs", "bûches", "troncos", "Stämme", "troncos"],
+        "planks" => &["planks", "planches", "tablones", "Bretter", "tábuas"],
+        "wool" => &["wool", "laine", "lana", "Wolle", "lã"],
+        _ => return tag.replace('_', " "),
+    };
+    let i = match language.get(..2).unwrap_or("en") {
+        "fr" => 1,
+        "es" => 2,
+        "de" => 3,
+        "pt" => 4,
+        _ => 0,
+    };
+    names[i].to_owned()
 }
 
 /// Every item and block name of the game's language, and the English one from its id.
@@ -1899,4 +1925,17 @@ fn start_classifier(
         }
         .pipeline(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tag_display;
+
+    #[test]
+    fn tagged_materials_are_named_in_the_game_language() {
+        assert_eq!(tag_display("logs", "fr_fr"), "bûches");
+        assert_eq!(tag_display("logs", "en_us"), "logs");
+        assert_eq!(tag_display("planks", "de_de"), "Bretter");
+        assert_eq!(tag_display("small_flowers", "fr_fr"), "small flowers");
+    }
 }
