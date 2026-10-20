@@ -14,6 +14,7 @@ Worlds and settings live in a temporary directory.
 import argparse
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -199,12 +200,15 @@ def watch(endpoint):
     for effect in ('resistance 600 4', 'slow_falling 600 0', 'fire_resistance 600 0'):
         command(endpoint, f'command effect give Bea minecraft:{effect} true')
     command(endpoint, 'companion do Bea stop')
-    command(endpoint, f'command fill {x - 1} {y - 2} {z - 4} {x + 1} {y - 2} {z - 2} stone')
-    command(endpoint, f'command fill {x - 1} {y - 1} {z - 4} {x + 1} {y - 1} {z - 2} end_portal')
+    # Bea stood 2 or 3 blocks from the world spawn, where it comes back after dying in the End: the
+    # portal 8 to 10 blocks off, so that it never respawns standing in it (and goes back to the End).
+    command(endpoint, f'command fill {x - 1} {y} {z - 10} {x + 1} {y + 3} {z - 8} air')
+    command(endpoint, f'command fill {x - 1} {y - 2} {z - 10} {x + 1} {y - 2} {z - 8} stone')
+    command(endpoint, f'command fill {x - 1} {y - 1} {z - 10} {x + 1} {y - 1} {z - 8} end_portal')
     # Off its portal first: standing in one, its portal cooldown keeps restarting.
     command(endpoint, f'command tp Bea {x + 0.5} {y} {z + 0.5}')
     time.sleep(1)
-    command(endpoint, f'command tp Bea {x + 0.5} {y - 0.5} {z - 2.5}')
+    command(endpoint, f'command tp Bea {x + 0.5} {y - 0.5} {z - 8.5}')
     c = through(endpoint, 'Bea', 'minecraft:the_end', timeout=90)
     print(f'watch: Bea stepped onto an End portal, the view followed it to the End at {c["position"]}')
 
@@ -291,6 +295,7 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--only', choices=sorted(SCENARIOS), action='append')
+    parser.add_argument('--log', type=Path, help="keep the client's log here")
     args = parser.parse_args()
     client, resources = args.client.resolve(), args.resources.resolve()
     with tempfile.TemporaryDirectory(prefix='horizon-companion-engine-') as directory:
@@ -311,6 +316,8 @@ def main():
                 raise
             finally:
                 stop(process)
+                if args.log:
+                    shutil.copy(home / 'client.log', args.log)
     print('Companion engine passed:', ', '.join(args.only or SCENARIOS))
 
 
