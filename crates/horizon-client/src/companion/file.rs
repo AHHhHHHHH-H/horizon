@@ -30,6 +30,9 @@ pub struct CompanionFile {
     pub skill: String,
     pub post: Option<[f64; 3]>,
     pub hold_fire: bool,
+    /// The work it had on (collect, give, craft, smelt), as command words
+    /// with what is left to do: a reloaded world takes it up again.
+    pub task: Option<String>,
 }
 
 impl Default for CompanionFile {
@@ -46,6 +49,7 @@ impl Default for CompanionFile {
             skill: "follow".into(),
             post: None,
             hold_fire: false,
+            task: None,
         }
     }
 }
@@ -111,6 +115,7 @@ mod tests {
             name: "Ari".into(),
             owner: horizon_protocol::crypto::uuid_string(7),
             notes: vec!["likes oak".into()],
+            task: Some("collect 3 oak_log".into()),
             ..Default::default()
         };
         file.save(&world).unwrap();

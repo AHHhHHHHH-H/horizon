@@ -79,6 +79,9 @@ pub(super) struct Body {
     pub recent: VecDeque<String>,
     pub random: u64,
     pub ticks: u64,
+    /// Its work skills: the task stack, the dig, the bow, the open menu
+    /// (game/companion_work.rs).
+    pub work: super::companion_work::Work,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -147,6 +150,15 @@ impl Body {
             .post
             .filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
         let hold_fire = file.hold_fire;
+        // The work it had on when the world was saved, taken up again.
+        let words: Vec<&str> = file
+            .task
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        let commands: VecDeque<CompanionCommand> =
+            c::parse_command(&words).ok().into_iter().collect();
         Self {
             conn,
             uuid,
@@ -154,7 +166,7 @@ impl Body {
             skill,
             resume: Skill::Follow,
             hold_fire,
-            commands: VecDeque::new(),
+            commands,
             post,
             target: None,
             ordered: false,
@@ -178,6 +190,7 @@ impl Body {
             recent: VecDeque::new(),
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
+            work: Default::default(),
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -198,6 +211,7 @@ impl Body {
             .post
             .filter(|_| matches!(skill, Skill::Stay | Skill::Defend));
         self.file.hold_fire = self.hold_fire;
+        self.file.task = self.work.saved();
     }
     /// xorshift64*: the body's own randomness (teleport spots, item
     /// scatter), so that a companion never draws from the level's random.
@@ -234,6 +248,8 @@ pub(super) struct Companions {
     pub acting: bool,
     /// Path searches since the last `companion cost`, and their time.
     pub plans: (u32, std::time::Duration, std::time::Duration),
+    /// What the work skills cache: recipes, drops, their cost.
+    pub work: super::companion_work::WorkCache,
 }
 
 impl Companions {
@@ -941,6 +957,11 @@ impl Game<'_> {
                 cost["plans"] = json!(plans);
                 cost["plans_ms"] = json!(total.as_secs_f64() * 1000.0);
                 cost["plan_max_ms"] = json!(max.as_secs_f64() * 1000.0);
+                if let Value::Object(work) = self.companion_work_cost() {
+                    for (k, v) in work {
+                        cost[k] = v;
+                    }
+                }
                 Ok(json!({ "ok": true, "cost": cost }))
             }
             Some("reports") => {
@@ -971,6 +992,11 @@ impl Game<'_> {
             .filter_map(|b| {
                 let g = host.hub.guest(b.conn)?;
                 let items: u32 = g.inventory.iter().flatten().map(|s| s.count).sum();
+                let mut counts = serde_json::Map::new();
+                for s in g.inventory.iter().chain([&g.offhand]).flatten() {
+                    let n = counts.get(&*s.item).and_then(Value::as_u64).unwrap_or(0);
+                    counts.insert(s.item.to_string(), json!(n + u64::from(s.count)));
+                }
                 Some(json!({
                     "name": b.file.name,
                     "uuid": b.file.uuid,
@@ -990,6 +1016,9 @@ impl Game<'_> {
                     "held": g.inventory.get(g.selected).and_then(|s| s.as_ref()).map(|s| s.item.to_string()),
                     "armor": g.armor.iter().map(|s| s.as_ref().map(|s| s.item.to_string())).collect::<Vec<_>>(),
                     "game_mode": g.game_mode,
+                    "sleeping": g.bed.is_some(),
+                    "inventory": counts,
+                    "task": b.work.status(),
                 }))
             })
             .collect();

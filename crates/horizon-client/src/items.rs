@@ -770,6 +770,10 @@ impl Items {
         }
         false
     }
+    /// A loot table's JSON (`minecraft:blocks/stone`, ...).
+    pub fn loot_json(&self, id: &str) -> Option<&Value> {
+        self.loot.get(id)
+    }
     /// Whether a loot table (`minecraft:blocks/stone`, ...) exists.
     pub fn has_loot_table(&self, id: &str) -> bool {
         self.loot.contains_key(id)

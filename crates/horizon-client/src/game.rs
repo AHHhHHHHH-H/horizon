@@ -26,6 +26,8 @@ mod command_harness;
 mod commands;
 mod companion;
 mod companion_body;
+mod companion_craft;
+mod companion_work;
 mod composter;
 mod consume;
 mod control;

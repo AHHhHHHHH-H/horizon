@@ -38,7 +38,7 @@ const LEASH: f64 = 24.0;
 
 /// What steering toward a goal came to this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Steer {
+pub(super) enum Steer {
     Arrived,
     Moving,
     /// No way there yet (no path, or stuck too long).
@@ -60,11 +60,11 @@ fn leave_alone(m: &Mob) -> bool {
 }
 
 /// A mob worth fighting or calling out.
-fn threat(m: &Mob) -> bool {
+pub(super) fn threat(m: &Mob) -> bool {
     m.alive() && m.hostile() && !leave_alone(m)
 }
 
-fn mob_at(m: &Mob) -> [f64; 3] {
+pub(super) fn mob_at(m: &Mob) -> [f64; 3] {
     [m.position.x, m.position.y, m.position.z]
 }
 
@@ -204,6 +204,7 @@ impl Game<'_> {
         if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
             self.companion_start_eating(host, b);
         }
+        self.companion_work_reflexes(host, b);
         self.companion_pick_target(host, b, pos, owner);
         self.companion_move(host, b, pos, owner);
         if b.jump {
@@ -223,6 +224,20 @@ impl Game<'_> {
         owner: [f64; 3],
     ) {
         let pos = host.hub.guest(b.conn).map_or(owner, |g| g.position);
+        // A new order for where it goes ends the work it had on.
+        if !b.work.tasks.is_empty()
+            && matches!(
+                command,
+                CompanionCommand::Follow
+                    | CompanionCommand::Stay
+                    | CompanionCommand::Come
+                    | CompanionCommand::GoTo(_)
+                    | CompanionCommand::Stop
+                    | CompanionCommand::Defend
+            )
+        {
+            self.companion_cancel_work(host, b, Some("stopped"));
+        }
         let start = |game: &mut Self, b: &mut Body, skill: Skill| {
             if b.skill != skill {
                 b.skill = skill;
@@ -321,6 +336,11 @@ impl Game<'_> {
             }
             CompanionCommand::Jump => b.jump = true,
             CompanionCommand::Crouch(on) => b.crouch = on,
+            work @ (CompanionCommand::Collect { .. }
+            | CompanionCommand::Give { .. }
+            | CompanionCommand::Craft { .. }
+            | CompanionCommand::Smelt { .. }
+            | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
                     self.companion_report(
@@ -548,6 +568,12 @@ impl Game<'_> {
             };
             let (at, bounds, height) = (mob_at(m), m.bounds(), m.kind.height);
             let reach = distance_to_box(eye, bounds);
+            // A fight stops the digging and the menus; at range, the bow.
+            self.companion_stop_dig(host, b);
+            self.companion_close_menu(host, b);
+            if self.companion_bow(host, b, id, pos) {
+                return;
+            }
             if reach > REACH * 0.8 {
                 let sprint = c::horizontal(pos, at) > 4.0;
                 let _ = self.companion_steer(host, b, at, 1.2, sprint);
@@ -585,6 +611,9 @@ impl Game<'_> {
         }
         match b.skill {
             Skill::Idle | Skill::Attack => self.companion_look_at_owner(b, pos, owner),
+            Skill::Collect | Skill::Give | Skill::Craft | Skill::Smelt | Skill::Sleep => {
+                self.companion_work(host, b, pos, owner);
+            }
             Skill::Follow | Skill::Defend | Skill::Retreat => {
                 // TamableAnimal.tryToTeleportToOwner wants a floor by the
                 // owner: none while they fall or fly, when it heads for the
@@ -699,7 +728,7 @@ impl Game<'_> {
         }
     }
 
-    fn companion_look_at_owner(&self, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
+    pub(super) fn companion_look_at_owner(&self, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
         b.yaw = c::yaw_toward(pos, owner) as f32;
         let eye_height = self
             .player
@@ -729,7 +758,7 @@ impl Game<'_> {
 
     /// Steer toward `goal` along a vanilla path for a player-sized walker:
     /// sets its keys and facing for the physics tick.
-    fn companion_steer(
+    pub(super) fn companion_steer(
         &mut self,
         host: &LanHost,
         b: &mut Body,
@@ -901,7 +930,7 @@ impl Game<'_> {
         reach.iter().all(|&d| self.companion_safe_at(pos, yaw, d))
     }
 
-    fn companion_safe_at(&self, pos: [f64; 3], yaw: f32, ahead: f64) -> bool {
+    pub(super) fn companion_safe_at(&self, pos: [f64; 3], yaw: f32, ahead: f64) -> bool {
         let r = f64::from(yaw).to_radians();
         let (x, z) = (
             (pos[0] - r.sin() * ahead).floor() as i32,
@@ -943,7 +972,7 @@ impl Game<'_> {
 
     /// A blow at mob `id` once the attack is charged (`getAttackStrengthScale`
     /// near 1): the guest's attack, aimed at it.
-    fn companion_strike(&mut self, host: &mut LanHost, b: &mut Body, id: u32) {
+    pub(super) fn companion_strike(&mut self, host: &mut LanHost, b: &mut Body, id: u32) {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
             return;
         };
@@ -972,8 +1001,8 @@ impl Game<'_> {
     }
 
     /// Its best armour on and its best weapon in hand.
-    fn companion_gear(&mut self, host: &mut LanHost, b: &mut Body) {
-        if b.eating.is_some() {
+    pub(super) fn companion_gear(&mut self, host: &mut LanHost, b: &mut Body) {
+        if b.eating.is_some() || b.work.busy_hands() {
             return;
         }
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
@@ -1135,6 +1164,7 @@ impl Game<'_> {
         b.eating = None;
         b.retreating = false;
         b.nav.reset();
+        self.companion_cancel_work(host, &mut b, Some("died"));
         self.companion_report(&mut b, CompanionReport::Died { cause });
         host.companions.insert(bi, b);
     }
@@ -1259,8 +1289,10 @@ impl Game<'_> {
             return;
         };
         g.moves.clear();
-        // Its ground must be there: a body in a chunk not loaded yet waits.
+        // Its ground must be there: a body in a chunk not loaded yet waits;
+        // one in bed lies still.
         if g.spectator()
+            || g.bed.is_some()
             || !self
                 .world
                 .loaded(g.position[0].floor() as i32, g.position[2].floor() as i32)
@@ -1357,13 +1389,13 @@ impl Game<'_> {
 }
 
 /// The pitch that looks from `eye` at `to`.
-fn look_pitch(eye: [f64; 3], to: [f64; 3]) -> f32 {
+pub(super) fn look_pitch(eye: [f64; 3], to: [f64; 3]) -> f32 {
     let horizontal = c::horizontal(eye, to);
     (-(to[1] - eye[1]).atan2(horizontal)).to_degrees() as f32
 }
 
 /// How many of `item` it carries.
-fn carried(inventory: &[Option<ItemStack>], item: &str) -> u32 {
+pub(super) fn carried(inventory: &[Option<ItemStack>], item: &str) -> u32 {
     inventory
         .iter()
         .flatten()

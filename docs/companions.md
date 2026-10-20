@@ -232,8 +232,8 @@ failure back to the brain as text.
   eats below 14 food, or when it retreats.
 - **Pickups.** It picks up items near its owner when it has nothing else to do. It gives up on an item it
   can't reach in 5 seconds.
-- **Not built yet.** Mining, tool choice for digging, bows, `collect`, `give`, `craft` and `sleep` come
-  in later slices.
+- **Not built yet** in slice 1: mining, tool choice for digging, bows, `collect`, `give`, `craft`,
+  `smelt` and `sleep`. They are built now; see [Work skills as built](#work-skills-as-built).
 - **Known gaps carried over from LAN guests.** A real LAN guest's own death doesn't drop their items
   (companions do drop theirs), and a real guest's kills still credit the host.
 - **Testing.** `tools/test_companion.py` plays a fixed-seed world offscreen. It covers:
@@ -252,6 +252,120 @@ failure back to the brain as text.
   That covers its brain, its body's physics, pickups and the mobs' view of it. A path search takes up to
   about 4 ms, and only a handful run each second. When macOS runs the cores slowly, the same work
   measures up to 0.2–0.29 ms.
+
+### Work skills as built
+
+- **Commands.** `/companion do` and `horizon-ctl companion do` take:
+  - `collect|get|mine|chop N ITEM` (an item, `#tag` or `block:ID`);
+  - `give [me] N ITEM`;
+  - `craft N ITEM`, and `make N ITEM`, which gathers the basic materials it lacks first;
+  - `smelt N ITEM` (the input or the result);
+  - `sleep`.
+
+  They are `CompanionCommand::{Collect, Give, Craft, Smelt, Sleep}`. While one runs, a
+  `CompanionReport::Progress` ("collect 3/8 oak_log") is sent each time the count moves, then
+  `SkillFinished` or `SkillFailed` with the reason ("no iron ore within 48 blocks", "needs a stone
+  pickaxe", "missing 2 sticks"). Stop and the movement orders (follow, stay, come, go to, defend)
+  cancel the work, as does death. A fight pauses it: the companion goes back to work afterwards.
+  The work running when the world is saved is saved with the companion (`task` in its file) and
+  starts again after loading, with what is left of the count.
+- **Tasks.** A skill can need another first: a crafting chain needs logs, a smelt needs a furnace. Each
+  is a task on a small stack (5 deep). The one on top runs. When it finishes, the one below it carries
+  on. When it fails, the whole stack fails with its reason. One exception: a `make` whose collect fails
+  for want of a tool crafts that tool first, then collects again.
+- **Mining** goes through the guest dig path, as a player's does. It sends a START, and the server
+  mines with survival break times (`tick_mining`), then sends a STOP once the block is gone.
+  - It holds the best tool it carries: the stack that lets the block drop, and among those the fastest
+    (`Items::mining_speed`, `correct_for_drops`; pickaxes, axes, shovels and hoes of every tier, and
+    shears). A block that needs a tool it lacks is left alone, and if nothing else is found the collect
+    fails with the tool it needs.
+  - It stands within 4.5 blocks, the block in sight. It looks for a standing spot around the block,
+    nearest first. Natural blocks in the way (earth, stone, leaves, ores) are dug through.
+  - Out of reach from any floor, it digs a staircase down, one block lower per step, never straight
+    down. A step needs a floor under it, nowhere near the void.
+  - It never digs a block with lava above or beside it, nor a container, bed or workstation someone
+    placed. When the only blocks left are beside lava, the collect fails with "… I can dig safely (lava
+    beside it)". Buried by falling gravel, it digs out the block at its eyes first.
+  - Drops in a pit or behind stone: it digs a staircase step to them through natural blocks, since
+    walking round from inside a mine can be long. When walking to a crafting table, furnace or bed gets
+    stuck (shut in a mine it dug), it digs a staircase toward it the same way.
+  - No torches are needed.
+- **Collect** searches the loaded chunks within 48 blocks for the nearest source.
+  - The search reads a few sections a tick, nearest first (6 × 4096 block reads at most). A section
+    whose palette holds none of the wanted states is passed over unread
+    (`PalettedContainer::may_contain`).
+  - Sources are blocks whose loot table drops the item without a tool match (silk touch, shears), and
+    items lying near. For food it also hunts mobs whose loot gives the item: cows, pigs, chickens,
+    sheep, rabbits, zombies, spiders and skeletons.
+  - Some items no block drops plainly but are blocks themselves (iron ore, stone). For those the block
+    is what it collects, and it counts the blocks it breaks while picking up what they drop (raw iron).
+    `_ore` includes the deepslate ore.
+- **Give** walks within 2.5 blocks of its owner (or teleports beside an owner too far away) and throws
+  the items with vanilla's toss (`Player.drop`): the stack in hand, with the drop-all action for a
+  whole stack and drop-one for the rest. The owner picks them up as from any player, and it doesn't
+  pick its own throw back up.
+- **Craft** plans with the recipe book (`companion/work.rs`, `Planner`).
+  - Each cell takes one item: from its stock first, else from a recipe whose own cells can be filled,
+    up to 5 levels deep. It prefers the recipe named after the item (oak planks from oak logs), and it
+    remembers what it failed to make so a plan stays small.
+  - What it can't make comes out as the raw materials missing ("missing 3 logs"), not as some
+    intermediate.
+  - A plan that needs a 3x3 grid uses a crafting table within 16 blocks. Without one, it crafts a table
+    (planned in) and places it beside itself.
+  - It fills the grid with real container clicks: a pickup and single placements in the inventory menu
+    or the table's, then a quick-move on the result. The server's crafting code does the rest.
+  - `make` collects what is missing and plans again. The plan is cached while its inventory doesn't
+    change.
+- **Smelt** uses a furnace within 16 blocks, else places one it carries, else crafts one from the 8
+  cobblestone it carries. Fuel comes from its inventory: the fuel that burns longest (coal blocks,
+  dried kelp blocks, blaze rods, coal and charcoal, then logs, planks and sticks; never crimson or
+  warped wood), only as much as the batch needs. It loads the input and fuel through the furnace menu
+  and comes back for the results until it has the count. It gives up after a minute without
+  progress, or when the furnace holds someone else's smelting.
+- **Sleep.** When its owner sleeps at night (or in a thunderstorm), it goes to a free bed within 16
+  blocks of theirs and uses it with a right click (`BedBlock.useWithoutItem`, the guest's sleep rules:
+  monsters near, too far). This happens once a night. It gets up when its owner does, or in the
+  morning. A companion's bed doesn't count toward the sleeping players needed to skip the night. Asked
+  to `sleep` on its own, it sleeps until morning.
+- **Bows.** With a bow and arrows, at 5–28 blocks with the target in sight, it draws for 20 ticks (a
+  full draw) and releases (use item, then RELEASE_USE_ITEM). It aims above the target for the arrow's
+  drop (speed 3, gravity 0.05, drag 0.99, solved for the pitch by `bow_pitch`), and leads a moving
+  target by the flight time. Closer than 5 blocks, out of sight, or with no arrows, it puts the bow
+  away and fights in melee with its best weapon.
+- **Testing.** `tools/test_companion_skills.py` builds an arena with commands in a fixed-seed world: a
+  platform on 8 blocks of stone, three oak trees, three buried iron ores and a fourth beside lava. Its
+  scenarios, in order:
+  - "collect 8 oak log" in the trees;
+  - "make a wooden pickaxe" from an empty inventory (logs, planks, sticks, then a table it places);
+  - "get 1 iron ore" with a wooden pickaxe, which fails with "needs a stone pickaxe";
+  - "get 3 iron ore" with a stone pickaxe given, which leaves 3 raw iron in its inventory; it then
+    leaves the ore beside lava alone and says why;
+  - "smelt 3 raw iron" at a furnace;
+  - "give me 4 planks", after which the owner holds exactly 4 more;
+  - a collect stopped on command, saved, and taken up again after a reload;
+  - sleeping beside its owner, then getting up in the morning;
+  - a skeleton shot dead from 14 blocks, then a zombie fought with the sword.
+
+  `--runs 3` repeats the whole thing in fresh worlds. Every run passed, three in a row, with no retries.
+- **Cost.** These are `companion cost` numbers on the Mac mini (M4 Pro) over the test's three runs. The
+  work skills' share of a companion's tick (`work_mean_ms`, `work_max_ms`):
+
+  | Phase | Mean | Worst |
+  |---|---|---|
+  | collect | 0.006–0.010 ms | 0.34 ms |
+  | make from nothing | 0.016–0.018 ms | 0.54 ms |
+  | mining | 0.005–0.007 ms | 0.20 ms |
+  | smelt | 0.003–0.007 ms | 0.16 ms |
+
+  The hub's whole tick (body, guest and view) averages 0.04–0.12 ms, with a worst of 1.9–5.5 ms. Path
+  searches cost 0.35 ms at most.
+  - The few one-off costs are cached for the session:
+    - what every block drops, read from the loot tables once: about 2 ms;
+    - the recipe index: 0.5 ms;
+    - the block-to-states index: under 1 ms.
+  - Block searches read at most 6 sections a tick, and sections whose palette can't hold the block cost
+    nothing. A 48-block search (about 340 sections) usually ends in a few ticks.
+  - Craft plans are cached until the inventory changes.
 
 ## Models and runtime
 

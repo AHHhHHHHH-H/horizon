@@ -27,6 +27,13 @@ pub(super) struct GuestCrafting {
     machine: Option<(i32, Box<Menu>)>,
 }
 
+impl GuestCrafting {
+    /// The window of the crafting table the guest has open.
+    pub(super) fn table_window(&self) -> Option<i32> {
+        self.table.as_ref().map(|t| t.0)
+    }
+}
+
 /// ServerboundContainerClickPacket's input.
 pub(super) fn input(id: i32) -> Input {
     match id {
