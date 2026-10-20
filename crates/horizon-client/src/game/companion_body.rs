@@ -85,6 +85,12 @@ impl Game<'_> {
             .as_ref()
             .filter(|p| !p.health.dead_or_dying())
             .map(|p| [p.position.x, p.position.y, p.position.z]);
+        if self.world.game_time % 200 == 0 && !self.companions.struck.is_empty() {
+            let mobs = &self.mobs;
+            self.companions
+                .struck
+                .retain(|id, _| mobs.iter().any(|m| m.id == *id && m.alive()));
+        }
         let mut bi = 0;
         while bi < host.companions.len() {
             let mut b = host.companions.remove(bi);
@@ -173,7 +179,7 @@ impl Game<'_> {
             self.companion_gear(host, b);
         }
         // Self-preservation: it backs off when badly hurt.
-        if !b.retreating && health < c::RETREAT_BELOW {
+        if !b.retreating && health > 0.0 && health < c::RETREAT_BELOW {
             b.retreating = true;
             b.target = None;
             self.companion_report(b, CompanionReport::SkillStarted(Skill::Retreat));
@@ -335,7 +341,8 @@ impl Game<'_> {
     /// Health lost since last tick: a Hurt report, and who did it (the mob
     /// that sees it as its player, nearest first) to answer.
     fn companion_notice_hurt(&mut self, host: &LanHost, b: &mut Body, pos: [f64; 3], health: f32) {
-        if health < b.last_health - 0.01 {
+        // Death itself is the guest tick's to report.
+        if health > 0.0 && health < b.last_health - 0.01 {
             let amount = b.last_health - health;
             let by = self
                 .mobs
@@ -531,9 +538,13 @@ impl Game<'_> {
                 let d = c::distance(pos, owner);
                 match c::follow_step(d, b.moving) {
                     FollowStep::Teleport => {
-                        b.moving = false;
                         if self.companion_place_near(host, b, owner) {
+                            b.moving = false;
                             self.companion_report(b, CompanionReport::Teleported);
+                        } else {
+                            // Nowhere to stand by the owner yet: run after them.
+                            b.moving = true;
+                            let _ = self.companion_steer(host, b, owner, c::FOLLOW_NEAR, true);
                         }
                     }
                     step @ (FollowStep::Walk | FollowStep::Sprint) => {
@@ -708,7 +719,7 @@ impl Game<'_> {
         let climb = aim[1] > pos[1] + 0.5 && c::horizontal(pos, aim) < 1.5 && on_ground;
         b.keys.jump = climb || in_water || ticks < jump_until;
         // Self-preservation: no step into lava, fire or a big fall.
-        if !self.companion_safe_ahead(pos, b.yaw) {
+        if !self.companion_safe_ahead(pos, b.yaw, b.keys.sprint) {
             b.keys.forward = false;
             b.keys.sprint = false;
             b.keys.jump = in_water;
@@ -739,13 +750,19 @@ impl Game<'_> {
         Finder::new(&w, &mob, Evaluator::Walk).find(&[target], 64.0, near.floor() as i32, 1024)
     }
 
-    /// Whether the step ahead is safe: no lava or fire at the feet or head,
-    /// and ground within a 3-block fall that is not lava or fire.
-    fn companion_safe_ahead(&self, pos: [f64; 3], yaw: f32) -> bool {
+    /// Whether the steps ahead are safe: no lava or fire at the feet or head,
+    /// and ground within a 3-block fall that is not lava or fire. A sprint
+    /// carries on after the keys let go, so it looks further ahead.
+    fn companion_safe_ahead(&self, pos: [f64; 3], yaw: f32, sprinting: bool) -> bool {
+        let reach: &[f64] = if sprinting { &[0.7, 1.4] } else { &[0.7] };
+        reach.iter().all(|&d| self.companion_safe_at(pos, yaw, d))
+    }
+
+    fn companion_safe_at(&self, pos: [f64; 3], yaw: f32, ahead: f64) -> bool {
         let r = f64::from(yaw).to_radians();
         let (x, z) = (
-            (pos[0] - r.sin() * 0.7).floor() as i32,
-            (pos[2] + r.cos() * 0.7).floor() as i32,
+            (pos[0] - r.sin() * ahead).floor() as i32,
+            (pos[2] + r.cos() * ahead).floor() as i32,
         );
         let y = pos[1].floor() as i32;
         let facts = self.res.facts();
@@ -801,6 +818,8 @@ impl Game<'_> {
         self.combat.last_hurt_mob = owner_hurt;
         if hit {
             host.mob_players.insert(id, b.conn);
+            // Its kill is its own, not its owner's (game/creatures.rs mob_died).
+            self.companions.struck.insert(id, self.world.game_time);
         }
         if let Some(g) = host.hub.guest(b.conn) {
             (b.yaw, b.pitch) = (g.yaw, g.pitch);
@@ -987,6 +1006,21 @@ impl Game<'_> {
     fn companion_spot(&self, b: &mut Body, at: [f64; 3]) -> Option<[f64; 3]> {
         let base = at.map(|v| v.floor() as i32);
         let w = self.mob_world_base(&[]);
+        let fits = |p: [i32; 3]| {
+            let below = w.facts.get(w.world.block(p[0], p[1] - 1, p[2]));
+            if !below.full_collision || below.name.ends_with("_leaves") {
+                return None;
+            }
+            if w.facts.get(w.world.block(p[0], p[1], p[2])).fluid != Fluid::None {
+                return None;
+            }
+            let (x, y, z) = (f64::from(p[0]) + 0.5, f64::from(p[1]), f64::from(p[2]) + 0.5);
+            w.no_collision(Aabb::new(
+                Vec3::new(x - 0.3, y, z - 0.3),
+                Vec3::new(x + 0.3, y + 1.8, z + 0.3),
+            ))
+            .then_some([x, y, z])
+        };
         for _ in 0..10 {
             let xd = b.next_int(7) - 3;
             let zd = b.next_int(7) - 3;
@@ -994,23 +1028,30 @@ impl Game<'_> {
                 continue;
             }
             let yd = b.next_int(3) - 1;
-            let p = [base[0] + xd, base[1] + yd, base[2] + zd];
-            let below = w.facts.get(w.world.block(p[0], p[1] - 1, p[2]));
-            if !below.full_collision || below.name.ends_with("_leaves") {
-                continue;
-            }
-            if w.facts.get(w.world.block(p[0], p[1], p[2])).fluid != Fluid::None {
-                continue;
-            }
-            let (x, y, z) = (f64::from(p[0]) + 0.5, f64::from(p[1]), f64::from(p[2]) + 0.5);
-            if w.no_collision(Aabb::new(
-                Vec3::new(x - 0.3, y, z - 0.3),
-                Vec3::new(x + 0.3, y + 1.8, z + 0.3),
-            )) {
-                return Some([x, y, z]);
+            if let Some(spot) = fits([base[0] + xd, base[1] + yd, base[2] + zd]) {
+                return Some(spot);
             }
         }
-        None
+        // The owner on a tree or a ledge: the nearest floor a few blocks
+        // around and below, so it never stays far behind for want of luck.
+        let mut best: Option<(i32, [f64; 3])> = None;
+        for xd in -3i32..=3 {
+            for zd in -3i32..=3 {
+                if xd.abs() < 2 && zd.abs() < 2 {
+                    continue;
+                }
+                for yd in (-6..=2).rev() {
+                    if let Some(spot) = fits([base[0] + xd, base[1] + yd, base[2] + zd]) {
+                        let cost = xd * xd + zd * zd + yd * yd;
+                        if best.is_none_or(|(c, _)| cost < c) {
+                            best = Some((cost, spot));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        best.map(|(_, spot)| spot)
     }
 
     /// Teleport beside the owner, if a spot is free.
