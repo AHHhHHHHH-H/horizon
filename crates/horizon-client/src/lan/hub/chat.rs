@@ -218,7 +218,9 @@ impl Hub {
             target: None,
         };
         let line = format!("<{name}> {}", message.content);
+        let said = message.content.clone();
         self.broadcast_chat(&message, &bound, line, events);
+        events.push(HostEvent::Said { name, text: said });
     }
 
     /// handleChatSessionUpdate: a new profile key, validated against the

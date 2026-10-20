@@ -121,6 +121,8 @@ pub enum HostEvent {
         line: String,
         secure: bool,
     },
+    /// What a guest said in chat, for the companions to hear (game/companion_ai.rs).
+    Said { name: String, text: String },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
     /// A server log error (LOGGER.error).
@@ -382,6 +384,23 @@ impl Hub {
             chat_type: play::ChatTypeBound {
                 chat_type: self.chat_type,
                 name: literal(sender),
+                target: None,
+            },
+        }));
+    }
+    /// A companion's chat line (game/companion_ai.rs): a disguised chat from its name with the
+    /// AI marker. Shift-clicking the line inserts `@Name ` (vanilla's `insertion`), which also
+    /// marks it as a companion's line for a Horizon guest with No AI ([`is_companion_line`]).
+    pub fn companion_chat(&self, name: &str, text: &str) {
+        let message = Tag::compound([
+            ("text", literal(text)),
+            ("insertion", literal(&format!("@{name} "))),
+        ]);
+        self.broadcast(&C::DisguisedChat(play::DisguisedChat {
+            message,
+            chat_type: play::ChatTypeBound {
+                chat_type: self.chat_type,
+                name: crate::companion::listed_name(name),
                 target: None,
             },
         }));
@@ -2471,4 +2490,20 @@ fn ticking_state(rate: f32, frozen: bool) -> C {
     w.f32(rate);
     w.bool(frozen);
     raw(ids::TICKING_STATE, w.data)
+}
+
+/// Whether a disguised chat is a companion's line ([`Hub::companion_chat`]): its text inserts
+/// `@Name ` and the sender's name ends with the AI marker.
+pub fn is_companion_line(message: &Tag, sender: &Tag) -> bool {
+    let insertion = matches!(message.get("insertion"), Some(Tag::String(s)) if s.to_string_lossy().starts_with('@'));
+    let marked = match sender.get("extra") {
+        Some(Tag::List(parts)) => parts.iter().any(|p| match p.get("extra") {
+            Some(Tag::List(inner)) => inner
+                .iter()
+                .any(|t| matches!(t.get("text"), Some(Tag::String(s)) if s.to_string_lossy() == "[AI]")),
+            _ => matches!(p.get("text"), Some(Tag::String(s)) if s.to_string_lossy() == "[AI]"),
+        }),
+        _ => false,
+    };
+    insertion && marked
 }

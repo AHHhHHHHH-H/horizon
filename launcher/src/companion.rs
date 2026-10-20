@@ -37,8 +37,11 @@ fn setup() -> Setup {
     Setup::new(&home(), &game_language())
 }
 
+/// The settings, with No AI also on when the game's Extras switch says so.
 pub fn load_settings() -> CompanionSettings {
-    CompanionSettings::load(&home())
+    let mut settings = CompanionSettings::load(&home());
+    settings.no_ai |= horizon_companion::settings::extras_no_ai(&home());
+    settings
 }
 
 /// Saves the settings and tells the game's extras file about No AI.

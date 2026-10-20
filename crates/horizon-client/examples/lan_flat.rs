@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 HostEvent::Chat { line, .. } | HostEvent::Warn(line) | HostEvent::Error(line) => {
                     println!("{line}")
                 }
-                HostEvent::Left(_) => {}
+                HostEvent::Left(_) | HostEvent::Said { .. } => {}
             }
         }
         std::thread::sleep(Duration::from_millis(50));

@@ -126,6 +126,10 @@ impl Language {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+    /// Every key and its text.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }

@@ -105,6 +105,9 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// No AI: every companion feature hidden (docs/companions.md). The launcher writes it too
+    /// (`horizon_companion::settings::sync_extras`).
+    pub no_ai: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -132,6 +135,7 @@ impl Default for Extras {
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            no_ai: false,
         }
     }
 }
@@ -194,6 +198,7 @@ impl Extras {
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                "noAi" => e.no_ai = flag(e.no_ai),
                 _ => {}
             }
         }
@@ -201,7 +206,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n",
+            "fullbright:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nnoAi:{}\n",
             bool_text(self.fullbright),
             bool_text(self.zoom),
             self.zoom_key,
@@ -229,6 +234,7 @@ impl Extras {
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
             self.sort_key,
+            bool_text(self.no_ai),
         )
     }
     /// Binds the extra key `name` (`ZOOM_KEY`, `SORT_KEY`); false for
@@ -445,6 +451,7 @@ pub enum Item {
     MouseTweaksWheel,
     Sort,
     SortKey,
+    NoAi,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -480,6 +487,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
+        Err("AI"),
+        Ok(NoAi),
     ]
 }
 /// "1 block", "2 blocks", "½ block".
@@ -521,6 +530,7 @@ impl Item {
             Item::FpsLows => "Minimum and 1% low",
             Item::Keystrokes => "Keystrokes",
             Item::KeystrokesCps => "Clicks per second",
+            Item::NoAi => "No AI",
         }
     }
     /// What the row says under its caption.
@@ -559,6 +569,9 @@ impl Item {
             }
             Item::Keystrokes => "Movement keys, jump and mouse buttons as you press them.",
             Item::KeystrokesCps => "Clicks in the last second under each mouse button.",
+            Item::NoAi => {
+                "Hides the AI companion everywhere, here and in the launcher: nothing is downloaded or started."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -588,6 +601,7 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
             Item::Sort => e.sort,
+            Item::NoAi => e.no_ai,
             _ => return None,
         })
     }
@@ -635,6 +649,7 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
             Item::Sort => e.sort = !e.sort,
+            Item::NoAi => e.no_ai = !e.no_ai,
             Item::MinimapCorner => e.minimap_corner = next(&Corner::ALL, e.minimap_corner, back),
             Item::MinimapSize => {
                 let sizes: Vec<u8> = MINIMAP_SIZES.iter().map(|s| s.0).collect();

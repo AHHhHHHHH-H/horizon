@@ -1962,6 +1962,10 @@ impl Game<'_> {
                 let line = self.format_chat(&p.chat_type, &content);
                 self.chat_line(line);
             }
+            // No AI hides companions' lines (lan::hub::is_companion_line).
+            C::DisguisedChat(p)
+                if self.settings.extras.no_ai
+                    && horizon_client::lan::hub::is_companion_line(&p.message, &p.chat_type.name) => {}
             C::DisguisedChat(p) => {
                 let lang = self
                     .remote
