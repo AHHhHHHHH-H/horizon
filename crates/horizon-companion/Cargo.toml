@@ -24,8 +24,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# The runtime's job object (killed with the game), priority class and free disk space.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
+# The runtime's job object (killed with the game), priority class, free disk space and the
+# Credential Manager for a cloud key.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [lints]
 workspace = true

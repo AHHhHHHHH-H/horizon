@@ -18,7 +18,8 @@ use serde_json::value::RawValue;
 
 use crate::reply::{self, Reply, SayStream, Sentences};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Provider {
     /// The runtime this crate supervises.
     Local,

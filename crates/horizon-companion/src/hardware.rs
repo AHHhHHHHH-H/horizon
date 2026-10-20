@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::catalogue::Tier;
+use crate::catalogue::{Backend, Tier};
 
 /// The graphics memory left to the game itself when the model's share is worked out.
 pub const GAME_VRAM_MB: u64 = 1536;
@@ -37,6 +37,19 @@ pub struct Gpu {
     pub total_mb: u64,
     pub free_mb: u64,
     pub kind: GpuKind,
+}
+
+impl Gpu {
+    /// The backend that drives it, from its llama.cpp name.
+    pub fn backend(&self) -> Backend {
+        if self.id.starts_with("MTL") {
+            Backend::Metal
+        } else if self.id.starts_with("CUDA") {
+            Backend::Cuda
+        } else {
+            Backend::Vulkan
+        }
+    }
 }
 
 impl Hardware {
@@ -72,20 +85,17 @@ impl Hardware {
     }
 }
 
-/// The tier the simple screen sets up: the design's table, highest first.
+/// The brain tier the simple screen sets up: the brain of [`crate::plan::plan`] with the catalogue's
+/// options alone, Light when not even that fits.
 pub fn pick_tier(hw: &Hardware) -> Tier {
-    let vram_gb = hw.usable_vram_mb() as f64 / 1024.0;
-    let ram_gb = hw.nominal_ram_gb();
-    let mac = hw.apple_silicon;
-    if vram_gb >= 11.0 || (mac && ram_gb >= 32) {
-        Tier::Best
-    } else if vram_gb >= 8.0 || (mac && ram_gb >= 24) {
-        Tier::Strong
-    } else if vram_gb >= 5.0 || (mac && ram_gb >= 16) || (ram_gb >= 16 && hw.physical_cores >= 6) {
-        Tier::Standard
-    } else {
-        Tier::Light
-    }
+    let plan = crate::plan::plan(hw, &crate::plan::brain_options(), &[], None);
+    plan.pick(crate::plan::Part::Brain)
+        .and_then(|p| {
+            Tier::ALL
+                .into_iter()
+                .find(|t| p.option.id.starts_with(&format!("{}@", t.model().id)))
+        })
+        .unwrap_or(Tier::Light)
 }
 
 /// `--threads`: physical cores minus one for the game, at least 1; a 2-core PC uses both, since one
@@ -455,8 +465,9 @@ mod tests {
         assert_eq!(hw.gpus.len(), 1);
         assert_eq!(hw.gpus[0].kind, GpuKind::Discrete);
         assert_eq!(hw.gpus[0].free_mb, 11520);
-        // 11.25 GB free minus the game's 1.5 GB.
-        assert_eq!(pick_tier(&hw), Tier::Strong);
+        // 11.25 GB free minus the game's 1.5 GB holds Gemma 4 12B (8.1 GB with its buffers): the
+        // design's 11 GB threshold was a guess before measuring.
+        assert_eq!(pick_tier(&hw), Tier::Best);
         assert_eq!(
             plan_offload(&hw, Tier::Strong.model().size(), 1024),
             Offload::All {

@@ -16,6 +16,9 @@ pub enum Backend {
     Metal,
     /// Any GPU with a Vulkan driver (NVIDIA, AMD, Intel); the build also has the CPU backend.
     Vulkan,
+    /// NVIDIA's own API. llama.cpp's CUDA builds are not shipped (Vulkan covers NVIDIA); other
+    /// sidecars' options may need it.
+    Cuda,
     Cpu,
 }
 
@@ -24,6 +27,7 @@ impl Backend {
         match self {
             Backend::Metal => "Metal",
             Backend::Vulkan => "Vulkan",
+            Backend::Cuda => "CUDA",
             Backend::Cpu => "CPU",
         }
     }
