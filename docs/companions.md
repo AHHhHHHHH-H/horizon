@@ -67,22 +67,29 @@ held item and animations.
 
 - **Single player.** A plain single-player world has no hub. Starting the companion starts one with
   `listen: false`, the same hub "Open to LAN" uses, so the companion runs on code players exercise every
-  day. On the integrated server thread (#731), it lives in that thread's hub.
+  day. See "Open to LAN with a companion" below. The integrated server thread (#731) is not supported
+  yet (see "Slice 1 as built").
 - **Movement** is simulated on the server. The skill picks inputs (forward, strafe, jump, sneak, sprint,
   look) and `MotionWorld::controlled_simulation_tick` moves it with player physics. A path comes from the
   vanilla PathFinder port (`mobs/path.rs`, a player-sized walk evaluator) and is followed with `mobs/nav.rs`
   logic. The companion moves like a player and can't fly through walls.
 - **Looks.**
-  - It gets one of vanilla's default skins (Steve, Alex, Ari, Efe, Kai, Makena, Noor, Sunny, Zuri), read
-    from the player's game files, never shipped. This needs per-entity skin selection, which also fixes
-    real players all rendering with the default skin today.
-  - Its name tag carries a small "AI" marker, so nobody mistakes it for a person.
+  - It gets one of vanilla's default skins (Steve, Alex, Ari, Efe, Kai, Makena, Noor, Sunny, Zuri), wide
+    or slim, read from the player's game files, never shipped. The skin follows from its UUID exactly as
+    vanilla's `DefaultPlayerSkin.get(uuid)` picks one, so every client, vanilla included, shows the same
+    one. The same per-entity selection gives remote players without a downloaded skin their own default
+    skin instead of everyone wearing one.
+  - Its name tag and tab-list name carry an aqua "[AI]" marker, so nobody mistakes it for a person.
 - **Life.** It has health, hunger and armour like a player. It dies, drops its items (keepInventory is
   respected), and respawns next to its owner 10 seconds later, then comments on it.
 - **Saving.** `companions/<uuid>.json` in the world folder holds its name, personality, level, memory
-  notes and owner. Its inventory and position are saved like a guest's player data.
-- **Portals.** If the companion is within 16 blocks when its owner changes dimension, it comes along. It
-  either uses the portal itself on multi-level servers, or arrives with the owner in the in-window mode.
+  notes, owner, whether it was in the world (`active`), and its standing order (follow, stay with its
+  post, defend, idle; hold fire). Its inventory, position, health and food are saved like a guest's
+  player data, `players/data/<uuid>.dat`. An active companion comes back when the world is opened.
+- **Portals.** If the companion is within 16 blocks when its owner changes dimension, it comes along and
+  arrives beside them. Otherwise it stays behind: it is saved and leaves the hub, and it rejoins when its
+  owner comes back to that dimension. This is the in-window mode only, where the world holds one level
+  at a time.
 
 ### Skills (Rust, deterministic)
 
@@ -182,6 +189,69 @@ failure back to the brain as text.
   marker.
 - A host with No AI never spawns one.
 - Dedicated servers: later, behind a server setting that is off by default.
+
+### Open to LAN with a companion
+
+- A companion in a world that is not open to LAN runs in a **private hub**. That hub doesn't listen or
+  announce. `lan status` still reports the world as closed, and the game still pauses on the pause menu,
+  as single player does.
+- **Open to LAN** reuses that hub. It starts listening and announcing with the screen's settings (port,
+  commands, game mode), and the companion stays in the world.
+- **Closing to LAN** while a companion is in the world kicks the real guests and saves them, then stops
+  listening. The hub becomes private again, so the companion stays.
+- **Dismissing** the last companion of a private hub closes the hub. A world that is open to LAN stays
+  open.
+- **Leaving the world** saves and removes companions before the hub closes, so each one is saved once,
+  with its owner's world.
+
+### Slice 1 as built
+
+- **What players can type.** The commands are `/companion spawn [name]`, `/companion dismiss [name]`,
+  `/companion do [name] <command>`, `/companion list`, `summary`, `reports` and `cost`. They are also on
+  the control socket and in horizon-ctl as `companion ...`. The Rust API is in `companion/mod.rs`:
+  - `CompanionCommand`;
+  - the `CompanionReport` stream (`Game::companion_reports`);
+  - `state_summary()`, about 250 tokens.
+- **Owner.** Only the host (single player or the LAN host) can own a companion. Remote play on a
+  server, and the integrated server thread, are not supported yet: `companion spawn` refuses there.
+- **Game mode.** It always plays survival, whatever the world's or the owner's mode, so mobs see it and
+  it can be hurt.
+- **Credit.** A mob it kills drops a player's loot (experience included), but gives its owner no
+  statistics, scoreboard points or advancements. Its own advancements are not announced in chat.
+- **Movement.**
+  - Paths come from `mobs/path.rs` with a player-sized walk evaluator: step 0.6, 3-block falls, swimming.
+  - A search visits up to 512 nodes, PathNavigation's budget for a follow range of 32.
+  - It plans again every 10 ticks while the goal moves. A plan that falls short waits 15, 30, then 60
+    ticks.
+  - Before each step it looks 0.7 blocks ahead, 1.4 when sprinting, and won't step into lava, fire,
+    magma, cactus, powder snow, or a drop of more than 4 blocks.
+  - With its owner in the air (falling, flying in creative), it heads for the ground below them.
+- **Teleports.** It teleports to its owner only once the owner stands on something. It uses
+  `TamableAnimal.tryToTeleportToOwner`'s ten tries, then the nearest floor around and under the owner.
+- **Gear and food.** It wears the best armour, holds the best weapon (attack damage per cooldown), and
+  eats below 14 food, or when it retreats.
+- **Pickups.** It picks up items near its owner when it has nothing else to do. It gives up on an item it
+  can't reach in 5 seconds.
+- **Not built yet.** Mining, tool choice for digging, bows, `collect`, `give`, `craft` and `sleep` come
+  in later slices.
+- **Known gaps carried over from LAN guests.** A real LAN guest's own death doesn't drop their items
+  (companions do drop theirs), and a real guest's kills still credit the host.
+- **Testing.** `tools/test_companion.py` plays a fixed-seed world offscreen. It covers:
+  - spawn and follow (walking 32 blocks);
+  - the teleport past 48 blocks;
+  - pickups and auto-equip;
+  - eating under Hunger;
+  - a zombie fight;
+  - death drops and the 10-second respawn;
+  - save and reload, with its position and standing order;
+  - dismiss.
+
+  `--frames` compares frame times without a companion, with one, and after dismissing it.
+- **Cost.** Nothing runs until a companion is spawned: there is no hub and no tick. With one companion
+  on the Mac mini (M4 Pro), the hub's tick costs 0.035–0.07 ms on average when the CPU is at full clock.
+  That covers its brain, its body's physics, pickups and the mobs' view of it. A path search takes up to
+  about 4 ms, and only a handful run each second. When macOS runs the cores slowly, the same work
+  measures up to 0.2–0.29 ms.
 
 ## Models and runtime
 
