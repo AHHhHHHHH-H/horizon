@@ -29,6 +29,8 @@
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Horizon listens only while you hold the Talk to Companion key, so your AI companion can understand what you say. Your voice is turned into text on this computer and is not recorded or sent anywhere.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Horizon is MIT licensed. Not an official Minecraft product; not approved by or associated with Mojang or Microsoft.</string>
 </dict>

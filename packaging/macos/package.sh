@@ -30,7 +30,9 @@ identity=${MACOS_SIGN_IDENTITY:--}
 if [[ "$identity" == "-" ]]; then
   codesign --force --sign - "$app"
 else
-  codesign --force --options runtime --timestamp --sign "$identity" "$app"
+  # The hardened runtime blocks the microphone without this entitlement (push-to-talk to a companion).
+  codesign --force --options runtime --timestamp --entitlements "$here/Horizon.entitlements" \
+    --sign "$identity" "$app"
 fi
 codesign --verify --strict --verbose=2 "$app"
 

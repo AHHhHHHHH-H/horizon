@@ -1436,6 +1436,7 @@ dependencies = [
  "horizon-friends",
  "horizon-mods",
  "horizon-protocol",
+ "horizon-senses",
  "horizon-server-files",
  "horizon-shaderpack",
  "horizon-telemetry",
@@ -1586,6 +1587,19 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "ring",
+]
+
+[[package]]
+name = "horizon-senses"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "libc",
+ "serde",
+ "serde_json",
+ "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

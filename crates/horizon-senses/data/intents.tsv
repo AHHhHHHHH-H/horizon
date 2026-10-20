@@ -1,0 +1,1168 @@
+# The classifier's example bank: intent, language, line. Embedded once at setup and cached.
+# Negations are labelled with what they mean: "don't follow me" is stay, "don't shoot" is hold_fire.
+# The held-out test set is intents-test.tsv; nothing there is copied from here.
+follow	en	follow me
+follow	en	come with me
+follow	en	stay close to me
+follow	en	keep up with me
+follow	en	folow me pls
+follow	en	tag along
+follow	fr	suis-moi
+follow	fr	suis moi stp
+follow	fr	viens avec moi
+follow	fr	reste près de moi
+follow	fr	colle-moi
+follow	es	sígueme
+follow	es	sigueme porfa
+follow	es	ven conmigo
+follow	es	no te separes de mí
+follow	es	quédate cerca de mí
+follow	de	folge mir
+follow	de	folg mir mal
+follow	de	komm mit mir
+follow	de	bleib bei mir
+follow	de	lauf mir hinterher
+follow	pt	me segue
+follow	pt	siga-me
+follow	pt	vem comigo
+follow	pt	fica perto de mim
+follow	pt	me acompanha
+stay	en	stay here
+stay	en	wait here
+stay	en	don't move
+stay	en	don't follow me
+stay	en	stop following me
+stay	en	hold this position
+stay	fr	reste ici
+stay	fr	attends ici
+stay	fr	ne bouge pas
+stay	fr	ne me suis pas
+stay	fr	arrête de me suivre
+stay	es	quédate aquí
+stay	es	espera aquí
+stay	es	no te muevas
+stay	es	no me sigas
+stay	es	deja de seguirme
+stay	de	bleib hier
+stay	de	warte hier
+stay	de	beweg dich nicht
+stay	de	folge mir nicht
+stay	de	hör auf mir zu folgen
+stay	pt	fica aqui
+stay	pt	espera aqui
+stay	pt	não se mexe
+stay	pt	não me segue
+stay	pt	para de me seguir
+come	en	come here
+come	en	over here
+come	en	get over here
+come	en	come to me
+come	en	cmere
+come	fr	viens ici
+come	fr	viens là
+come	fr	ramène-toi
+come	fr	viens par ici
+come	fr	approche
+come	es	ven aquí
+come	es	ven acá
+come	es	acércate
+come	es	ven para acá
+come	es	vente pa'ca
+come	de	komm her
+come	de	komm hierher
+come	de	komm mal her
+come	de	hierher
+come	de	komm zu mir
+come	pt	vem aqui
+come	pt	vem cá
+come	pt	chega aqui
+come	pt	vem pra cá
+come	pt	vem até mim
+stop	en	stop
+stop	en	stop that
+stop	en	cancel
+stop	en	never mind
+stop	en	quit it
+stop	fr	arrête
+stop	fr	stop
+stop	fr	laisse tomber
+stop	fr	annule
+stop	fr	arrête ça
+stop	es	para
+stop	es	detente
+stop	es	déjalo
+stop	es	cancela
+stop	es	ya basta
+stop	de	stopp
+stop	de	hör auf
+stop	de	lass das
+stop	de	abbrechen
+stop	de	vergiss es
+stop	pt	para
+stop	pt	pare
+stop	pt	deixa pra lá
+stop	pt	cancela
+stop	pt	chega
+go_to	en	go there
+go_to	en	go over there
+go_to	en	go to that tree
+go_to	en	walk to the house
+go_to	en	head to the cave
+go_to	fr	va là-bas
+go_to	fr	va vers cet arbre
+go_to	fr	va à la maison
+go_to	fr	dirige-toi vers la grotte
+go_to	fr	vas y
+go_to	es	ve allí
+go_to	es	ve hacia ese árbol
+go_to	es	ve a la casa
+go_to	es	camina hasta la cueva
+go_to	es	anda para allá
+go_to	de	geh dahin
+go_to	de	geh zu dem baum
+go_to	de	lauf zum haus
+go_to	de	geh zur höhle
+go_to	de	geh da rüber
+go_to	pt	vai lá
+go_to	pt	vai até aquela árvore
+go_to	pt	vai pra casa
+go_to	pt	anda até a caverna
+go_to	pt	vai pra lá
+attack	en	attack
+attack	en	kill that zombie
+attack	en	get him
+attack	en	fight the creeper
+attack	en	hit that skeleton
+attack	en	go kill it
+attack	fr	attaque
+attack	fr	tue ce zombie
+attack	fr	frappe le squelette
+attack	fr	défonce-le
+attack	fr	vas-y tape-le
+attack	es	ataca
+attack	es	mata a ese zombi
+attack	es	pégale al esqueleto
+attack	es	acaba con él
+attack	es	dale duro
+attack	de	greif an
+attack	de	töte den zombie
+attack	de	hau das skelett
+attack	de	mach ihn fertig
+attack	de	angriff
+attack	pt	ataca
+attack	pt	mata esse zumbi
+attack	pt	bate no esqueleto
+attack	pt	acaba com ele
+attack	pt	pega ele
+defend	en	defend me
+defend	en	protect me
+defend	en	cover me
+defend	en	watch my back
+defend	en	help i'm being attacked
+defend	fr	défends-moi
+defend	fr	protège-moi
+defend	fr	couvre-moi
+defend	fr	surveille mes arrières
+defend	fr	à l'aide on m'attaque
+defend	es	defiéndeme
+defend	es	protégeme
+defend	es	cúbreme
+defend	es	cuida mi espalda
+defend	es	ayuda me están atacando
+defend	de	verteidige mich
+defend	de	beschütz mich
+defend	de	gib mir deckung
+defend	de	pass auf mich auf
+defend	de	hilfe ich werde angegriffen
+defend	pt	me defende
+defend	pt	me protege
+defend	pt	me cobre
+defend	pt	cuida das minhas costas
+defend	pt	socorro tão me atacando
+hold_fire	en	hold fire
+hold_fire	en	don't attack
+hold_fire	en	cease fire
+hold_fire	en	stand down
+hold_fire	en	don't shoot
+hold_fire	en	leave it alone, it's friendly
+hold_fire	fr	cessez le feu
+hold_fire	fr	n'attaque pas
+hold_fire	fr	ne tire pas
+hold_fire	fr	attaque pas
+hold_fire	fr	laisse-le tranquille
+hold_fire	es	alto el fuego
+hold_fire	es	no ataques
+hold_fire	es	no dispares
+hold_fire	es	no le pegues
+hold_fire	es	déjalo en paz
+hold_fire	de	feuer einstellen
+hold_fire	de	nicht angreifen
+hold_fire	de	nicht schießen
+hold_fire	de	greif nicht an
+hold_fire	de	lass ihn in ruhe
+hold_fire	pt	cessar fogo
+hold_fire	pt	não ataca
+hold_fire	pt	não atira
+hold_fire	pt	não bate nele
+hold_fire	pt	deixa ele em paz
+fire	en	fire
+fire	en	shoot
+fire	en	open fire
+fire	en	fire at will
+fire	en	shoot it
+fire	fr	feu
+fire	fr	tire
+fire	fr	ouvre le feu
+fire	fr	feu à volonté
+fire	fr	tire-lui dessus
+fire	es	fuego
+fire	es	dispara
+fire	es	abre fuego
+fire	es	dispara a discreción
+fire	es	dispárale
+fire	de	feuer
+fire	de	schieß
+fire	de	feuer frei
+fire	de	eröffne das feuer
+fire	de	schieß drauf
+fire	pt	fogo
+fire	pt	atira
+fire	pt	abre fogo
+fire	pt	atira nele
+fire	pt	manda bala
+jump	en	jump
+jump	en	jump up
+jump	en	hop
+jump	en	jump over it
+jump	en	jmp
+jump	fr	saute
+jump	fr	saute en l'air
+jump	fr	fais un saut
+jump	fr	saute par-dessus
+jump	fr	sauté
+jump	es	salta
+jump	es	brinca
+jump	es	da un salto
+jump	es	salta por encima
+jump	es	saltá
+jump	de	spring
+jump	de	spring hoch
+jump	de	hüpf
+jump	de	spring drüber
+jump	de	mach einen sprung
+jump	pt	pula
+jump	pt	salta
+jump	pt	dá um pulo
+jump	pt	pula por cima
+jump	pt	pula ai
+crouch	en	crouch
+crouch	en	sneak
+crouch	en	get down
+crouch	en	duck
+crouch	en	crouch down
+crouch	fr	accroupis-toi
+crouch	fr	baisse-toi
+crouch	fr	accroupis toi
+crouch	fr	à couvert, baisse toi
+crouch	fr	fais-toi discret
+crouch	es	agáchate
+crouch	es	agachate
+crouch	es	abajo
+crouch	es	ponte en cuclillas
+crouch	es	sigiloso
+crouch	de	duck dich
+crouch	de	schleich
+crouch	de	geh in die hocke
+crouch	de	runter
+crouch	de	kopf runter
+crouch	pt	agacha
+crouch	pt	abaixa
+crouch	pt	se abaixa
+crouch	pt	fica agachado
+crouch	pt	abaixa ai
+stand	en	stand up
+stand	en	get up
+stand	en	stop crouching
+stand	en	on your feet
+stand	en	stand
+stand	fr	lève-toi
+stand	fr	debout
+stand	fr	relève-toi
+stand	fr	arrête de t'accroupir
+stand	fr	leve toi
+stand	es	levántate
+stand	es	ponte de pie
+stand	es	arriba
+stand	es	deja de agacharte
+stand	es	levantate
+stand	de	steh auf
+stand	de	aufstehen
+stand	de	hoch mit dir
+stand	de	hör auf zu schleichen
+stand	de	steh mal auf
+stand	pt	levanta
+stand	pt	fica de pé
+stand	pt	se levanta
+stand	pt	para de agachar
+stand	pt	levanta ai
+collect	en	get some wood
+collect	en	collect 10 stone
+collect	en	mine some iron
+collect	en	gather 20 logs
+collect	en	i need wood
+collect	en	chop that tree
+collect	en	go get me coal
+collect	fr	ramasse du bois
+collect	fr	récupère 10 pierres
+collect	fr	mine du fer
+collect	fr	coupe cet arbre
+collect	fr	j'ai besoin de bois
+collect	fr	va chercher du charbon
+collect	es	consigue madera
+collect	es	recoge 10 piedras
+collect	es	mina hierro
+collect	es	tala ese árbol
+collect	es	necesito madera
+collect	es	busca carbón
+collect	de	hol holz
+collect	de	sammle 10 steine
+collect	de	bau eisen ab
+collect	de	fäll den baum
+collect	de	ich brauche holz
+collect	de	besorg kohle
+collect	pt	pega madeira
+collect	pt	coleta 10 pedras
+collect	pt	minera ferro
+collect	pt	corta aquela árvore
+collect	pt	preciso de madeira
+collect	pt	vai buscar carvão
+give	en	give me 5 bread
+give	en	pass me the sword
+give	en	throw me some arrows
+give	en	hand me your pickaxe
+give	en	can i have some food
+give	en	gimme the torches
+give	fr	donne-moi 5 pains
+give	fr	passe-moi l'épée
+give	fr	lance-moi des flèches
+give	fr	file-moi ta pioche
+give	fr	tu peux me donner à manger
+give	es	dame 5 panes
+give	es	pásame la espada
+give	es	tírame unas flechas
+give	es	dame tu pico
+give	es	me das comida
+give	de	gib mir 5 brot
+give	de	reich mir das schwert
+give	de	wirf mir pfeile zu
+give	de	gib mir deine spitzhacke
+give	de	kann ich was zu essen haben
+give	pt	me dá 5 pães
+give	pt	me passa a espada
+give	pt	joga umas flechas pra mim
+give	pt	me dá tua picareta
+give	pt	me arruma comida
+eat	en	eat something
+eat	en	go eat
+eat	en	you should eat
+eat	en	have some food
+eat	en	eat your bread
+eat	fr	mange quelque chose
+eat	fr	va manger
+eat	fr	tu devrais manger
+eat	fr	mange ton pain
+eat	fr	nourris-toi
+eat	es	come algo
+eat	es	ve a comer
+eat	es	deberías comer
+eat	es	cómete el pan
+eat	es	aliméntate
+eat	de	iss was
+eat	de	geh essen
+eat	de	du solltest essen
+eat	de	iss dein brot
+eat	de	stärk dich
+eat	pt	come alguma coisa
+eat	pt	vai comer
+eat	pt	você devia comer
+eat	pt	come teu pão
+eat	pt	se alimenta
+sleep	en	go to sleep
+sleep	en	sleep
+sleep	en	go to bed
+sleep	en	time for bed
+sleep	en	sleep in the bed
+sleep	fr	va dormir
+sleep	fr	dors
+sleep	fr	va te coucher
+sleep	fr	au lit
+sleep	fr	dors dans le lit
+sleep	es	vete a dormir
+sleep	es	duerme
+sleep	es	a la cama
+sleep	es	hora de dormir
+sleep	es	acuéstate
+sleep	de	geh schlafen
+sleep	de	schlaf
+sleep	de	ab ins bett
+sleep	de	zeit fürs bett
+sleep	de	leg dich hin
+sleep	pt	vai dormir
+sleep	pt	dorme
+sleep	pt	vai pra cama
+sleep	pt	hora de dormir
+sleep	pt	deita na cama
+craft	en	craft a pickaxe
+craft	en	make some torches
+craft	en	craft 4 planks
+craft	en	make me a sword
+craft	en	craft a crafting table
+craft	fr	fabrique une pioche
+craft	fr	fais des torches
+craft	fr	crafte 4 planches
+craft	fr	fabrique-moi une épée
+craft	fr	fais un établi
+craft	es	fabrica un pico
+craft	es	haz antorchas
+craft	es	craftea 4 tablones
+craft	es	hazme una espada
+craft	es	construye una mesa de trabajo
+craft	de	stell eine spitzhacke her
+craft	de	mach fackeln
+craft	de	crafte 4 bretter
+craft	de	bau mir ein schwert
+craft	de	mach eine werkbank
+craft	pt	faz uma picareta
+craft	pt	fabrica tochas
+craft	pt	crafta 4 tábuas
+craft	pt	faz uma espada pra mim
+craft	pt	faz uma bancada
+chit_chat	en	how are you
+chit_chat	en	tell me a joke
+chit_chat	en	i'm bored
+chit_chat	en	nice weather today
+chit_chat	en	this is fun
+chit_chat	en	hey buddy
+chit_chat	fr	ça va ?
+chit_chat	fr	raconte-moi une blague
+chit_chat	fr	je m'ennuie
+chit_chat	fr	il fait beau aujourd'hui
+chit_chat	fr	salut toi
+chit_chat	es	qué tal
+chit_chat	es	cuéntame un chiste
+chit_chat	es	estoy aburrido
+chit_chat	es	qué día tan bonito
+chit_chat	es	hola amigo
+chit_chat	de	wie geht's
+chit_chat	de	erzähl mir einen witz
+chit_chat	de	mir ist langweilig
+chit_chat	de	schönes wetter heute
+chit_chat	de	hey kumpel
+chit_chat	pt	tudo bem?
+chit_chat	pt	conta uma piada
+chit_chat	pt	tô entediado
+chit_chat	pt	que dia bonito
+chit_chat	pt	e aí parceiro
+question	en	where are we
+question	en	how do i make a nether portal
+question	en	what time is it
+question	en	how many diamonds do you have
+question	en	where is the nearest village
+question	en	what was that noise
+question	fr	on est où
+question	fr	comment on fait un portail du nether
+question	fr	il est quelle heure
+question	fr	t'as combien de diamants
+question	fr	c'était quoi ce bruit
+question	es	dónde estamos
+question	es	cómo se hace un portal al nether
+question	es	qué hora es
+question	es	cuántos diamantes tienes
+question	es	qué fue ese ruido
+question	de	wo sind wir
+question	de	wie baut man ein netherportal
+question	de	wie spät ist es
+question	de	wie viele diamanten hast du
+question	de	was war das für ein geräusch
+question	pt	onde a gente tá
+question	pt	como faz um portal do nether
+question	pt	que horas são
+question	pt	quantos diamantes você tem
+question	pt	que barulho foi esse
+persona_change	en	you're a cat now
+persona_change	en	talk like a pirate
+persona_change	en	from now on be more polite
+persona_change	en	act like a grumpy old man
+persona_change	en	pretend you're a knight
+persona_change	fr	t'es un chat maintenant
+persona_change	fr	parle comme un pirate
+persona_change	fr	à partir de maintenant sois plus poli
+persona_change	fr	fais comme si t'étais un vieux grincheux
+persona_change	fr	imagine que tu es un chevalier
+persona_change	es	ahora eres un gato
+persona_change	es	habla como un pirata
+persona_change	es	desde ahora sé más educado
+persona_change	es	actúa como un viejo gruñón
+persona_change	es	finge que eres un caballero
+persona_change	de	du bist jetzt eine katze
+persona_change	de	sprich wie ein pirat
+persona_change	de	sei ab jetzt höflicher
+persona_change	de	tu so als wärst du ein grummeliger alter mann
+persona_change	de	stell dir vor du bist ein ritter
+persona_change	pt	agora você é um gato
+persona_change	pt	fala como um pirata
+persona_change	pt	a partir de agora seja mais educado
+persona_change	pt	age como um velho rabugento
+persona_change	pt	finge que você é um cavaleiro
+insult	en	you're useless
+insult	en	stupid bot
+insult	en	you suck
+insult	en	what an idiot
+insult	en	you're so bad at this
+insult	fr	t'es nul
+insult	fr	espèce d'idiot
+insult	fr	t'es complètement inutile
+insult	fr	quel boulet
+insult	fr	t'es vraiment mauvais
+insult	es	eres un inútil
+insult	es	bot estúpido
+insult	es	eres malísimo
+insult	es	qué idiota
+insult	es	no sirves para nada
+insult	de	du bist nutzlos
+insult	de	dummer bot
+insult	de	du bist so schlecht
+insult	de	was für ein idiot
+insult	de	du taugst nichts
+insult	pt	você é inútil
+insult	pt	bot burro
+insult	pt	você é muito ruim
+insult	pt	que idiota
+insult	pt	você não serve pra nada
+praise	en	good job
+praise	en	nice one
+praise	en	you're the best
+praise	en	well done buddy
+praise	en	thanks, that was awesome
+praise	fr	bien joué
+praise	fr	bravo
+praise	fr	t'es le meilleur
+praise	fr	super boulot
+praise	fr	merci c'était génial
+praise	es	buen trabajo
+praise	es	bien hecho
+praise	es	eres el mejor
+praise	es	genial amigo
+praise	es	gracias eso fue increíble
+praise	de	gut gemacht
+praise	de	super
+praise	de	du bist der beste
+praise	de	klasse arbeit
+praise	de	danke das war spitze
+praise	pt	bom trabalho
+praise	pt	mandou bem
+praise	pt	você é o melhor
+praise	pt	muito bem parceiro
+praise	pt	valeu isso foi incrível
+not_addressed	en	brb gotta grab food
+not_addressed	en	mom says dinner is ready
+not_addressed	en	lol did you guys see that
+not_addressed	en	gg everyone
+not_addressed	en	hold on someone's at the door
+not_addressed	en	i'm streaming this tonight
+not_addressed	fr	je reviens, je vais manger
+not_addressed	fr	ma mère m'appelle
+not_addressed	fr	mdr vous avez vu ça
+not_addressed	fr	gg tout le monde
+not_addressed	fr	attendez quelqu'un sonne
+not_addressed	es	ya vuelvo voy a comer
+not_addressed	es	mi madre me llama
+not_addressed	es	jaja vieron eso
+not_addressed	es	gg a todos
+not_addressed	es	esperen que tocan la puerta
+not_addressed	de	bin gleich wieder da
+not_addressed	de	meine mutter ruft mich
+not_addressed	de	lol habt ihr das gesehen
+not_addressed	de	gg an alle
+not_addressed	de	moment es klingelt
+not_addressed	pt	já volto vou comer
+not_addressed	pt	minha mãe tá chamando
+not_addressed	pt	kkkk vocês viram isso
+not_addressed	pt	gg pra todo mundo
+not_addressed	pt	pera que tão batendo na porta
+# Second round: more ways to say each thing, so each language has about ten per intent.
+follow	en	follow
+follow	en	with me
+follow	en	walk with me
+follow	en	come on let's go
+follow	en	don't get lost, follow me
+follow	fr	suis moi partout
+follow	fr	allez viens, on y va
+follow	fr	marche avec moi
+follow	fr	ne te perds pas, suis-moi
+follow	fr	accompagne-moi
+follow	es	sígueme de cerca
+follow	es	vamos, sígueme
+follow	es	camina conmigo
+follow	es	no te pierdas, sígueme
+follow	es	vente conmigo
+follow	de	los, folg mir
+follow	de	geh mit mir
+follow	de	lauf mit
+follow	de	verlier mich nicht, folg mir
+follow	de	begleite mich
+follow	pt	vamos, me segue
+follow	pt	anda comigo
+follow	pt	não se perde, me segue
+follow	pt	segue eu
+follow	pt	bora, vem junto
+stay	en	stay
+stay	en	stay right there
+stay	en	don't come with me
+stay	en	keep this spot
+stay	en	wait
+stay	fr	reste
+stay	fr	reste où tu es
+stay	fr	ne viens pas avec moi
+stay	fr	garde cette place
+stay	fr	attends
+stay	es	quédate
+stay	es	quédate donde estás
+stay	es	no vengas conmigo
+stay	es	mantén esta posición
+stay	es	espera
+stay	de	bleib
+stay	de	bleib wo du bist
+stay	de	komm nicht mit
+stay	de	halte die stellung
+stay	de	warte
+stay	pt	fica
+stay	pt	fica onde você está
+stay	pt	não vem comigo
+stay	pt	segura essa posição
+stay	pt	espera ai
+come	en	come back here
+come	en	come here quick
+come	en	here boy
+come	en	to me
+come	en	come closer
+come	fr	viens
+come	fr	reviens
+come	fr	viens vite
+come	fr	rapproche-toi
+come	fr	ici
+come	es	ven
+come	es	vuelve aquí
+come	es	ven rápido
+come	es	aquí
+come	es	acércate más
+come	de	komm
+come	de	komm zurück
+come	de	komm schnell
+come	de	komm näher
+come	de	zu mir
+come	pt	vem
+come	pt	volta pra cá
+come	pt	vem rápido
+come	pt	chega mais
+come	pt	aqui
+stop	en	stop now
+stop	en	enough
+stop	en	don't do that
+stop	en	wait no stop
+stop	en	abort
+stop	fr	arrête maintenant
+stop	fr	ça suffit
+stop	fr	fais pas ça
+stop	fr	non arrête
+stop	fr	stoppe
+stop	es	alto
+stop	es	basta
+stop	es	no hagas eso
+stop	es	para ahora
+stop	es	no no para
+stop	de	halt
+stop	de	genug
+stop	de	mach das nicht
+stop	de	nein hör auf
+stop	de	aufhören
+stop	pt	chega disso
+stop	pt	já deu
+stop	pt	não faz isso
+stop	pt	para agora
+stop	pt	não não para
+go_to	en	go to the river
+go_to	en	walk over to that spot
+go_to	en	go up the mountain
+go_to	en	move to where i'm looking
+go_to	en	go to the village
+go_to	fr	va à la rivière
+go_to	fr	va là où je regarde
+go_to	fr	monte sur la montagne
+go_to	fr	va au village
+go_to	fr	marche jusque là-bas
+go_to	es	ve al río
+go_to	es	ve donde estoy mirando
+go_to	es	sube la montaña
+go_to	es	ve al pueblo
+go_to	es	camina hasta allá
+go_to	de	geh zum fluss
+go_to	de	geh dahin wo ich hinschaue
+go_to	de	geh auf den berg
+go_to	de	geh ins dorf
+go_to	de	lauf da hin
+go_to	pt	vai pro rio
+go_to	pt	vai onde eu tô olhando
+go_to	pt	sobe a montanha
+go_to	pt	vai pra vila
+go_to	pt	anda até lá
+attack	en	attack that mob
+attack	en	kill the enemy
+attack	en	fight it
+attack	en	smack that thing
+attack	en	take it down
+attack	fr	attaque ce monstre
+attack	fr	tue l'ennemi
+attack	fr	bats-toi
+attack	fr	défonce ce truc
+attack	fr	élimine-le
+attack	es	ataca a ese monstruo
+attack	es	mata al enemigo
+attack	es	pelea
+attack	es	revienta esa cosa
+attack	es	elimínalo
+attack	de	greif das monster an
+attack	de	töte den gegner
+attack	de	kämpf
+attack	de	hau drauf
+attack	de	schalte ihn aus
+attack	pt	ataca esse monstro
+attack	pt	mata o inimigo
+attack	pt	luta
+attack	pt	desce o cacete nisso
+attack	pt	elimina ele
+defend	en	protect me from the mobs
+defend	en	keep them off me
+defend	en	help me
+defend	en	stay by me and fight
+defend	en	save me
+defend	fr	protège-moi des monstres
+defend	fr	éloigne-les de moi
+defend	fr	aide-moi
+defend	fr	défends-moi contre eux
+defend	fr	sauve-moi
+defend	es	protégeme de los monstruos
+defend	es	quítamelos de encima
+defend	es	ayúdame
+defend	es	defiéndeme de ellos
+defend	es	sálvame
+defend	de	schütz mich vor den monstern
+defend	de	halt sie mir vom leib
+defend	de	hilf mir
+defend	de	verteidige mich gegen sie
+defend	de	rette mich
+defend	pt	me protege dos monstros
+defend	pt	tira eles de cima de mim
+defend	pt	me ajuda
+defend	pt	me defende deles
+defend	pt	me salva
+hold_fire	en	don't hurt it
+hold_fire	en	stop fighting
+hold_fire	en	no attacking
+hold_fire	en	don't kill it
+hold_fire	en	weapons down
+hold_fire	fr	lui fais pas de mal
+hold_fire	fr	arrête de te battre
+hold_fire	fr	on attaque pas
+hold_fire	fr	le tue pas
+hold_fire	fr	baisse ton arme
+hold_fire	es	no le hagas daño
+hold_fire	es	deja de pelear
+hold_fire	es	nada de atacar
+hold_fire	es	no lo mates
+hold_fire	es	baja el arma
+hold_fire	de	tu ihm nichts
+hold_fire	de	hör auf zu kämpfen
+hold_fire	de	kein angriff
+hold_fire	de	töte es nicht
+hold_fire	de	waffen runter
+hold_fire	pt	não machuca ele
+hold_fire	pt	para de lutar
+hold_fire	pt	nada de atacar
+hold_fire	pt	não mata ele
+hold_fire	pt	abaixa a arma
+fire	en	shoot him
+fire	en	use your bow
+fire	en	shoot the skeleton
+fire	en	let it rip
+fire	en	go ahead and shoot
+fire	fr	tire sur le squelette
+fire	fr	utilise ton arc
+fire	fr	tire-lui dessus maintenant
+fire	fr	vas-y tire
+fire	fr	feu sur lui
+fire	es	dispárale al esqueleto
+fire	es	usa tu arco
+fire	es	dispárale ya
+fire	es	venga dispara
+fire	es	fuego contra él
+fire	de	schieß auf das skelett
+fire	de	nimm deinen bogen
+fire	de	schieß ihn ab
+fire	de	los schieß
+fire	de	feuer auf ihn
+fire	pt	atira no esqueleto
+fire	pt	usa teu arco
+fire	pt	atira nele já
+fire	pt	vai atira
+fire	pt	fogo nele
+jump	en	jump please
+jump	en	hop up
+jump	en	jump on the block
+jump	en	leap
+jump	en	jump higher
+jump	fr	saute s'il te plaît
+jump	fr	saute sur le bloc
+jump	fr	bondis
+jump	fr	saute plus haut
+jump	fr	allez saute
+jump	es	salta por favor
+jump	es	salta al bloque
+jump	es	da un brinco
+jump	es	salta más alto
+jump	es	venga salta
+jump	de	spring bitte
+jump	de	spring auf den block
+jump	de	hops
+jump	de	spring höher
+jump	de	los spring
+jump	pt	pula por favor
+jump	pt	pula no bloco
+jump	pt	dá um salto ai
+jump	pt	pula mais alto
+jump	pt	vai pula
+crouch	en	sneak please
+crouch	en	keep low
+crouch	en	shift
+crouch	en	stay crouched
+crouch	en	hide, get down
+crouch	fr	accroupis-toi s'il te plaît
+crouch	fr	reste accroupi
+crouch	fr	sneak
+crouch	fr	cache-toi, baisse-toi
+crouch	fr	à genoux
+crouch	es	agáchate por favor
+crouch	es	mantente agachado
+crouch	es	escóndete, agáchate
+crouch	es	pégate al suelo
+crouch	es	cuclillas
+crouch	de	duck dich bitte
+crouch	de	bleib unten
+crouch	de	versteck dich, runter
+crouch	de	schleichen
+crouch	de	geh runter
+crouch	pt	agacha por favor
+crouch	pt	fica baixo
+crouch	pt	se esconde, abaixa
+crouch	pt	agachadinho
+crouch	pt	vai agachado
+stand	en	stand up please
+stand	en	get back up
+stand	en	quit sneaking
+stand	en	rise
+stand	en	up you get
+stand	fr	lève-toi s'il te plaît
+stand	fr	relève toi
+stand	fr	arrête de sneak
+stand	fr	debout maintenant
+stand	fr	redresse-toi
+stand	es	levántate por favor
+stand	es	vuelve a levantarte
+stand	es	deja de esconderte
+stand	es	de pie
+stand	es	enderézate
+stand	de	steh bitte auf
+stand	de	steh wieder auf
+stand	de	nicht mehr schleichen
+stand	de	auf die beine
+stand	de	richte dich auf
+stand	pt	levanta por favor
+stand	pt	levanta de novo
+stand	pt	para de se esconder
+stand	pt	em pé
+stand	pt	se endireita
+collect	en	get me some stone
+collect	en	mine 5 iron ore
+collect	en	collect wood for me
+collect	en	can you get some coal
+collect	en	gather food
+collect	fr	ramène-moi de la pierre
+collect	fr	mine 5 minerais de fer
+collect	fr	ramasse du bois pour moi
+collect	fr	tu peux chercher du charbon
+collect	fr	récolte de la nourriture
+collect	es	tráeme piedra
+collect	es	mina 5 de hierro
+collect	es	recoge madera para mí
+collect	es	puedes conseguir carbón
+collect	es	junta comida
+collect	de	hol mir stein
+collect	de	bau 5 eisenerz ab
+collect	de	sammle holz für mich
+collect	de	kannst du kohle holen
+collect	de	sammle essen
+collect	pt	me traz pedra
+collect	pt	minera 5 de ferro
+collect	pt	coleta madeira pra mim
+collect	pt	consegue carvão
+collect	pt	junta comida
+give	en	give me some wood
+give	en	give me that
+give	en	drop me your bread
+give	en	share your food
+give	en	i need your sword, give it
+give	fr	donne-moi du bois
+give	fr	donne-moi ça
+give	fr	jette-moi ton pain
+give	fr	partage ta nourriture
+give	fr	file-moi ton épée
+give	es	dame madera
+give	es	dame eso
+give	es	tírame tu pan
+give	es	comparte tu comida
+give	es	pásame tu espada
+give	de	gib mir holz
+give	de	gib mir das
+give	de	wirf mir dein brot zu
+give	de	teil dein essen
+give	de	gib mir dein schwert
+give	pt	me dá madeira
+give	pt	me dá isso
+give	pt	joga teu pão pra mim
+give	pt	divide tua comida
+give	pt	me passa tua espada
+eat	en	eat
+eat	en	eat some food
+eat	en	heal up, eat
+eat	en	eat a steak
+eat	en	go have lunch
+eat	fr	mange
+eat	fr	mange un truc
+eat	fr	soigne-toi, mange
+eat	fr	mange un steak
+eat	fr	va casser la croûte
+eat	es	come
+eat	es	come comida
+eat	es	cúrate, come algo
+eat	es	cómete un filete
+eat	es	ve a almorzar
+eat	de	iss
+eat	de	iss etwas essen
+eat	de	heil dich, iss was
+eat	de	iss ein steak
+eat	de	geh mittagessen
+eat	pt	come
+eat	pt	come comida
+eat	pt	se cura, come algo
+eat	pt	come um bife
+eat	pt	vai almoçar
+sleep	en	go sleep in the bed
+sleep	en	lie down
+sleep	en	we should sleep
+sleep	en	get in bed now
+sleep	en	skip the night, sleep
+sleep	fr	va dormir dans le lit
+sleep	fr	allonge-toi
+sleep	fr	on devrait dormir
+sleep	fr	au lit maintenant
+sleep	fr	passe la nuit, dors
+sleep	es	duerme en la cama
+sleep	es	túmbate
+sleep	es	deberíamos dormir
+sleep	es	a la cama ya
+sleep	es	pasa la noche, duerme
+sleep	de	schlaf im bett
+sleep	de	leg dich schlafen
+sleep	de	wir sollten schlafen
+sleep	de	jetzt ins bett
+sleep	de	überspring die nacht, schlaf
+sleep	pt	dorme na cama
+sleep	pt	deita
+sleep	pt	a gente devia dormir
+sleep	pt	pra cama agora
+sleep	pt	pula a noite, dorme
+craft	en	craft a sword
+craft	en	make a pickaxe for me
+craft	en	craft some sticks
+craft	en	craft a bed
+craft	en	make 16 torches
+craft	fr	crafte une épée
+craft	fr	fabrique-moi une pioche
+craft	fr	fais des bâtons
+craft	fr	crafte un lit
+craft	fr	fabrique 16 torches
+craft	es	craftea una espada
+craft	es	fabrícame un pico
+craft	es	haz palos
+craft	es	craftea una cama
+craft	es	fabrica 16 antorchas
+craft	de	crafte ein schwert
+craft	de	stell mir eine spitzhacke her
+craft	de	mach stöcke
+craft	de	crafte ein bett
+craft	de	mach 16 fackeln
+craft	pt	crafta uma espada
+craft	pt	fabrica uma picareta pra mim
+craft	pt	faz gravetos
+craft	pt	crafta uma cama
+craft	pt	faz 16 tochas
+chit_chat	en	hi
+chit_chat	en	good morning
+chit_chat	en	i had a long day
+chit_chat	en	do you like minecraft
+chit_chat	en	you're funny
+chit_chat	fr	salut
+chit_chat	fr	bonjour
+chit_chat	fr	j'ai eu une longue journée
+chit_chat	fr	tu aimes minecraft
+chit_chat	fr	t'es marrant
+chit_chat	es	hola
+chit_chat	es	buenos días
+chit_chat	es	tuve un día largo
+chit_chat	es	te gusta minecraft
+chit_chat	es	eres gracioso
+chit_chat	de	hallo
+chit_chat	de	guten morgen
+chit_chat	de	ich hatte einen langen tag
+chit_chat	de	magst du minecraft
+chit_chat	de	du bist lustig
+chit_chat	pt	oi
+chit_chat	pt	bom dia
+chit_chat	pt	tive um dia longo
+chit_chat	pt	você gosta de minecraft
+chit_chat	pt	você é engraçado
+question	en	what should we do next
+question	en	where can i find iron
+question	en	is that a creeper
+question	en	how far is the base
+question	en	do you have any food
+question	fr	on fait quoi maintenant
+question	fr	où je trouve du fer
+question	fr	c'est un creeper ça ?
+question	fr	la base est à quelle distance
+question	fr	t'as de la bouffe ?
+question	es	qué hacemos ahora
+question	es	dónde encuentro hierro
+question	es	eso es un creeper?
+question	es	a qué distancia está la base
+question	es	tienes comida?
+question	de	was machen wir jetzt
+question	de	wo finde ich eisen
+question	de	ist das ein creeper
+question	de	wie weit ist die basis
+question	de	hast du essen
+question	pt	o que a gente faz agora
+question	pt	onde eu acho ferro
+question	pt	aquilo é um creeper?
+question	pt	quão longe fica a base
+question	pt	você tem comida?
+persona_change	en	be a pirate
+persona_change	en	your name is now bob
+persona_change	en	act scared all the time
+persona_change	en	you're my butler now
+persona_change	en	stop being so sarcastic
+persona_change	fr	sois un pirate
+persona_change	fr	maintenant tu t'appelles bob
+persona_change	fr	fais semblant d'avoir peur tout le temps
+persona_change	fr	t'es mon majordome maintenant
+persona_change	fr	arrête d'être aussi sarcastique
+persona_change	es	sé un pirata
+persona_change	es	ahora te llamas bob
+persona_change	es	actúa asustado todo el rato
+persona_change	es	ahora eres mi mayordomo
+persona_change	es	deja de ser tan sarcástico
+persona_change	de	sei ein pirat
+persona_change	de	du heißt jetzt bob
+persona_change	de	tu die ganze zeit ängstlich
+persona_change	de	du bist jetzt mein butler
+persona_change	de	hör auf so sarkastisch zu sein
+persona_change	pt	seja um pirata
+persona_change	pt	agora seu nome é bob
+persona_change	pt	finge que tá com medo o tempo todo
+persona_change	pt	agora você é meu mordomo
+persona_change	pt	para de ser tão sarcástico
+insult	en	shut up
+insult	en	you're annoying
+insult	en	noob
+insult	en	you're a terrible helper
+insult	en	dumbass
+insult	fr	ta gueule
+insult	fr	t'es chiant
+insult	fr	noob
+insult	fr	t'es un assistant pourri
+insult	fr	abruti
+insult	es	cállate
+insult	es	eres pesado
+insult	es	manco
+insult	es	eres un ayudante horrible
+insult	es	tonto
+insult	de	halt die klappe
+insult	de	du nervst
+insult	de	noob
+insult	de	du bist ein schrecklicher helfer
+insult	de	depp
+insult	pt	cala a boca
+insult	pt	você é chato
+insult	pt	noob
+insult	pt	você é um ajudante horrível
+insult	pt	otário
+praise	en	thank you
+praise	en	nice
+praise	en	perfect
+praise	en	you saved me, thanks
+praise	en	good boy
+praise	fr	merci
+praise	fr	nickel
+praise	fr	parfait
+praise	fr	tu m'as sauvé, merci
+praise	fr	trop fort
+praise	es	gracias
+praise	es	genial
+praise	es	perfecto
+praise	es	me salvaste, gracias
+praise	es	qué crack
+praise	de	danke
+praise	de	nice
+praise	de	perfekt
+praise	de	du hast mich gerettet, danke
+praise	de	stark
+praise	pt	obrigado
+praise	pt	boa
+praise	pt	perfeito
+praise	pt	você me salvou, valeu
+praise	pt	que monstro
+not_addressed	en	who wants to go mining tomorrow
+not_addressed	en	sorry i was afk
+not_addressed	en	my cat is on the keyboard
+not_addressed	en	ok chat what should i build
+not_addressed	en	alex where are you
+not_addressed	fr	qui veut miner demain
+not_addressed	fr	désolé j'étais afk
+not_addressed	fr	mon chat est sur le clavier
+not_addressed	fr	bon le chat je construis quoi
+not_addressed	fr	alex t'es où
+not_addressed	es	quién quiere minar mañana
+not_addressed	es	perdón estaba afk
+not_addressed	es	mi gato está en el teclado
+not_addressed	es	bueno chat qué construyo
+not_addressed	es	alex dónde estás
+not_addressed	de	wer will morgen minen
+not_addressed	de	sorry war afk
+not_addressed	de	meine katze sitzt auf der tastatur
+not_addressed	de	ok chat was soll ich bauen
+not_addressed	de	alex wo bist du
+not_addressed	pt	quem quer minerar amanhã
+not_addressed	pt	foi mal tava afk
+not_addressed	pt	meu gato tá no teclado
+not_addressed	pt	beleza chat o que eu construo
+not_addressed	pt	alex cadê você

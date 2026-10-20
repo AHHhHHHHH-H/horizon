@@ -25,6 +25,9 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.command", "key.keyboard.slash", "multiplayer"),
     ("key.friends", "key.keyboard.o", "multiplayer"),
     ("key.socialInteractions", "key.keyboard.p", "multiplayer"),
+    // Horizon's: push-to-talk to a companion (docs/companions.md), listed only while voice is on.
+    // Before the debug mappings, so a key it is moved to still reaches it (`mapping_for`).
+    (TALK, "key.keyboard.v", "multiplayer"),
     ("key.toggleGui", "key.keyboard.f1", "misc"),
     (
         "key.toggleSpectatorShaderEffects",
@@ -75,6 +78,25 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.debug.lightmapTexture", "key.keyboard.4", "debug"),
     ("key.debug.improvedTransparency", "key.keyboard.x", "debug"),
 ];
+/// Push-to-talk to a companion (Horizon's; V is free in vanilla but for F3 + V).
+pub const TALK: &str = "key.horizon.companionTalk";
+/// Whether Controls lists the push-to-talk key: only while a companion's voice is on (No AI and a
+/// companion without voice show nothing of it).
+static TALK_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn show_talk(shown: bool) {
+    TALK_SHOWN.store(shown, std::sync::atomic::Ordering::Relaxed);
+}
+/// Whether Controls lists a mapping.
+pub fn listed(name: &str) -> bool {
+    name != TALK || TALK_SHOWN.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// A mapping's name in Controls: the language's, or English for Horizon's own.
+pub fn label(name: &str) -> Text {
+    if name == TALK && !crate::lang::has(name) {
+        return Text::literal("Talk to Companion");
+    }
+    Text::translate(name, &[])
+}
 /// Mappings Options builds as `ToggleKeyMapping` (hold or toggle by option).
 pub fn is_toggle(name: &str) -> bool {
     matches!(name, "key.sneak" | "key.sprint" | "key.use" | "key.attack")
@@ -322,7 +344,10 @@ impl KeyBinds {
         MAPPINGS
             .iter()
             .filter(|(n, _, _)| {
-                *n != name && self.get(n) == key && (!self.is_default(n) || !self.is_default(name))
+                *n != name
+                    && listed(n)
+                    && self.get(n) == key
+                    && (!self.is_default(n) || !self.is_default(name))
             })
             .map(|(n, _, _)| *n)
             .collect()
@@ -446,6 +471,21 @@ mod tests {
         assert!(k.conflicts("key.forward").is_empty());
         k.set("key.jump", "key.keyboard.up");
         assert_eq!(k.conflicts("key.forward"), ["key.jump"]);
+    }
+    #[test]
+    fn push_to_talk_is_v_hidden_until_voice_is_on_and_follows_a_rebind() {
+        let mut k = KeyBinds::default();
+        assert_eq!(k.get(TALK), "key.keyboard.v");
+        // F3 + V keeps its default V; both defaults don't count as a conflict.
+        assert!(k.conflicts(TALK).is_empty());
+        assert_eq!(k.translate(KeyCode::KeyV), Some(Ok(KeyCode::KeyV)));
+        k.set(TALK, "key.keyboard.b");
+        assert_eq!(k.mapping_for("key.keyboard.b"), Some(TALK));
+        assert!(!listed(TALK) && listed("key.chat"));
+        show_talk(true);
+        assert!(listed(TALK));
+        show_talk(false);
+        assert_eq!(label(TALK).plain(), "Talk to Companion");
     }
     #[test]
     fn display_names() {

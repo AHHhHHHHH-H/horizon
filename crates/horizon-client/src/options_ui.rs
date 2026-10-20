@@ -1342,13 +1342,21 @@ impl OptionsUi {
                     MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
                 let query = self.settings_search.value.to_lowercase();
                 mappings.retain(|(name, _)| {
-                    query.is_empty() || lang::get(name).to_lowercase().contains(&query)
+                    keybinds::listed(name)
+                        && (query.is_empty()
+                            || keybinds::label(name)
+                                .plain()
+                                .to_lowercase()
+                                .contains(&query))
                 });
                 mappings.sort_by(|a, b| {
                     let ca = CATEGORIES.iter().position(|c| *c == a.1).unwrap_or(99);
                     let cb = CATEGORIES.iter().position(|c| *c == b.1).unwrap_or(99);
-                    ca.cmp(&cb)
-                        .then_with(|| lang::get(a.0).cmp(&lang::get(b.0)))
+                    ca.cmp(&cb).then_with(|| {
+                        keybinds::label(a.0)
+                            .plain()
+                            .cmp(&keybinds::label(b.0).plain())
+                    })
                 });
                 let row_left = cx - 170.0;
                 let scrollbar_x = row_left + 340.0 + 6.0 + 2.0;
@@ -1385,7 +1393,7 @@ impl OptionsUi {
                         w: 200.0,
                         h: 9.0,
                         kind: WKind::Text {
-                            text: tr(name),
+                            text: keybinds::label(name),
                             color: u32::MAX,
                             centered: false,
                         },

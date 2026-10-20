@@ -5,6 +5,9 @@
 - `Horizon.app`: `Contents/MacOS/horizon-launcher`, `Contents/Info.plist` (this folder's, bundle
   id `dev.horizon.launcher`, macOS 11 or later), `Contents/Resources/horizon.icns`
   (`packaging/icons`, from `cargo run -p xtask -- icons`).
+  The game runs as the launcher's child, so macOS asks for the microphone (push-to-talk to a
+  companion) in the app's name: `NSMicrophoneUsageDescription` is the question it shows, and
+  without it macOS refuses the microphone or stops the game when it opens one.
 - `horizon-launcher-macos-arm64.dmg`: the installer. Opening it shows the app and a link to
   Applications over `background.png` / `background@2x.png` (drawn from `background.html`); the
   player drags one onto the other. Built by [dmgbuild](https://github.com/dmgbuild/dmgbuild),
@@ -30,7 +33,8 @@ browser, so they carry no quarantine flag).
 
 To sign and notarize for real (Ludovic's Apple Developer account): import the "Developer ID
 Application" certificate into the runner's keychain, set `MACOS_SIGN_IDENTITY` to its name for
-`package.sh` (it then signs with the hardened runtime and a timestamp), and after it, notarize and
+`package.sh` (it then signs with the hardened runtime, a timestamp and `Horizon.entitlements`, which
+allows the microphone), and after it, notarize and
 staple the disk image:
 
 ```sh
