@@ -7,7 +7,10 @@
 //! connection, lives in the game (game/companion.rs).
 pub mod file;
 pub mod gear;
+pub mod moves;
+pub mod perception;
 pub mod summary;
+pub mod techtree;
 pub mod work;
 
 use crate::text::{self, Text};
