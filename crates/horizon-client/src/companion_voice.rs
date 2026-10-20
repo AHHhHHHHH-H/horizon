@@ -260,6 +260,8 @@ struct Line {
     gain: f32,
     /// Its subtitle went up (with its first sound).
     shown: bool,
+    /// What it sounded like, kept for the WAV tap.
+    recorded: Vec<f32>,
 }
 
 /// One companion talking: its lines are generated one after the other into one stream, so the
@@ -277,16 +279,28 @@ struct Talker {
 pub struct Speakers {
     client: SpeechClient,
     talkers: Vec<Talker>,
+    /// `HORIZON_COMPANION_VOICE_WAV=<folder>` (tests and demos): every line is also written there
+    /// as `<n>-<speaker>.wav`, so a voice can be checked without playing it out loud.
+    tap: Option<(std::path::PathBuf, u32)>,
 }
+
+/// Lines a speaker may have waiting for their turn.
+const MAX_WAITING: usize = 4;
 
 /// The longest subtitle; the whole line is in the chat.
 const SUBTITLE_CHARS: usize = 48;
 
 impl Speakers {
     pub fn new(client: SpeechClient) -> Speakers {
+        // Numbered after the session's start, so a second run doesn't overwrite the first.
+        let start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() % 100_000);
+        let tap = std::env::var_os("HORIZON_COMPANION_VOICE_WAV").map(|dir| (dir.into(), start as u32 * 1000));
         Speakers {
             client,
             talkers: Vec::new(),
+            tap,
         }
     }
 
@@ -298,9 +312,20 @@ impl Speakers {
             events: None,
             gain,
             shown: false,
+            recorded: Vec::new(),
         };
         match self.talkers.iter_mut().find(|t| t.name == speaker) {
-            Some(t) => t.lines.push_back(line),
+            Some(t) => {
+                // A line waiting behind too many others is stale by the time its turn comes (a run of
+                // quick orders): the oldest not yet started goes; the chat still has it.
+                let waiting = t.lines.iter().filter(|l| l.events.is_none()).count();
+                if waiting >= MAX_WAITING
+                    && let Some(i) = t.lines.iter().position(|l| l.events.is_none())
+                {
+                    t.lines.remove(i);
+                }
+                t.lines.push_back(line);
+            }
             None => self.talkers.push(Talker {
                 name: speaker.to_owned(),
                 lines: [line].into(),
@@ -345,6 +370,7 @@ impl Speakers {
     pub fn tick(&mut self, audio: &mut Audio) -> Vec<String> {
         let mut failed = Vec::new();
         let client = &self.client;
+        let tap = &mut self.tap;
         self.talkers.retain_mut(|t| {
             if let Some(v) = t.voice {
                 audio.voice_place(v, t.at, t.elsewhere);
@@ -368,12 +394,26 @@ impl Speakers {
                                 let subtitle = subtitle(&t.name, &line.speak.text);
                                 audio.voice_subtitle(&subtitle, (!t.elsewhere).then_some(t.at));
                             }
+                            samples.iter_mut().for_each(|s| *s *= line.gain);
+                            if tap.is_some() {
+                                line.recorded.extend_from_slice(&samples);
+                            }
                             if let Some(v) = voice {
-                                samples.iter_mut().for_each(|s| *s *= line.gain);
                                 audio.voice_push(v, &samples);
                             }
                         }
-                        SpeechEvent::Done(_) => finished = true,
+                        SpeechEvent::Done(_) => {
+                            finished = true;
+                            if let Some((dir, n)) = tap.as_mut() {
+                                *n += 1;
+                                let rate = client.model_for(&line.speak.language).sample_rate;
+                                let path = dir.join(format!("{n:08}-{}.wav", t.name));
+                                let wav = horizon_senses::dsp::wav_pcm16(&line.recorded, rate);
+                                if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, wav)) {
+                                    failed.push(format!("{}: {e}", path.display()));
+                                }
+                            }
+                        }
                         SpeechEvent::Failed(why) => {
                             failed.push(why);
                             finished = true;

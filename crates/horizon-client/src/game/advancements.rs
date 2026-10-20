@@ -479,6 +479,10 @@ impl Game<'_> {
         }
         if let Some(d) = &a.display {
             // A network player's client shows its own toast.
+            if self.lan_acting.is_none() && !self.adv.quiet {
+                let title = text_of(&d.title).plain();
+                self.companion_owner_advancement(&title);
+            }
             if d.show_toast && !self.adv.quiet && self.lan_acting.is_none() {
                 self.adv.toasts.push_back(Toast {
                     icon: d.icon.clone(),

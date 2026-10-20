@@ -250,6 +250,7 @@ impl Game<'_> {
     pub(super) fn companion_report(&mut self, b: &mut Body, report: CompanionReport) {
         let line = report.text();
         log::info!("[companion] {}: {line}", b.file.name);
+        self.companion_ai.report(&b.file.name, &report);
         if b.recent.len() == RECENT {
             b.recent.pop_front();
         }
@@ -441,7 +442,7 @@ impl Game<'_> {
 
     /// Take a body out of the hub, saved: its player data like a guest's,
     /// and its file (`active`: it comes back with the world).
-    fn companion_leave(&mut self, host: &mut LanHost, bi: usize, active: bool) -> Body {
+    pub(super) fn companion_leave(&mut self, host: &mut LanHost, bi: usize, active: bool) -> Body {
         let mut b = host.companions.remove(bi);
         if let Some(g) = host.hub.guest_mut(b.conn) {
             // Saved in the level it is really in.
@@ -819,6 +820,9 @@ impl Game<'_> {
     }
 
     fn companion_words(&mut self, words: &[&str]) -> std::result::Result<Value, String> {
+        if let Some(result) = self.companion_ai_words(words) {
+            return result;
+        }
         let usage = "companion spawn [name] | dismiss [name] | do [name] <command> | list | summary [name] | reports";
         match words.first().copied() {
             Some("spawn") => {

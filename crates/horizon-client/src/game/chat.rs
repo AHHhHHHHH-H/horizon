@@ -591,6 +591,7 @@ impl Game<'_> {
                 self.mods_chat(&line);
             }
             self.lan_host_chat(message);
+            self.companion_chat_line(message);
         }
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {

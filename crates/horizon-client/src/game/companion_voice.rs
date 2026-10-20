@@ -64,6 +64,46 @@ impl Game<'_> {
         self.companion_voice.echo = echo;
     }
 
+    /// Voice off: the sidecar stops (dropping it kills it; one still starting stops once it has).
+    pub(super) fn companion_voice_stop(&mut self) {
+        if self.companion_voice.on.is_some() || self.companion_voice.starting.is_some() {
+            log::info!("Horizon: companion voice stopped");
+            keybinds::show_talk(false);
+        }
+        self.companion_voice.on = None;
+        self.companion_voice.starting = None;
+    }
+
+    /// For `companion ai`: whether voice runs, and its models.
+    pub(super) fn companion_voice_status(&self) -> serde_json::Value {
+        let v = &self.companion_voice;
+        match v.on.as_ref() {
+            Some(on) => serde_json::json!({
+                "on": true,
+                "speech_to_text": on.ptt.as_ref().map(|p| p.model().id),
+                "text_to_speech": on.speakers.is_some(),
+            }),
+            None => serde_json::json!({ "on": false, "starting": v.starting.is_some() }),
+        }
+    }
+
+    /// Tests and demos: a WAV file goes through push-to-talk as if spoken into the microphone.
+    pub(super) fn companion_voice_hear_wav(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (samples, rate) =
+            horizon_senses::dsp::read_wav_pcm16(&bytes).ok_or("not a 16-bit PCM WAV file")?;
+        let mut clip = Vec::new();
+        horizon_senses::dsp::To16k::new(rate, 1).push(&samples, &mut clip);
+        let ptt = self
+            .companion_voice
+            .on
+            .as_mut()
+            .and_then(|on| on.ptt.as_mut())
+            .ok_or("speech to text is not running")?;
+        ptt.transcribe(clip);
+        Ok(())
+    }
+
     /// The game's language as ISO 639-1 (`fr_fr` → `fr`).
     fn voice_language(&self) -> String {
         self.settings

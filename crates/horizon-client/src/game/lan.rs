@@ -1034,6 +1034,8 @@ impl Game<'_> {
                             );
                         }
                     }
+                    // Routed on the next companion tick (game/companion_ai.rs).
+                    HostEvent::Said { name, text } => self.companion_ai.guest_said(name, text),
                     HostEvent::Packet(conn, packet) => {
                         self.lan_guest_packet(&mut host, conn, *packet);
                         if !host.commands.is_empty() {
