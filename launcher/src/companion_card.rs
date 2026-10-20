@@ -5,7 +5,7 @@
 use super::*;
 use horizon_companion::client::{self, Detected, Provider};
 use horizon_companion::plan::{Part, Plan, Runs};
-use horizon_companion::prompt::{Level, Personality};
+use horizon_companion::prompt::{Perception, Personality, Role};
 use horizon_companion::settings::keychain;
 use horizon_launcher::companion::{
     self, BrainChoice, CompanionSettings, Event, Job, Machine, PartChoice, TestResult,
@@ -35,6 +35,8 @@ pub(crate) struct CompanionUi {
     servers: Option<Vec<Detected>>,
     finding: Option<Receiver<Vec<Detected>>>,
     confirm_delete: bool,
+    /// Salty was switched on and waits for the 18+ confirmation.
+    confirm_salty: bool,
     fields: [(Field, String, FocusHandle, bool); 4],
 }
 
@@ -67,6 +69,7 @@ impl CompanionUi {
             servers: None,
             finding: None,
             confirm_delete: false,
+            confirm_salty: false,
             fields: [
                 (Field::CloudUrl, url, cx.focus_handle(), false),
                 (Field::CloudModel, model, cx.focus_handle(), false),
@@ -733,6 +736,67 @@ impl Launcher {
             }
         }
 
+        // The voice it speaks with, on the voice model that runs (each personality has its own).
+        if c.settings.voice {
+            let tts = c.plan.as_ref().and_then(|plan| {
+                c.settings
+                    .selection(plan, &options)
+                    .into_iter()
+                    .find(|o| o.part == Part::TextToSpeech)
+                    .and_then(|o| match companion::model_of(&o.id) {
+                        Some(companion::Component::Sense(m)) => Some(m),
+                        _ => None,
+                    })
+            });
+            if let Some(model) = tts {
+                let default =
+                    horizon_companion::senses::default_voice(model, c.settings.persona.personality);
+                let chosen = c.settings.voices.get(model.id).cloned();
+                let auto_detail = format!(
+                    "The personality's: {}. Play a sample in the game's Companion settings.",
+                    default.map_or("the model's first", |v| v.label)
+                );
+                let picks =
+                    std::iter::once((None, "Voice: the personality's".to_owned(), auto_detail))
+                        .chain(model.voices.iter().map(|v| {
+                            (
+                                Some(v.id.to_owned()),
+                                format!("Voice: {}", v.label),
+                                v.description.to_owned(),
+                            )
+                        }));
+                for (value, label, detail) in picks {
+                    let right = if value == chosen {
+                        text(theme::CAPTION)
+                            .text_color(t.muted)
+                            .child("In use")
+                            .into_any_element()
+                    } else {
+                        let id = SharedString::from(format!("companion-voice-{label}"));
+                        let model_id = model.id;
+                        button(id, "Use", Kind::Secondary, &t)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                let voices = &mut this.companion.settings.voices;
+                                match &value {
+                                    Some(v) => voices.insert(model_id.to_owned(), v.clone()),
+                                    None => voices.remove(model_id),
+                                };
+                                this.companion.save();
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    };
+                    rows = rows.child(index_row(
+                        next(),
+                        label,
+                        Some(div().child(detail).into_any_element()),
+                        Some(right),
+                        &t,
+                    ));
+                }
+            }
+        }
+
         // Another AI program on this PC.
         let found: AnyElement = match (&c.servers, &c.finding) {
             (_, Some(_)) => text(theme::CAPTION)
@@ -922,16 +986,15 @@ impl Launcher {
             &t,
         ));
         let this = cx.entity().downgrade();
-        let levels: Vec<(Level, &'static str)> =
-            Level::ALL.iter().map(|l| (*l, l.label())).collect();
-        let level = segments(
-            "companion-level",
-            &levels,
-            c.settings.persona.level,
+        let roles: Vec<(Role, &'static str)> = Role::ALL.iter().map(|r| (*r, r.label())).collect();
+        let role = segments(
+            "companion-role",
+            &roles,
+            c.settings.persona.role,
             &t,
-            move |l, _, cx| {
+            move |r, _, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.companion.settings.persona.level = l;
+                    this.companion.settings.persona.role = r;
                     this.companion.save();
                     cx.notify();
                 });
@@ -939,35 +1002,175 @@ impl Launcher {
         );
         rows = rows.child(index_row(
             next(),
-            "Level",
-            None,
-            Some(level.into_any_element()),
-            &t,
-        ));
-        let salty = switch("companion-salty", c.settings.persona.salty, &t).on_click(cx.listener(
-            |this, _: &ClickEvent, _, cx| {
-                let p = &mut this.companion.settings.persona;
-                p.salty = !p.salty;
-                this.companion.save();
-                cx.notify();
-            },
-        ));
-        rows = rows.child(index_row(
-            next(),
-            "Salty language",
+            "Role",
             Some(
                 div()
-                    .child("Mild swearing now and then. Off: clean.")
+                    .child(c.settings.persona.role.blurb())
+                    .into_any_element(),
+            ),
+            Some(role.into_any_element()),
+            &t,
+        ));
+        let this = cx.entity().downgrade();
+        let perceptions: Vec<(Perception, &'static str)> =
+            Perception::ALL.iter().map(|p| (*p, p.label())).collect();
+        let perception = segments(
+            "companion-perception",
+            &perceptions,
+            c.settings.persona.perception,
+            &t,
+            move |p, _, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.companion.settings.persona.perception = p;
+                    this.companion.save();
+                    cx.notify();
+                });
+            },
+        );
+        rows = rows.child(index_row(
+            next(),
+            "Perception",
+            Some(
+                div()
+                    .child(c.settings.persona.perception.blurb())
+                    .into_any_element(),
+            ),
+            Some(perception.into_any_element()),
+            &t,
+        ));
+        // Salty: real swearing, for adults only (confirmed once), never with Kid-friendly.
+        let kid = c.settings.persona.kid_friendly;
+        let salty = switch("companion-salty", c.settings.persona.salty_on(), &t).on_click(
+            cx.listener(|this, _: &ClickEvent, _, cx| {
+                let c = &mut this.companion;
+                let p = &mut c.settings.persona;
+                if p.salty_on() {
+                    p.salty = false;
+                } else if p.adult_confirmed {
+                    p.salty = true;
+                    p.kid_friendly = false;
+                } else {
+                    c.confirm_salty = true;
+                }
+                c.save();
+                cx.notify();
+            }),
+        );
+        rows = rows.child(index_row(
+            next(),
+            "Salty (18+)",
+            Some(
+                div()
+                    .child(if kid {
+                        "Real swearing and attitude. Not with Kid-friendly on."
+                    } else {
+                        "Real swearing and attitude, and an uncensored brain where one is chosen. Anything harmful is still refused. Off: clean."
+                    })
                     .into_any_element(),
             ),
             Some(salty.into_any_element()),
             &t,
         ));
+        if c.settings.persona.salty_on() {
+            let brain = c.plan.as_ref().and_then(|plan| {
+                c.settings
+                    .selection(plan, &options)
+                    .into_iter()
+                    .find(|o| o.part == Part::Brain)
+                    .and_then(|o| match companion::model_of(&o.id) {
+                        Some(companion::Component::Brain(m)) => Some(m),
+                        _ => None,
+                    })
+            });
+            let uncensored = brain.and_then(|m| {
+                horizon_companion::catalogue::Tier::ALL
+                    .into_iter()
+                    .find(|t| t.model().id == m.id)
+                    .and_then(horizon_companion::catalogue::Tier::uncensored)
+            });
+            let detail = match uncensored {
+                Some(m) => format!(
+                    "{} · {} · {} download, fetched by Set up · {}",
+                    m.name,
+                    m.license,
+                    companion::gigabytes(m.size()),
+                    m.credit
+                ),
+                None => {
+                    "This brain has no uncensored variant: it runs with the Salty prompt.".into()
+                }
+            };
+            let on = switch(
+                "companion-salty-uncensored",
+                c.settings.salty_uncensored,
+                &t,
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                let c = &mut this.companion;
+                c.settings.salty_uncensored = !c.settings.salty_uncensored;
+                c.save();
+                cx.notify();
+            }));
+            rows = rows.child(index_row(
+                next(),
+                "Salty brain: uncensored",
+                Some(div().child(detail).into_any_element()),
+                Some(on.into_any_element()),
+                &t,
+            ));
+        }
+        if c.confirm_salty {
+            let confirm = div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    button(
+                        "companion-salty-adult",
+                        "I'm 18 or older",
+                        Kind::Primary,
+                        &t,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        let c = &mut this.companion;
+                        c.confirm_salty = false;
+                        let p = &mut c.settings.persona;
+                        p.adult_confirmed = true;
+                        p.salty = true;
+                        p.kid_friendly = false;
+                        c.save();
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    button("companion-salty-cancel", "Cancel", Kind::Secondary, &t).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.companion.confirm_salty = false;
+                            cx.notify();
+                        }),
+                    ),
+                );
+            rows = rows.child(index_row(
+                next(),
+                "Salty is for adults",
+                Some(
+                    div()
+                        .child("Confirm that you are 18 or older to turn it on.")
+                        .into_any_element(),
+                ),
+                Some(confirm.into_any_element()),
+                &t,
+            ));
+        }
         let kids = switch("companion-kids", c.settings.persona.kid_friendly, &t).on_click(
             cx.listener(|this, _: &ClickEvent, _, cx| {
-                let p = &mut this.companion.settings.persona;
+                let c = &mut this.companion;
+                let p = &mut c.settings.persona;
                 p.kid_friendly = !p.kid_friendly;
-                this.companion.save();
+                if p.kid_friendly {
+                    p.salty = false;
+                    c.confirm_salty = false;
+                }
+                c.save();
                 cx.notify();
             }),
         );
@@ -976,7 +1179,7 @@ impl Launcher {
             "Kid-friendly",
             Some(
                 div()
-                    .child("Gentle humour, nothing scary, never swearing.")
+                    .child("Gentle humour, nothing scary, never swearing. Turns Salty off.")
                     .into_any_element(),
             ),
             Some(kids.into_any_element()),
