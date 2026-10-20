@@ -281,7 +281,8 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(());
         };
-        if self.travelling.is_some() {
+        // Watching, the owner's view goes through the body's portals only.
+        if self.travelling.is_some() || self.watching() {
             return Ok(());
         }
         let allowed = !p.health.dead_or_dying() && self.riding.is_none() && self.sleeping.is_none();

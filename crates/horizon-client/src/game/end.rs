@@ -368,7 +368,8 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(());
         };
-        if self.travelling.is_some() || p.health.dead_or_dying() {
+        // Watching, the owner's view goes through the body's portals only.
+        if self.travelling.is_some() || p.health.dead_or_dying() || self.watching() {
             return Ok(());
         }
         let (portal, gateway) = self.inside_end_portals(

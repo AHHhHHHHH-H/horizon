@@ -649,7 +649,7 @@ impl Game<'_> {
             "dragon-hurt" => {
                 // Test hook: damage the dragon's head as the player would.
                 let amount: f32 = arg(1)?.parse()?;
-                self.hit_special(super::dragon::SPECIAL, amount, true);
+                self.hit_special(super::dragon::SPECIAL, amount, true, false);
                 ok()
             }
             "quit" => {
@@ -723,6 +723,9 @@ impl Game<'_> {
                 "on_ground": p.ground.on_ground,
                 "health": p.health.health(),
                 "food": p.health.food.food,
+                // level.dat's spawn, where a player without a bed respawns.
+                "world_spawn": self.level.world_spawn,
+                "game_mode": self.mode_id(),
             })
         });
         let target = self.pick().map(|hit| {

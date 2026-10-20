@@ -130,7 +130,7 @@ impl Game<'_> {
     }
 
     /// A Nether portal block a player's box is in.
-    fn nether_portal_inside(&self, at: Vec3) -> Option<BlockPos> {
+    pub(super) fn nether_portal_inside(&self, at: Vec3) -> Option<BlockPos> {
         let w = WIDTH / 2.0 - 1.0e-5;
         let lo = [at.x - w, at.y + 1.0e-5, at.z - w];
         let hi = [at.x + w, at.y + HEIGHT - 1.0e-5, at.z + w];

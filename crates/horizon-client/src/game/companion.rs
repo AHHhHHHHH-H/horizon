@@ -250,6 +250,8 @@ pub(super) struct Companions {
     pub plans: (u32, std::time::Duration, std::time::Duration),
     /// What the work skills cache: recipes, drops, their cost.
     pub work: super::companion_work::WorkCache,
+    /// The owner watching a companion (game/companion_watch.rs).
+    pub watch: Option<super::companion_watch::Watch>,
 }
 
 impl Companions {
@@ -521,6 +523,7 @@ impl Game<'_> {
     /// The world closes: every companion is saved and leaves, to come back
     /// with it (before the hub closes, so that it closes for good).
     pub(super) fn companions_leave_world(&mut self) {
+        self.watch_end();
         let pending = std::mem::take(&mut self.companions);
         // Those not in the hub keep their files as they are.
         drop(pending);
@@ -902,7 +905,8 @@ impl Game<'_> {
         if let Some(result) = self.companion_ai_words(words) {
             return result;
         }
-        let usage = "companion spawn [name] | dismiss [name] | do [name] <command> | list | summary [name] | reports";
+        let usage = "companion spawn [name] | dismiss [name] | do [name] <command> | list | summary [name] | reports \
+                     | watch [name|off] | strike [name] <id>";
         match words.first().copied() {
             Some("spawn") => {
                 let name = self.companion_spawn(words.get(1).copied())?;
@@ -968,6 +972,8 @@ impl Game<'_> {
                 }
                 Ok(json!({ "ok": true, "cost": cost }))
             }
+            Some("watch") => self.companion_watch_words(&words[1..]),
+            Some("strike") => self.companion_strike_words(&words[1..]),
             Some("reports") => {
                 let reports: Vec<Value> = self
                     .companion_reports()

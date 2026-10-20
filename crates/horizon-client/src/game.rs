@@ -30,6 +30,7 @@ mod companion_body;
 mod companion_craft;
 mod companion_setup;
 mod companion_voice;
+mod companion_watch;
 mod companion_work;
 mod composter;
 mod consume;
@@ -3556,6 +3557,9 @@ impl Game<'_> {
                     f64::from(z) + 0.5,
                 ));
                 self.level.spawn = Some([f64::from(x), f64::from(y), f64::from(z)]);
+                // The world's spawn from the start, not only once saved: a bed set
+                // before the first save must not become it.
+                self.level.world_spawn.get_or_insert([x, y, z]);
             }
             let s = self
                 .level
@@ -4037,6 +4041,7 @@ impl Game<'_> {
         self.tick_companion_setup();
         self.tick_companion_arrivals();
         horizon_client::spans::time("tick_lan", || self.tick_lan());
+        self.tick_companion_watch();
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
@@ -4530,6 +4535,7 @@ impl Game<'_> {
             self.draw_scoreboard(&mut batch);
             self.draw_subtitles(&mut batch);
             self.draw_companion_mic(&mut batch);
+            self.draw_companion_watch(&mut batch);
         }
         let atlas = &self.gui.atlas;
         if show_hud
