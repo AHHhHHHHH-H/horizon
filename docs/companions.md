@@ -102,17 +102,36 @@ failure back to the brain as text.
 | sleep | Uses a nearby bed when the owner sleeps. |
 | build (later) | Pillars up, bridges and builds a quick shelter. |
 
-### Reflexes (Rust, instant)
+### Reflexes: the nervous system (instant)
 
-- **Commands.** Commands are parsed in English, French, Spanish, German and Portuguese. Item names come
-  from the game's language files. The commands are:
-  - follow, stay / wait here, come here, stop, go there;
-  - attack, defend me, hold fire, fire, jump, crouch, stand up;
-  - get / collect <n> <item>, give me <n> <item>, eat, sleep, craft <item>.
+Ludovic asked for a classification model, like Kev-4B in the video. Every line the companion hears goes
+through three stages, and the first one that is sure wins:
 
-  A matched command runs at once, with an instant acknowledgement taken from the personality's phrase
-  bank. The brain may add a remark afterwards, asynchronously. Anything else, or an unclear command, goes
-  to the brain.
+1. **Rules (under 1 ms).** Commands are parsed in English, French, Spanish, German and Portuguese. Item
+   names come from the game's language files. The commands are:
+   - follow, stay / wait here, come here, stop, go there;
+   - attack, defend me, hold fire, fire, jump, crouch, stand up;
+   - get / collect <n> <item>, give me <n> <item>, eat, sleep, craft <item>.
+
+   Negations count: "don't follow me" and "ne me suis pas" are not "follow".
+2. **Classifier (about 10–30 ms on a CPU).** A small multilingual embedding model,
+   `intfloat/multilingual-e5-small` (MIT, 118M parameters, Q8 GGUF of 132 MB), compares the line with
+   an example bank. The bank has 15–30 examples per intent in five languages, with typos and negations,
+   embedded once at setup. The nearest examples vote. The classifier returns the intent, its slots
+   ("I need wood" → collect oak_log) and a **needs-brain** flag. Below a confidence threshold, with a
+   small margin between the top two intents, or for chit-chat and questions, it passes the line on.
+   - It runs in a second `llama-server` started with `--embeddings` on one CPU thread, from the runtime
+     the brain already uses, so it needs no extra engine.
+   - Kev-4B was rejected: 14 GB of GPU memory and English only.
+   - The design was: multilingual-e5-small, with `paraphrase-multilingual-MiniLM-L12-v2` (Apache 2.0)
+     benchmarked against it. Kept or swapped: whichever is more accurate on the test set at equal speed.
+3. **Brain.** Everything else goes to the brain.
+
+A matched command runs at once, with an instant acknowledgement taken from the personality's phrase bank.
+The brain may add a remark afterwards, asynchronously.
+
+The same classifier also triages game events. A hit, a mob sound or a low-health warning becomes a reflex
+action, a callout or a brain call.
 - **Callouts.** Hostiles and sounds near the owner produce callouts relative to the owner's facing, such
   as "Creeper, 2 o'clock, close!", without the LLM. Each callout type has its own cooldown.
 - **Self-preservation.** It retreats at low health, avoids lava and big falls through pathfinding, and
@@ -235,20 +254,63 @@ ungated and without an account, then checked against pinned SHA-256:
   - Uncensored fine-tunes.
   - Models gated behind a Hugging Face login.
 
-**Voice (slice 6):**
-- **Engine.** Voice runs in a second small sidecar, `horizon-voice`, built by our release workflow with
-  sherpa-onnx (Apache 2.0). It is downloaded only when voice is turned on.
-- **Speech to text** uses NVIDIA Parakeet TDT 0.6B v3 (CC-BY-4.0, 25 European languages, auto-detect),
-  as int8 ONNX of about 0.6 GB. Silero VAD trims silence, and a push-to-talk key, V by default, controls
-  the mic. The microphone is opened (and macOS asks for permission) only once voice is on.
-- **Text to speech** uses Kokoro-82M v1.0 (Apache 2.0, ungated, about 0.3 GB, real-time on a CPU). Each
-  personality gets a voice. It speaks en, fr, es, it, pt, ja, zh and hi; German is text-only until a
-  licence-clean German voice is picked.
-- **Playback.** The voice plays positionally from the companion's head through the game's mixer. Past 48
-  blocks, or in another dimension, it comes over a "radio" (band-pass filter and static), with subtitles.
+**Voice (in the first version, Ludovic 2026-10-20).** Voice runs in a second sidecar, audio.cpp's
+server (`0xShug0/audio.cpp`, Apache 2.0). It is ggml-based like llama.cpp, has prebuilt Metal, Vulkan,
+CUDA and CPU builds, a C API and a streaming server, and needs no Python. It is downloaded only when voice
+is turned on. Its build and models are pinned with SHA-256, like llama.cpp's.
+
+- **Talking to it: push-to-talk.** Hold **V** (rebindable in Controls), speak, then release. The
+  microphone is opened only once voice is turned on, which is also when macOS asks for permission, and
+  only while the key is held. A small mic icon shows that it is listening.
+  - **Speech to text** is NVIDIA Parakeet TDT 0.6B v3: CC-BY-4.0, 25 European languages detected
+    automatically, about 0.5 GB quantised, the newer version of the model Chasm's video used. Expected
+    time on a mid CPU is about 0.3 s for a 3 s sentence, and 1–2 s on the HD 620. That is to be measured.
+  - **Very weak PCs** get Whisper base (MIT, about 0.2 GB) instead.
+  - What it heard shows in chat as the player's line, so mistakes are visible.
+- **Its voice (text to speech).** The brain's JSON carries a `tone` (normal, shout, whisper, laugh,
+  sarcastic…), and `say` is spoken sentence by sentence while the rest is still being generated.
+  - **Natural voice (CPU, default): Kyutai Pocket TTS.** This is the official ungated
+    `kyutai/pocket-tts-without-voice-cloning` (CC-BY-4.0): 100M parameters, Q8 GGUF of about 125 MB. It
+    speaks en, fr, de, es, pt and it, with about 200 ms to the first sound and about 6× real time on 2
+    Apple M4 cores. It has no emotion control, so `tone` maps to volume and pace.
+  - **Expressive voice (GPU, "Best quality"): Qwen3-TTS-12Hz-1.7B-CustomVoice.** Apache 2.0, ungated,
+    Q8 GGUF of 2.8 GB, ten languages including the five above. It takes a natural-language instruction
+    for each line ("shouting, furious", "whispering", "dry and sarcastic"), which is how it shouts and
+    whispers like Kevin. It streams, at about 0.2–0.5 s to the first sound on an RTX 4090 / 4060.
+    Chasm's own project uses Qwen3-TTS as well.
+  - Each personality gets its own voice and default delivery.
+- **Playback.** The voice plays positionally from the companion's head through the game's mixer, as an
+  appendable streaming channel. Past 48 blocks, or in another dimension, it comes over a "radio"
+  (band-pass filter and static). Subtitles follow the game's subtitle setting.
 - **Rejected:**
-  - Breeze-TTS-2: research and non-commercial licence, 12 GB NVIDIA only, English and Chinese.
-  - Kyutai Pocket TTS: gated download. It could be an Advanced option later.
+  - Breeze-TTS-2, the voice in the video: research and non-commercial licence, NVIDIA 12 GB only, English
+    and Chinese.
+  - Supertonic 3: an OpenRAIL-M licence that passes use restrictions on to players, and an archived repo.
+  - Kokoro: no German.
+  - Chatterbox: watermark, and only English for Turbo.
+  - Spark, Voxtral, Higgs, OmniVoice, Fish, IndexTTS: non-commercial or conditional licences.
+  - The sherpa-onnx route: it stays the fallback if audio.cpp falls short.
+
+### Fitting the player's PC (simple and Advanced)
+
+Every part comes in several options, each tagged with what it needs: RAM, free VRAM, CPU cores, GPU
+backend and download size. The parts are the brain, the classifier, speech to text and the voice.
+
+- `plan()` looks at the PC and builds one recommended setup. It always keeps the game's own share free:
+  about 3 GB of RAM, 1.5 GB of VRAM and 1–2 cores. It describes the result in plain words, for example
+  "Standard brain on your RTX 3060, natural voice on the processor: 3.4 GB to download".
+- If the PC is too weak for a part, the plan says so and drops it. A 2-core laptop gets the Light brain
+  and chat only, for instance, and keeps the option to try voice anyway.
+- **Simple** (the default, in the launcher and in the game) shows the detected PC, the plan and one "Set
+  up companion" button, then progress and "Ready".
+- **Advanced** (collapsed) lets the player:
+  - pick any catalogue option per part, or use a custom GGUF, Ollama, LM Studio or a cloud endpoint and
+    key (the key is kept in the OS keychain);
+  - see exact names, versions, licences, quantisation and context;
+  - change temperature, GPU layers and threads;
+  - watch live memory use and latency;
+  - delete models.
+- The launcher and the game share one `CompanionSettings`, which also holds `no_ai`.
 
 ## Code layout
 
@@ -260,7 +322,9 @@ ungated and without an account, then checked against pinned SHA-256:
   - the OpenAI-compatible streaming client (`ureq`, server-sent events), for local, Ollama, LM Studio and
     cloud;
   - the prompt builder and the JSON schema;
-  - the reflex parser and phrase banks;
+  - the reflex pipeline (rules → classifier → brain) and phrase banks;
+  - `plan()` and `CompanionSettings` (simple and Advanced);
+  - the senses client: the audio.cpp supervisor, streaming TTS, STT, and the embedding classifier;
   - presets.
 
   Both the game and the launcher use it.
@@ -281,6 +345,7 @@ ungated and without an account, then checked against pinned SHA-256:
 4. **Setup:** the in-game Companion section, the launcher card, the one-button setup, Advanced, and the
    world-creation option.
 5. **Levels:** Super strong, Helper and Partner (the milestone planner).
-6. **Voice:** speech out (positional, radio), then push-to-talk in.
+6. **Senses:** the classifier model, voice out (Pocket / Qwen3-TTS through audio.cpp, positional and
+   radio) and push-to-talk in (Parakeet v3). This is part of the first version.
 7. **Polish:** cost numbers on the ThinkPad and the Mac mini, demo recordings, licences in
    THIRD_PARTY_NOTICES and the launcher's Advanced section.
