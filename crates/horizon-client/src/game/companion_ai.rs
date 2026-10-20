@@ -530,6 +530,7 @@ impl Game<'_> {
                                 .map(|(model, dir)| Installed { model, dir })
                                 .collect(),
                             work: home().join("companion").join("logs"),
+                            voices: None,
                         };
                         self.companion_voice_start(setup, false);
                     }
