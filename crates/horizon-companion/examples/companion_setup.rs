@@ -3,7 +3,7 @@
 //!
 //! cargo run -p horizon-companion --example companion_setup -- <game home> [language] [--voice]
 //!   [--brain <option id>] [--stt <option id>] [--tts <option id>] [--classifier <option id>]
-//!   [--plan-only]
+//!   [--salty] [--plan-only]
 
 use std::path::PathBuf;
 
@@ -20,6 +20,12 @@ fn main() {
         let mut value = || args.next().expect("a value");
         match arg.as_str() {
             "--voice" => settings.voice = true,
+            // Salty mode (confirmed 18+): Set up also fetches the brain's uncensored variant.
+            "--salty" => {
+                settings.persona.salty = true;
+                settings.persona.adult_confirmed = true;
+                settings.persona.kid_friendly = false;
+            }
             "--brain" => settings.brain = BrainChoice::Option { id: value() },
             "--stt" => settings.speech_to_text = PartChoice::Option { id: value() },
             "--tts" => settings.text_to_speech = PartChoice::Option { id: value() },
@@ -60,7 +66,11 @@ fn main() {
                 }
             }
             Event::Planned(machine, plan) => {
-                println!("planned on {}: {} parts", machine.summary(), plan.picks.len());
+                println!(
+                    "planned on {}: {} parts",
+                    machine.summary(),
+                    plan.picks.len()
+                );
             }
             Event::Done(what) => {
                 println!("done: {what}");
@@ -77,7 +87,10 @@ fn main() {
     let settings = CompanionSettings::load(&home);
     let parts = setup.parts(&settings, &Machine::detect(&home));
     println!("brain: {}", parts.brain.is_some());
-    println!("classifier: {:?}", parts.classifier.as_ref().map(|c| c.model.id));
+    println!(
+        "classifier: {:?}",
+        parts.classifier.as_ref().map(|c| c.model.id)
+    );
     println!(
         "voice: {:?}",
         parts

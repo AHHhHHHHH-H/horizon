@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use horizon_companion::catalogue::Family;
 use horizon_companion::client::{Brain, ChatRequest, Event, Stats};
 use horizon_companion::hardware::{self, Hardware, Offload};
-use horizon_companion::prompt::{self, Budget, Exchange, Input, Level, Persona, Personality};
+use horizon_companion::prompt::{self, Budget, Exchange, Input, Persona, Personality, Role};
 use horizon_companion::reflex::{self, NameIndex, Parse};
 use horizon_companion::reply::Reply;
 use horizon_companion::runtime::{LaunchConfig, Runtime};
@@ -316,10 +316,10 @@ fn main() {
     let mut brain = Brain::new(endpoint.clone());
     let language = if args.lang == "fr" { "fr_fr" } else { "en_us" };
     let personas = [
-        (Personality::Veteran, Level::Helper),
-        (Personality::Coach, Level::Partner),
-        (Personality::Joker, Level::SuperStrong),
-        (Personality::Expert, Level::Helper),
+        (Personality::Veteran, Role::Assistant),
+        (Personality::Coach, Role::Teammate),
+        (Personality::Joker, Role::Bodyguard),
+        (Personality::Expert, Role::Assistant),
     ];
     let memory = "Steve's base: an oak house at 120 64 -45.\nSteve hates creepers since one blew up his first house.";
     let mut history: Vec<Exchange> = Vec::new();
@@ -350,10 +350,10 @@ fn main() {
     }
     let mut by_reflex = 0;
     for (i, turn) in TURNS.iter().enumerate() {
-        let (personality, level) = personas[if args.one_persona { 0 } else { i / 5 }];
+        let (personality, role) = personas[if args.one_persona { 0 } else { i / 5 }];
         let persona = Persona {
             personality,
-            level,
+            role,
             ..Persona::default()
         };
         let system = prompt::system_prompt(&persona, "Steve", language);

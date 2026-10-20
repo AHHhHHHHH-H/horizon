@@ -46,7 +46,9 @@ impl Step {
             Step::Diamonds => "find diamonds (deep, y -50 to 16) for a diamond pickaxe",
             Step::Nether => "get obsidian and flint and steel, build a nether portal and go in",
             Step::BlazeRods => "find a nether fortress and kill blazes for 6 or more blaze rods",
-            Step::EnderPearls => "get 12 or more ender pearls (endermen, or barter gold with piglins)",
+            Step::EnderPearls => {
+                "get 12 or more ender pearls (endermen, or barter gold with piglins)"
+            }
             Step::Stronghold => "craft eyes of ender, throw them to find the stronghold",
             Step::End => "fill the end portal frame and jump in",
             Step::Dragon => "destroy the end crystals and beat the ender dragon",
@@ -123,16 +125,40 @@ mod tests {
     fn a_run_moves_through_the_steps() {
         let overworld = "minecraft:overworld";
         assert_eq!(step(&[], overworld), Step::Wood);
-        assert_eq!(step(&items(&[("minecraft:oak_log", 6)]), overworld), Step::Wood);
-        assert_eq!(step(&items(&[("oak_log", 16)]), overworld), Step::StoneTools);
-        assert_eq!(step(&items(&[("wooden_pickaxe", 1)]), overworld), Step::StoneTools);
-        assert_eq!(step(&items(&[("stone_pickaxe", 1)]), overworld), Step::Iron);
-        assert_eq!(step(&items(&[("iron_ingot", 3)]), overworld), Step::Diamonds);
-        assert_eq!(step(&items(&[("minecraft:diamond", 2)]), overworld), Step::Nether);
-        assert_eq!(step(&items(&[("diamond_pickaxe", 1)]), "minecraft:the_nether"), Step::BlazeRods);
-        assert_eq!(step(&items(&[("blaze_rod", 6)]), overworld), Step::EnderPearls);
         assert_eq!(
-            step(&items(&[("blaze_rod", 3), ("blaze_powder", 6), ("ender_pearl", 12)]), overworld),
+            step(&items(&[("minecraft:oak_log", 6)]), overworld),
+            Step::Wood
+        );
+        assert_eq!(
+            step(&items(&[("oak_log", 16)]), overworld),
+            Step::StoneTools
+        );
+        assert_eq!(
+            step(&items(&[("wooden_pickaxe", 1)]), overworld),
+            Step::StoneTools
+        );
+        assert_eq!(step(&items(&[("stone_pickaxe", 1)]), overworld), Step::Iron);
+        assert_eq!(
+            step(&items(&[("iron_ingot", 3)]), overworld),
+            Step::Diamonds
+        );
+        assert_eq!(
+            step(&items(&[("minecraft:diamond", 2)]), overworld),
+            Step::Nether
+        );
+        assert_eq!(
+            step(&items(&[("diamond_pickaxe", 1)]), "minecraft:the_nether"),
+            Step::BlazeRods
+        );
+        assert_eq!(
+            step(&items(&[("blaze_rod", 6)]), overworld),
+            Step::EnderPearls
+        );
+        assert_eq!(
+            step(
+                &items(&[("blaze_rod", 3), ("blaze_powder", 6), ("ender_pearl", 12)]),
+                overworld
+            ),
             Step::Stronghold
         );
         assert_eq!(step(&items(&[("ender_eye", 12)]), overworld), Step::End);

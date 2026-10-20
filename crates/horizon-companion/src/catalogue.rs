@@ -203,7 +203,114 @@ impl Tier {
             .find(|m| m.kind == ModelKind::Chat(self))
             .expect("every tier has a chat model")
     }
+
+    /// The tier's uncensored (abliterated) variant, run instead of [`Tier::model`] only while Salty
+    /// mode is on.
+    pub fn uncensored(self) -> Option<&'static Model> {
+        UNCENSORED.iter().find(|u| u.tier == self).map(|u| &u.model)
+    }
 }
+
+/// A tier's uncensored variant: the same base model with its refusals removed (Heretic
+/// abliteration), for Salty mode's swearing and attitude. The hard guard (`guard`) still filters
+/// what it says, whatever the model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Uncensored {
+    pub tier: Tier,
+    pub model: Model,
+}
+
+const HERETIC_CREDIT: &str = "abliterated with Heretic (p-e-w/heretic) from the tier's base model";
+
+/// One per tier, each an abliteration of that tier's exact base model (picked 2026-10-20: ungated,
+/// Apache-2.0). Downloaded only once Salty mode is on.
+pub const UNCENSORED: &[Uncensored] = &[
+    Uncensored {
+        tier: Tier::Light,
+        model: Model {
+            id: "qwen3.5-2b-heretic-q4_k_m",
+            kind: ModelKind::Chat(Tier::Light),
+            label: "Light, uncensored — for Salty mode",
+            name: "Qwen3.5 2B Heretic",
+            family: Family::Qwen35,
+            quantisation: "Q4_K_M",
+            repo: "tvall43/Qwen3.5-2B-heretic-gguf",
+            revision: "b49fa6be881f769afc9c09402b78808fe8715a95",
+            files: &[ModelFile {
+                path: "Qwen3.5-2B-heretic-Q4_K_M.gguf",
+                size: 1270808064,
+                sha256: "e9c7c564f4a7e58da42e37377279ea1435b080b8297dc523f0626760c4cd0fa0",
+            }],
+            license: "Apache-2.0",
+            credit: HERETIC_CREDIT,
+            // As the base model: same architecture and size.
+            memory_mb: 1950,
+        },
+    },
+    Uncensored {
+        tier: Tier::Standard,
+        model: Model {
+            id: "qwen3.5-4b-heretic-v2-i1-q4_k_m",
+            kind: ModelKind::Chat(Tier::Standard),
+            label: "Standard, uncensored — for Salty mode",
+            name: "Qwen3.5 4B Heretic v2",
+            family: Family::Qwen35,
+            quantisation: "i1-Q4_K_M",
+            repo: "mradermacher/Qwen3.5-4B-heretic-v2-i1-GGUF",
+            revision: "0213dd3c47d623be9a6d828214cdb4efb93e5118",
+            files: &[ModelFile {
+                path: "Qwen3.5-4B-heretic-v2.i1-Q4_K_M.gguf",
+                size: 2707515040,
+                sha256: "a8590e1a0420063ce9bf8c13d6b90af410d1c89fad22586a340597bf48fb22d3",
+            }],
+            license: "Apache-2.0",
+            credit: HERETIC_CREDIT,
+            memory_mb: 3950,
+        },
+    },
+    Uncensored {
+        tier: Tier::Strong,
+        model: Model {
+            id: "qwen3.5-9b-ultra-uncensored-heretic-q4_k_m",
+            kind: ModelKind::Chat(Tier::Strong),
+            label: "Strong, uncensored — for Salty mode",
+            name: "Qwen3.5 9B Ultra Uncensored Heretic",
+            family: Family::Qwen35,
+            quantisation: "Q4_K_M",
+            repo: "llmfan46/Qwen3.5-9B-Ultra-Uncensored-Heretic-GGUF",
+            revision: "b93c15ba249eab3e624576411621d1d1d4696973",
+            files: &[ModelFile {
+                path: "Qwen3.5-9B-Ultra-Uncensored-Heretic-Q4_K_M.gguf",
+                size: 5527953952,
+                sha256: "8d463c63e2c8759ad263cba59f1fa7a0be9a7cacb59b0fd0a787b7daa31597ad",
+            }],
+            license: "Apache-2.0",
+            credit: HERETIC_CREDIT,
+            memory_mb: 7300,
+        },
+    },
+    Uncensored {
+        tier: Tier::Best,
+        model: Model {
+            id: "gemma-4-12b-it-heretic-qat-ud-q4_k_xl",
+            kind: ModelKind::Chat(Tier::Best),
+            label: "Best, uncensored — for Salty mode",
+            name: "Gemma 4 12B Heretic (QAT)",
+            family: Family::Gemma4,
+            quantisation: "UD-Q4_K_XL",
+            repo: "SC117/gemma-4-12B-it-heretic-QAT-GGUF",
+            revision: "64062b42e9e7e792597bcd0d5583496d0c9ff22d",
+            files: &[ModelFile {
+                path: "gemma-4-12B-it-heretic-QAT-UD-Q4_K_XL.gguf",
+                size: 6716355776,
+                sha256: "d66f8198cf21219c93ebc682919398a151f67cd81ca54c9e6b125b34446b16e4",
+            }],
+            license: "Apache-2.0",
+            credit: HERETIC_CREDIT,
+            memory_mb: 9700,
+        },
+    },
+];
 
 /// What a model is for. Chat models are the brain; the other kinds belong to the speech and
 /// classifier sidecar and are added to [`MODELS`] by its slice.
@@ -397,6 +504,18 @@ mod tests {
         for tier in Tier::ALL {
             assert_eq!(tier.model().kind, ModelKind::Chat(tier));
             assert_eq!(tier.model().license, "Apache-2.0");
+            let u = tier
+                .uncensored()
+                .expect("every tier has an uncensored variant");
+            assert_eq!(u.kind, ModelKind::Chat(tier));
+            assert_eq!(u.family, tier.model().family);
+            assert_ne!(u.id, tier.model().id);
+            assert_eq!(u.revision.len(), 40, "{}", u.id);
+            assert_eq!(u.license, "Apache-2.0");
+            for f in u.files {
+                assert_eq!(f.sha256.len(), 64, "{}", f.path);
+                assert!(u.url(f).ends_with(f.path));
+            }
         }
     }
 

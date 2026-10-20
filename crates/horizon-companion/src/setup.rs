@@ -267,6 +267,18 @@ pub struct Parts {
     pub missing: Vec<String>,
 }
 
+/// The uncensored model Salty mode runs instead of a tier's `model`: only with Salty on, the
+/// setting allowing it.
+pub fn salty_model(settings: &CompanionSettings, model: &Model) -> Option<&'static Model> {
+    if !(settings.persona.salty_on() && settings.salty_uncensored) {
+        return None;
+    }
+    catalogue::Tier::ALL
+        .into_iter()
+        .find(|t| t.model().id == model.id)
+        .and_then(|t| t.uncensored())
+}
+
 /// The companion's files in a game home, for a game language.
 #[derive(Clone, Debug)]
 pub struct Setup {
@@ -377,11 +389,21 @@ impl Setup {
             let mut set_up = Vec::new();
             for option in &chosen {
                 match Component::of(&option.id) {
-                    Some(Component::Brain(model)) if layout.installed_model(model).is_none() => {
-                        let what = format!("the {} brain", option.label);
-                        layout
-                            .install_model(model, &mut reporter(tx, &what), cancel)
-                            .map_err(|e| e.to_string())?;
+                    Some(Component::Brain(model)) => {
+                        if layout.installed_model(model).is_none() {
+                            let what = format!("the {} brain", option.label);
+                            layout
+                                .install_model(model, &mut reporter(tx, &what), cancel)
+                                .map_err(|e| e.to_string())?;
+                        }
+                        if let Some(salty) = salty_model(&settings, model)
+                            && layout.installed_model(salty).is_none()
+                        {
+                            let what = format!("the {} brain for Salty mode", option.label);
+                            layout
+                                .install_model(salty, &mut reporter(tx, &what), cancel)
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                     Some(Component::Sense(model)) => {
                         if matches!(model.engine, Engine::AudioCpp { .. }) {
@@ -500,10 +522,19 @@ impl Setup {
                     (Some(option), Some(server)) => match Component::of(&option.id) {
                         Some(Component::Brain(model)) => match layout.installed_model(model) {
                             Some(path) => {
+                                // Salty mode runs the tier's uncensored variant once it is on disk.
+                                let salty = salty_model(settings, model)
+                                    .and_then(|m| layout.installed_model(m).map(|path| (m, path)));
+                                let (run, path, label) = match salty {
+                                    Some((m, path)) => {
+                                        (m, path, format!("{}, uncensored", option.label))
+                                    }
+                                    None => (model, path, option.label.clone()),
+                                };
                                 let mut config = LaunchConfig::for_pick(
                                     server,
                                     &path,
-                                    model.family,
+                                    run.family,
                                     &pick_of(option),
                                     &log,
                                 );
@@ -514,7 +545,7 @@ impl Setup {
                                 Some(BrainPart::Local {
                                     config,
                                     tier,
-                                    label: option.label.clone(),
+                                    label,
                                 })
                             }
                             None => {

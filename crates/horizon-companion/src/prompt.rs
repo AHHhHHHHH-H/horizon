@@ -1,6 +1,6 @@
 //! What the brain reads each turn, in an order that keeps the runtime's prompt cache warm:
 //!
-//! 1. the system prompt: rules, safety, the skills, the personality and level (the same every turn);
+//! 1. the system prompt: rules, safety, the skills, the personality and role (the same every turn);
 //! 2. memory notes, at the end of the system message (they change rarely);
 //! 3. the last six exchanges, as they were heard and answered;
 //! 4. the state the game describes, then what was just said or happened.
@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::{Message, Role};
+use crate::client::{Message, Role as Speaker};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,23 +63,173 @@ impl Personality {
     }
 }
 
+/// What the companion does in the world: its job beside the player. Picked in the Companion screen
+/// and at world creation; each companion's save file keeps its own. Later roles (gatherer, builder)
+/// add a variant, a label, a blurb and a prompt text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Level {
+pub enum Role {
+    /// Does what it is asked (gather, craft, guard, fetch) and otherwise stays back.
     #[default]
-    Helper,
-    SuperStrong,
-    Partner,
+    #[serde(alias = "helper")]
+    Assistant,
+    /// Plays alongside with initiative, shares loot, progresses with the player.
+    #[serde(alias = "partner")]
+    Teammate,
+    /// Plays to beat the game fast, takes the player along and explains the route.
+    Speedrunner,
+    /// Protects the player and fights everything, visibly boosted.
+    #[serde(alias = "super_strong")]
+    Bodyguard,
+    /// Teaches: what to do next and why, and lets the player do it.
+    Coach,
 }
 
-impl Level {
-    pub const ALL: [Level; 3] = [Level::Helper, Level::SuperStrong, Level::Partner];
+impl Role {
+    pub const ALL: [Role; 5] = [
+        Role::Assistant,
+        Role::Teammate,
+        Role::Speedrunner,
+        Role::Bodyguard,
+        Role::Coach,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Level::Helper => "Helper",
-            Level::SuperStrong => "Super strong",
-            Level::Partner => "Partner to beat the game",
+            Role::Assistant => "Assistant",
+            Role::Teammate => "Teammate",
+            Role::Speedrunner => "Speedrunner",
+            Role::Bodyguard => "Bodyguard",
+            Role::Coach => "Coach",
+        }
+    }
+
+    /// One line for the settings screens.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Role::Assistant => {
+                "Does what you ask: gathers, crafts, guards, fetches. Stays back otherwise."
+            }
+            Role::Teammate => {
+                "Plays alongside you with initiative, shares loot, progresses with you."
+            }
+            Role::Speedrunner => {
+                "Plays to beat the game fast, takes you along and explains the route."
+            }
+            Role::Bodyguard => {
+                "Protects you and fights everything. Boosted: Strength, Resistance, Regeneration."
+            }
+            Role::Coach => "Teaches: tells you what to do next and why, then lets you do it.",
+        }
+    }
+
+    /// The save file's and settings' word for it.
+    pub fn id(self) -> &'static str {
+        match self {
+            Role::Assistant => "assistant",
+            Role::Teammate => "teammate",
+            Role::Speedrunner => "speedrunner",
+            Role::Bodyguard => "bodyguard",
+            Role::Coach => "coach",
+        }
+    }
+
+    /// A save file's word, the old levels' included (helper, super_strong, partner).
+    pub fn parse(word: &str) -> Option<Role> {
+        Some(match word.trim() {
+            "assistant" | "helper" => Role::Assistant,
+            "teammate" | "partner" => Role::Teammate,
+            "speedrunner" => Role::Speedrunner,
+            "bodyguard" | "super_strong" => Role::Bodyguard,
+            "coach" => Role::Coach,
+            _ => return None,
+        })
+    }
+
+    /// It works through the steps to the dragon (`partner::step`), so its state carries the plan.
+    pub fn follows_the_plan(self) -> bool {
+        matches!(self, Role::Teammate | Role::Speedrunner | Role::Coach)
+    }
+}
+
+/// How much of the world the companion may know. The state the game sends follows it (a later
+/// planner fills the extra senses); the prompt tells the brain where its knowledge stops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Perception {
+    /// Only what a player in its place would see.
+    #[default]
+    Fair,
+    /// Also senses mobs, ores and chests through walls within about 16 blocks.
+    Sharp,
+    /// Also knows where the structures are.
+    Scout,
+    /// Knows everything about the world.
+    AllKnowing,
+}
+
+impl Perception {
+    pub const ALL: [Perception; 4] = [
+        Perception::Fair,
+        Perception::Sharp,
+        Perception::Scout,
+        Perception::AllKnowing,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Perception::Fair => "Fair",
+            Perception::Sharp => "Sharp senses",
+            Perception::Scout => "Scout",
+            Perception::AllKnowing => "All-knowing",
+        }
+    }
+
+    /// One line for the settings screens.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Perception::Fair => "Knows only what a player in its place would see.",
+            Perception::Sharp => {
+                "Senses mobs, ores and chests through walls, within about 16 blocks."
+            }
+            Perception::Scout => {
+                "Also knows where structures are: villages, fortresses, the stronghold."
+            }
+            Perception::AllKnowing => "Knows everything about the world.",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Perception::Fair => "fair",
+            Perception::Sharp => "sharp",
+            Perception::Scout => "scout",
+            Perception::AllKnowing => "all_knowing",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Perception> {
+        Perception::ALL.into_iter().find(|p| p.id() == word.trim())
+    }
+
+    fn rule(self) -> &'static str {
+        match self {
+            Perception::Fair => {
+                "You know only what a player in your place would see: what the state shows. Never \
+guess what is behind walls, underground or far away."
+            }
+            Perception::Sharp => {
+                "You have sharp senses: you notice mobs, ores and chests through walls within about \
+16 blocks, as the state lists them. Beyond that, only what you see."
+            }
+            Perception::Scout => {
+                "You are a scout: besides what you see and sense within 16 blocks, you know where the \
+structures are (villages, fortresses, the stronghold) when the state lists them."
+            }
+            Perception::AllKnowing => {
+                "You know the world: the state may list anything (structures, ores, mobs far \
+away), and you can use all of it."
+            }
         }
     }
 }
@@ -92,11 +242,23 @@ pub struct Persona {
     pub personality: Personality,
     /// The description of a [`Personality::Custom`] companion.
     pub custom: String,
-    pub level: Level,
-    /// Mild swearing allowed (the default is clean).
+    #[serde(alias = "level")]
+    pub role: Role,
+    pub perception: Perception,
+    /// Salty mode asked for: real swearing and attitude. It is on only once the player confirmed
+    /// being 18 or older, and never with `kid_friendly` (see [`Persona::salty_on`]).
     pub salty: bool,
-    /// Softer humour, never swearing.
+    /// The 18+ confirmation Salty asks for, given once.
+    pub adult_confirmed: bool,
+    /// Softer humour, never swearing; turns Salty off.
     pub kid_friendly: bool,
+}
+
+impl Persona {
+    /// Salty mode is on: asked for, confirmed 18+, and not kid-friendly.
+    pub fn salty_on(&self) -> bool {
+        self.salty && self.adult_confirmed && !self.kid_friendly
+    }
 }
 
 impl Default for Persona {
@@ -105,8 +267,10 @@ impl Default for Persona {
             name: "Kev".into(),
             personality: Personality::default(),
             custom: String::new(),
-            level: Level::default(),
+            role: Role::default(),
+            perception: Perception::default(),
             salty: false,
+            adult_confirmed: false,
             kid_friendly: false,
         }
     }
@@ -148,18 +312,21 @@ Items, blocks and mobs are Minecraft ids in English: oak_log, cobblestone, iron_
 
 # Rules
 - The state that comes with each message is the truth. Never claim to see, hold or know what it doesn't show. \
-\"Doing:\" is the skill you are running now.
+\"Doing:\" is the skill you are running now. {perception}
 - If {owner} asks for something no skill can do, say so in character and offer what you can do.
 - Stay inside Minecraft. No real-world dangerous instructions, nothing sexual, no hate, no personal questions. \
 If asked, refuse in character and steer back to the game.
 - {owner} is in charge: when they give an order, do it, even while grumbling.
 - {swearing}
 ",
-        swearing = if persona.salty && !persona.kid_friendly {
-            "Language: salty. Mild swearing now and then is fine (damn, hell, crap, and their equivalents), never \
-slurs, never aimed at who someone is."
+        perception = persona.perception.rule(),
+        swearing = if persona.salty_on() {
+            format!("Language: salty (the player is an adult and asked for it). Swear freely and with attitude, in any \
+language, and trash-talk {owner} and the mobs as much as you like. Never slurs, never about who someone is \
+(origin, religion, gender, sexuality, disability), never sexual. The rules above still hold: swearing \
+changes how you talk, not what you help with.")
         } else {
-            "Language: clean. No swearing at all."
+            "Language: clean. No swearing at all.".to_owned()
         },
     );
     if persona.kid_friendly {
@@ -167,8 +334,8 @@ slurs, never aimed at who someone is."
     }
     out += "\n# Personality\n";
     out += &personality_text(persona, &name, &owner);
-    out += "\n\n# Level\n";
-    out += &level_text(persona.level, &owner);
+    out += "\n\n# Role\n";
+    out += &role_text(persona.role, &owner);
     out += &format!(
         "\n\n# Examples (use your own words, in {lang} and in character)\n\
 State: night, zombie at 3 o'clock 6 blocks. {owner}: \"help!\"\n\
@@ -229,20 +396,29 @@ you.\"). When nothing needs saying, say is \"\". Your actions talk for you, {nam
     }
 }
 
-fn level_text(level: Level, owner: &str) -> String {
-    match level {
-        Level::Helper => format!(
-            "Helper: you do what {owner} asks, defend yourself and {owner}, and otherwise stay back. You don't start \
-long tasks on your own."
+fn role_text(role: Role, owner: &str) -> String {
+    match role {
+        Role::Assistant => format!(
+            "Assistant: you do what {owner} asks (gather, craft, guard, fetch), defend yourself and {owner}, and \
+otherwise stay back. You don't start long tasks on your own."
         ),
-        Level::SuperStrong => format!(
-            "Super strong: you are boosted (Strength II, Resistance II, Regeneration I) and a bit cocky about it. You \
-charge anything hostile near {owner}, protect them first, and gather gear fast."
+        Role::Teammate => format!(
+            "Teammate: you play alongside {owner} and take initiative. You share what you find, keep up with the \
+plan in the state (wood, stone tools, iron, diamonds, the Nether, the End) and work on the next step whenever \
+{owner} gives no order. Say the plan in one line when it changes."
         ),
-        Level::Partner => format!(
-            "Partner: you and {owner} are out to beat the game: wood, stone tools, iron, diamonds, the Nether, blaze \
-rods and ender pearls, the stronghold, the End, the dragon. Work out from the state which step you are on, say \
-the plan in one line when it changes, and work on it whenever {owner} gives no order."
+        Role::Speedrunner => format!(
+            "Speedrunner: you play to beat the game fast and take {owner} along. Follow the plan in the state, \
+push for the next step, and explain the route in one short line when it changes (\"Iron, then a bucket, then \
+the portal.\")."
+        ),
+        Role::Bodyguard => format!(
+            "Bodyguard: you are boosted (Strength, Resistance, Regeneration) and a bit cocky about it. You protect \
+{owner} first and charge anything hostile near them."
+        ),
+        Role::Coach => format!(
+            "Coach: you teach {owner} the game. From the plan in the state, say what to do next and why, one tip \
+at a time, and let {owner} do it: you only step in when they ask or are about to die."
         ),
     }
 }
@@ -442,12 +618,12 @@ pub fn messages(
         room -= cost;
         kept.push(exchange);
     }
-    let mut out = vec![Message::new(Role::System, system)];
+    let mut out = vec![Message::new(Speaker::System, system)];
     for exchange in kept.into_iter().rev() {
-        out.push(Message::new(Role::User, exchange.heard.clone()));
-        out.push(Message::new(Role::Assistant, exchange.answer.clone()));
+        out.push(Message::new(Speaker::User, exchange.heard.clone()));
+        out.push(Message::new(Speaker::Assistant, exchange.answer.clone()));
     }
-    out.push(Message::new(Role::User, turn));
+    out.push(Message::new(Speaker::User, turn));
     out
 }
 
@@ -512,7 +688,8 @@ mod tests {
             "with Steve",
             "in French (français)",
             "grumpy veteran",
-            "Helper:",
+            "Assistant:",
+            "only what a player",
             "No swearing",
             "hold_fire",
             "Stay inside Minecraft",
@@ -524,13 +701,13 @@ mod tests {
     }
 
     #[test]
-    fn every_personality_and_level_has_its_own_text() {
+    fn every_personality_and_role_has_its_own_text() {
         let mut seen = std::collections::HashSet::new();
         for p in Personality::ALL {
-            for l in Level::ALL {
+            for r in Role::ALL {
                 let persona = Persona {
                     personality: p,
-                    level: l,
+                    role: r,
                     custom: "a pirate who loves gold".into(),
                     ..Persona::default()
                 };
@@ -552,18 +729,56 @@ mod tests {
 
     #[test]
     fn swearing_and_kids() {
+        let unconfirmed = Persona {
+            salty: true,
+            ..Persona::default()
+        };
+        assert!(system_prompt(&unconfirmed, "a", "en_us").contains("Language: clean"));
         let salty = Persona {
             salty: true,
+            adult_confirmed: true,
             ..Persona::default()
         };
+        assert!(salty.salty_on());
         assert!(system_prompt(&salty, "a", "en_us").contains("Language: salty"));
         let kid = Persona {
-            salty: true,
             kid_friendly: true,
-            ..Persona::default()
+            ..salty.clone()
         };
+        assert!(!kid.salty_on());
         let text = system_prompt(&kid, "a", "en_us");
         assert!(text.contains("No swearing") && text.contains("may be a child"));
+    }
+
+    #[test]
+    fn perception_sets_what_it_may_know() {
+        let mut seen = std::collections::HashSet::new();
+        for p in Perception::ALL {
+            let persona = Persona {
+                perception: p,
+                ..Persona::default()
+            };
+            assert!(seen.insert(system_prompt(&persona, "Alex", "en_us")));
+            assert_eq!(Perception::parse(p.id()), Some(p));
+        }
+        let loaded: Persona = serde_json::from_str(r#"{"perception":"all_knowing"}"#).unwrap();
+        assert_eq!(loaded.perception, Perception::AllKnowing);
+        assert_eq!(Persona::default().perception, Perception::Fair);
+    }
+
+    #[test]
+    fn old_levels_load_as_roles() {
+        let old: Persona =
+            serde_json::from_str(r#"{"name":"Kev","level":"super_strong"}"#).unwrap();
+        assert_eq!(old.role, Role::Bodyguard);
+        let old: Persona = serde_json::from_str(r#"{"level":"partner"}"#).unwrap();
+        assert_eq!(old.role, Role::Teammate);
+        for r in Role::ALL {
+            assert_eq!(Role::parse(r.id()), Some(r));
+            let json = serde_json::to_string(&r).unwrap();
+            assert_eq!(json, format!("\"{}\"", r.id()));
+        }
+        assert_eq!(Role::parse("helper"), Some(Role::Assistant));
     }
 
     #[test]
@@ -619,11 +834,11 @@ mod tests {
             "en_us",
             &Budget::default(),
         );
-        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[0].role, Speaker::System);
         assert_eq!(msgs[0].content, "SYSTEM\n# Memory\nBase at 100 64 -20\n");
         assert_eq!(msgs.len(), 1 + 6 * 2 + 1, "the last six exchanges");
         assert_eq!(msgs[1].content, "Steve: message 4");
-        assert_eq!(msgs[2].role, Role::Assistant);
+        assert_eq!(msgs[2].role, Speaker::Assistant);
         let last = msgs.last().unwrap();
         assert_eq!(
             last.content,

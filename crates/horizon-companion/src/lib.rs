@@ -10,6 +10,7 @@
 pub mod catalogue;
 pub mod client;
 pub mod download;
+pub mod guard;
 pub mod hardware;
 pub mod partner;
 pub mod phrases;

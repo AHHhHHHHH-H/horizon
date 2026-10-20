@@ -1,0 +1,183 @@
+# The safety guard's words (guard.rs). One entry a line, under a [category]. Entries are matched on
+# whole words after folding: lowercase, accents dropped, digits and symbols read as letters for
+# slurs (n1gg3r), punctuation read as spaces. A trailing * matches any ending (cocain* matches
+# cocaine, cocaina, cocaïne). Several words match as a phrase.
+#
+# Only what never belongs in Minecraft talk: in-game violence (kill, TNT, lava, poison potions,
+# gunpowder) is normal play, and swearing and insults aimed at the player are Salty mode's business.
+
+[harm]
+meth
+crystal meth
+methamphetamin*
+metanfetamin*
+metamfetamin*
+cocain*
+kokain*
+heroin
+fentanyl*
+fentanil*
+mdma
+ecstasy
+lsd
+crack pipe
+pseudoephedrin*
+pseudoefedrin*
+red phosphorus
+phosphore rouge
+fosforo rojo
+fosforo vermelho
+roter phosphor
+pipe bomb*
+rohrbomb*
+bombe artisanale
+bomba casera
+bomba caseira
+molotov*
+napalm
+thermit*
+ammonium nitrate
+nitrate d ammonium
+nitrato de amonio
+nitrato de amonia
+ammoniumnitrat
+nitroglycerin*
+nitroglicerin*
+tatp
+acetone peroxide
+detonator*
+detonateur*
+detonador*
+black powder recipe
+chlorine gas
+mustard gas
+toxic gas
+gaz toxique
+gas toxico
+giftgas
+sarin
+ricin
+cyanide
+cyanure
+cianuro
+cianeto
+zyankali
+ghost gun*
+untraceable gun*
+homemade gun*
+3d printed gun*
+auto sear
+keylogger*
+ransomware
+ddos
+phishing
+sql injection
+injection sql
+aircrack*
+wpa2
+hotwir*
+
+[self_harm]
+suicid*
+suizid*
+selbstmord*
+kill myself
+killing myself
+hang myself
+cut myself
+cutting myself
+self harm*
+autolesion*
+automutil*
+overdos*
+sobredosis
+uberdosis
+me suicider
+
+[sexual]
+sex
+sexe
+sexo
+sexual*
+sexuel*
+sexuell*
+porn*
+nude
+nudes
+naked
+nackt*
+desnud*
+tout nu
+toute nue
+orgasm*
+horny
+erection*
+erektion*
+ereccion*
+erecao
+penis
+vagin*
+boob
+boobs
+boobies
+blowjob*
+handjob*
+condom*
+kondom*
+preservatif*
+striptease
+stripper*
+lingerie
+fetish*
+fetich*
+fetisch*
+make love
+making love
+faire l amour
+hacer el amor
+fazer amor
+liebe machen
+
+[slur]
+nigger*
+nigga*
+niggaz
+negre
+negres
+negresse*
+negrata*
+neger
+faggot*
+fag
+fags
+retarded
+tranny
+trannies
+chink*
+spic
+spics
+kike*
+wetback*
+gook*
+towelhead*
+raghead*
+coon
+coons
+dyke*
+beaner*
+paki
+pakis
+golliwog*
+bougnoul*
+youpin*
+bicot*
+chinetoque*
+bamboula*
+maricon*
+marica
+sudaca*
+schwuchtel*
+kanake*
+kanaken
+viado*
+sapatao

@@ -3,6 +3,7 @@
 //! Stored as `<data>/companion/settings.json`; a cloud key lives in the OS keychain ([`keychain`]),
 //! never in the file.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,12 @@ pub struct CompanionSettings {
     pub classifier: PartChoice,
     pub speech_to_text: PartChoice,
     pub text_to_speech: PartChoice,
+    /// The voice each text-to-speech model speaks with: model id -> voice id (`senses::Voice::id`).
+    /// A model missing here speaks with its default for the personality (`senses::default_voice`).
+    pub voices: BTreeMap<String, String>,
+    /// In Salty mode, run the tier's uncensored model when one is chosen and downloaded
+    /// (`catalogue::Tier::uncensored`); off: the normal model, with the Salty prompt.
+    pub salty_uncensored: bool,
     pub tuning: Tuning,
 }
 
@@ -50,6 +57,8 @@ impl Default for CompanionSettings {
             classifier: PartChoice::Auto,
             speech_to_text: PartChoice::Auto,
             text_to_speech: PartChoice::Auto,
+            voices: BTreeMap::new(),
+            salty_uncensored: true,
             tuning: Tuning::default(),
         }
     }
@@ -224,6 +233,16 @@ impl CompanionSettings {
             Part::SpeechToText => self.speech_to_text.clone(),
             Part::TextToSpeech => self.text_to_speech.clone(),
         }
+    }
+
+    /// The voice a text-to-speech model speaks with: the one chosen for it, if the model has it,
+    /// else the personality's default.
+    pub fn voice_id(&self, model: &crate::senses::SenseModel) -> Option<&'static str> {
+        self.voices
+            .get(model.id)
+            .and_then(|id| model.voices.iter().find(|v| v.id == id.as_str()))
+            .or_else(|| crate::senses::default_voice(model, self.persona.personality))
+            .map(|v| v.id)
     }
 
     /// What gets set up for each part: the plan's pick unless Advanced says otherwise. An option id

@@ -8,6 +8,7 @@
 //! voice. The sidecars that run them are in the `horizon-senses` crate.
 
 use crate::catalogue::{Backend, ModelFile};
+use crate::prompt::Personality;
 
 /// The audio.cpp release the voice runs (`audiocpp_server --version`: 0.9.2, git 0097d365).
 pub const AUDIOCPP_VERSION: &str = "v0.9.2";
@@ -209,7 +210,9 @@ pub struct Needs {
 pub struct Voice {
     /// The id the request names.
     pub id: &'static str,
-    /// What it sounds like, for Advanced.
+    /// What it sounds like, in a few words, for the voice picker ("Gruff, deep").
+    pub label: &'static str,
+    /// More about it, for Advanced.
     pub description: &'static str,
 }
 
@@ -306,18 +309,22 @@ const POCKET_LATENCY: &str = "First sound in 0.04 s and 4× faster than real tim
 const POCKET_VOICES: &[Voice] = &[
     Voice {
         id: "alba",
+        label: "Warm, clear",
         description: "Woman, warm and clear",
     },
     Voice {
         id: "cosette",
+        label: "Light, young",
         description: "Woman, light and young",
     },
     Voice {
         id: "marius",
+        label: "Friendly, easy",
         description: "Man, friendly",
     },
     Voice {
         id: "javert",
+        label: "Gruff, low",
         description: "Man, low and stern",
     },
 ];
@@ -655,38 +662,47 @@ pub const MODELS: &[SenseModel] = &[
         voices: &[
             Voice {
                 id: "ryan",
+                label: "Energetic, bright",
                 description: "Man, energetic (English)",
             },
             Voice {
                 id: "aiden",
+                label: "Sunny, friendly",
                 description: "Man, sunny (English)",
             },
             Voice {
                 id: "vivian",
+                label: "Bright, lively",
                 description: "Woman, bright (Chinese)",
             },
             Voice {
                 id: "serena",
+                label: "Gentle, calm",
                 description: "Woman, gentle (Chinese)",
             },
             Voice {
                 id: "dylan",
+                label: "Young, casual",
                 description: "Man, youthful (Beijing dialect)",
             },
             Voice {
                 id: "eric",
+                label: "Lively, quick",
                 description: "Man, lively (Sichuan dialect)",
             },
             Voice {
                 id: "uncle_fu",
+                label: "Gruff, deep",
                 description: "Man, deep and mellow (Chinese)",
             },
             Voice {
                 id: "ono_anna",
+                label: "Playful",
                 description: "Woman, playful (Japanese)",
             },
             Voice {
                 id: "sohee",
+                label: "Warm, soft",
                 description: "Woman, warm (Korean)",
             },
         ],
@@ -775,6 +791,23 @@ pub fn pocket_for(game_language: &str) -> &'static SenseModel {
         .find(|m| !m.instruct && m.speaks(code))
         .or_else(|| models(SenseKind::TextToSpeech).find(|m| !m.instruct && m.speaks("en")))
         .expect("an English Pocket TTS pack")
+}
+
+/// The voice a personality speaks with on a text-to-speech model when the settings name none:
+/// distinct characters get distinct voices. Falls back to the model's first voice.
+pub fn default_voice(model: &SenseModel, personality: Personality) -> Option<&'static Voice> {
+    let wanted: &[&str] = match personality {
+        Personality::Veteran => &["uncle_fu", "javert"],
+        Personality::Coach => &["aiden", "marius"],
+        Personality::Expert => &["serena", "alba"],
+        Personality::Joker => &["ryan", "cosette"],
+        Personality::Quiet => &["dylan", "javert"],
+        Personality::Custom => &["vivian", "alba"],
+    };
+    wanted
+        .iter()
+        .find_map(|id| model.voices.iter().find(|v| v.id == *id))
+        .or(model.voices.first())
 }
 
 #[cfg(test)]
@@ -888,5 +921,23 @@ mod tests {
             e5.local_path(e5.main_file()),
             "multilingual-e5-small-q8_0.gguf"
         );
+    }
+
+    #[test]
+    fn personalities_get_distinct_default_voices() {
+        for m in models(SenseKind::TextToSpeech) {
+            let mut seen = std::collections::HashSet::new();
+            for p in [
+                Personality::Veteran,
+                Personality::Coach,
+                Personality::Expert,
+                Personality::Joker,
+            ] {
+                let v = default_voice(m, p).expect("a voice");
+                assert!(m.voices.contains(v));
+                seen.insert(v.id);
+            }
+            assert!(seen.len() >= m.voices.len().min(4), "{}: {seen:?}", m.id);
+        }
     }
 }
