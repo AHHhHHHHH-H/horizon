@@ -1030,7 +1030,7 @@ impl Game<'_> {
         super::companion_voice::chosen_voice_id(self.companion_settings(), model, cast)
     }
 
-    /// The Companion screen's "Play sample": a short line in the chosen voice. It plays like any
+    /// The Companion screen's Sample's "Play": a short line in the chosen voice. It plays like any
     /// line (and lands in the WAV tap when one is set); without the voice running, the screen says so.
     pub(super) fn companion_voice_sample(&mut self) {
         let personality = self.companion_settings().persona.personality;

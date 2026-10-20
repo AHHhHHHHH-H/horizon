@@ -11,10 +11,11 @@
 //! place. Everything else (sliders dragging, scrolling, Done) is handled here.
 use crate::{
     companion_options::{self, Control},
-    extras, keybinds,
+    extras,
     graphics_style::Cost,
     graphics_ui::{self, Item, Level},
     hud::{HudAtlas, HudBatch},
+    keybinds,
     options_ui::{self, Event, Kind, Opt, OptionsUi, Page, apply_preset},
     settings::{SOUND_SOURCES, Settings},
     ui_theme::{self as t, CONTROL, Kind as Button, MenuStyle, ROW_LABEL, SIDEBAR, Ui, color, id},
@@ -353,7 +354,10 @@ impl OptionsUi {
         let section = self.section.min(shown_sections(s) - 1);
         // The sidebar.
         ui.sidebar_frame("Options");
-        let names: Vec<&str> = SECTIONS[..shown_sections(s)].iter().map(|s| s.name).collect();
+        let names: Vec<&str> = SECTIONS[..shown_sections(s)]
+            .iter()
+            .map(|s| s.name)
+            .collect();
         ui.sidebar_list(NAV, 12.0, 72.0, SIDEBAR - 24.0, &names, section);
         let dy = h - 12.0 - CONTROL;
         ui.button(
@@ -579,7 +583,21 @@ impl OptionsUi {
                     let active = !matches!(control, Control::Inactive(_));
                     match control {
                         Control::None => {
-                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 60.0);
+                            // A line too long for the description starts on the
+                            // caption's line: a plan row's part ("Best on the GPU")
+                            // there, how soon it answers below.
+                            let (value, text) = companion_split(ui, row, s, &text, cw - 60.0);
+                            let value_w = cw - 60.0 - ROW_LABEL - 16.0;
+                            ui.described_row(
+                                x,
+                                y,
+                                &caption,
+                                &value,
+                                value_w,
+                                (0, ""),
+                                &text,
+                                cw - 60.0,
+                            );
                         }
                         Control::Switch(on) => {
                             ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 60.0);
@@ -587,7 +605,16 @@ impl OptionsUi {
                         }
                         Control::Button(value) | Control::Inactive(value) => {
                             let bw = ui.button_width(&value, false).max(96.0);
-                            ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - bw - 24.0);
+                            ui.described_row(
+                                x,
+                                y,
+                                &caption,
+                                "",
+                                0.0,
+                                (0, ""),
+                                &text,
+                                cw - bw - 24.0,
+                            );
                             ui.button(
                                 id,
                                 [control_x - bw, y + 12.0, bw, CONTROL],
@@ -599,7 +626,12 @@ impl OptionsUi {
                         Control::TextBox(value, focused) => {
                             let shown = if focused { format!("{value}_") } else { value };
                             ui.described_row(x, y, &caption, "", 0.0, (0, ""), &text, cw - 220.0);
-                            ui.text_field(id, [control_x - 200.0, y + 12.0, 200.0, CONTROL], &shown, focused);
+                            ui.text_field(
+                                id,
+                                [control_x - 200.0, y + 12.0, 200.0, CONTROL],
+                                &shown,
+                                focused,
+                            );
                         }
                     }
                 }
@@ -865,7 +897,9 @@ impl OptionsUi {
                         events.push(Event::ButtonClick);
                         events.push(Event::OpenModFolder);
                     }
-                    Some(HRow::Companion(row)) => events.extend(self.companion_click(s, row, right)),
+                    Some(HRow::Companion(row)) => {
+                        events.extend(self.companion_click(s, row, right))
+                    }
                     _ => {}
                 }
             }
@@ -885,6 +919,43 @@ fn set_item_slider(item: Item, s: &mut Settings, v: f32) {
         Item::Vanilla(opt) => options_ui::set_slider(opt, s, v),
         Item::Horizon(_) => item.set_slider(s, v),
     }
+}
+
+/// A Companion row's text as (value, description): the description alone when
+/// it fits `width`, else its first words on the caption's line (a plan row:
+/// what runs it, then how soon it answers).
+fn companion_split(
+    ui: &Ui,
+    row: companion_options::Row,
+    s: &Settings,
+    text: &str,
+    width: f32,
+) -> (String, String) {
+    use t::{Face, INDEX, SMALL};
+    let room = width - INDEX - 8.0;
+    if let companion_options::Row::Plan(i) = row
+        && let Some(line) = s.companion.plan.get(i)
+        && !line.when.is_empty()
+    {
+        let mut when = line.when.clone();
+        if let Some(first) = when.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        return (line.what.clone(), when);
+    }
+    if ui.measure(Face::Regular, SMALL, text) <= room {
+        return (String::new(), text.to_owned());
+    }
+    let words: Vec<&str> = text.split(' ').collect();
+    let value_room = width - ROW_LABEL - 16.0 - INDEX;
+    let mut split = 0;
+    for n in 1..words.len() {
+        if ui.measure(Face::Regular, t::BODY, &words[..n].join(" ")) > value_room {
+            break;
+        }
+        split = n;
+    }
+    (words[..split].join(" "), words[split..].join(" "))
 }
 
 #[cfg(test)]

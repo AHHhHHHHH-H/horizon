@@ -20,7 +20,7 @@ pub struct CompanionView {
     /// "16 GB of memory, 8 cores, Apple M4"; empty while it is being checked.
     pub machine: String,
     /// One line per part of the plan.
-    pub plan: Vec<String>,
+    pub plan: Vec<PlanLine>,
     /// Still to download, in bytes.
     pub download: u64,
     /// Setting up: the step and its progress.
@@ -46,6 +46,130 @@ pub struct CompanionView {
     pub salty_brain: Option<(String, String)>,
     /// The owner is watching the companion here (Watch mode, `game/companion_watch.rs`).
     pub watching: bool,
+}
+
+/// A part of the plan: what runs it and where ("Best on the GPU"), and how
+/// soon it answers ("first word in about 825 ms"), or why it can't run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanLine {
+    pub part: String,
+    pub what: String,
+    pub when: String,
+}
+
+impl PlanLine {
+    /// "Best on the GPU, first word in about 825 ms".
+    pub fn text(&self) -> String {
+        if self.when.is_empty() {
+            self.what.clone()
+        } else {
+            format!("{}, {}", self.what, self.when)
+        }
+    }
+}
+
+/// Where a part runs: "the GPU", "1 CPU thread", "4 CPU threads".
+pub fn device_words(gpu: bool, threads: usize) -> String {
+    match (gpu, threads) {
+        (true, _) => "the GPU".into(),
+        (false, 1) => "1 CPU thread".into(),
+        (false, n) => format!("{n} CPU threads"),
+    }
+}
+
+/// How wide the classic font draws `text`, from vanilla's default glyph
+/// advances (a little over for the glyphs it doesn't know): what a classic
+/// row's button can hold.
+pub fn classic_width(text: &str) -> f32 {
+    text.chars()
+        .map(|c| match c {
+            '!' | '\'' | ',' | '.' | ':' | ';' | 'i' | '|' => 2.0,
+            '`' | 'l' => 3.0,
+            ' ' | 'I' | 't' | '[' | ']' | '(' | ')' | '{' | '}' | '"' | '*' => 4.0,
+            'f' | 'k' | '<' | '>' => 5.0,
+            '@' | '~' => 7.0,
+            c if c.is_ascii() => 6.0,
+            _ => 9.0,
+        })
+        .sum()
+}
+
+/// What a classic row's 310-wide button holds, its edges left clear.
+pub const CLASSIC_TEXT: f32 = 298.0;
+
+/// `text` in lines no wider than `max` in the classic font: broken between
+/// its clauses (", ") where it can, the next clause capitalized on its line
+/// ("Voice: Expressive voice on the GPU" / "First sound in about 90 ms"),
+/// else between words, never leaving a short last word ("ms") alone.
+pub fn classic_lines(text: &str, max: f32) -> Vec<String> {
+    if classic_width(text) <= max {
+        return vec![text.to_owned()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for clause in text.split(", ").filter(|c| !c.is_empty()) {
+        let joined = format!("{line}, {clause}");
+        if !line.is_empty() && classic_width(&joined) <= max {
+            line = joined;
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        let clause = if lines.is_empty() {
+            clause.to_owned()
+        } else {
+            capitalized(clause)
+        };
+        let mut wrapped = word_lines(&clause, max);
+        line = wrapped.pop().unwrap_or_default();
+        lines.extend(wrapped);
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// `text` broken between words (a word wider than a line has a line of its
+/// own); a short last word goes down with the one before it.
+fn word_lines(text: &str, max: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ').filter(|w| !w.is_empty()) {
+        let joined = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if line.is_empty() || classic_width(&joined) <= max {
+            line = joined;
+        } else {
+            lines.push(std::mem::replace(&mut line, word.to_owned()));
+        }
+    }
+    if let Some(last) = lines.last_mut()
+        && !line.contains(' ')
+        && line.chars().count() <= 3
+        && let Some((head, tail)) = last.rsplit_once(' ')
+    {
+        let moved = format!("{tail} {line}");
+        if classic_width(&moved) <= max {
+            line = moved;
+            *last = head.to_owned();
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn capitalized(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// One row of the section.
@@ -170,14 +294,17 @@ pub fn row_parts(
             if view.machine.is_empty() { "Checking…".into() } else { view.machine.clone() },
             Control::None,
         ),
-        Row::Plan(i) => (String::new(), view.plan.get(i).cloned().unwrap_or_default(), Control::None),
+        Row::Plan(i) => {
+            let line = view.plan.get(i).cloned().unwrap_or_default();
+            (line.part.clone(), line.text(), Control::None)
+        }
         Row::SetUp => {
             let (text, control) = match (&view.progress, &view.error) {
                 (Some((step, Some(f))), _) => (format!("{step} ({:.0} %)", f * 100.0), Control::Button("Cancel".into())),
                 (Some((step, None)), _) => (step.clone(), Control::Button("Cancel".into())),
                 (None, Some(e)) => (format!("Setup failed: {e}"), Control::Button("Try again".into())),
                 (None, None) if s.set_up && view.download == 0 => (
-                    "Set up: everything is on this PC.".into(),
+                    "Everything is on this PC.".into(),
                     Control::Button("Check again".into()),
                 ),
                 (None, None) => (
@@ -256,9 +383,9 @@ pub fn row_parts(
             ("Sounds like".into(), description, Control::Button(label))
         }
         Row::VoiceSample => (
-            String::new(),
+            "Sample".into(),
             "A short line in this voice.".into(),
-            Control::Button("Play sample".into()),
+            Control::Button("Play".into()),
         ),
         Row::TalkKey => ("Push-to-talk key".into(), String::new(), Control::Button(talk_key.into())),
         Row::Spawn => {
@@ -285,11 +412,12 @@ pub fn row_parts(
             Control::Switch(view.advanced),
         ),
         Row::Part(part) => {
+            // The plan's names for the parts (game/companion_setup.rs).
             let caption = match part {
                 Part::Brain => "Brain",
-                Part::Classifier => "Command recognition",
-                Part::SpeechToText => "Speech recognition",
-                Part::TextToSpeech => "Voice model",
+                Part::Classifier => "Commands",
+                Part::SpeechToText => "Listening",
+                Part::TextToSpeech => "Voice",
             };
             (caption.into(), String::new(), Control::Button(part_label(view, part)))
         }
@@ -517,6 +645,37 @@ pub fn name_chars(typed: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A classic row too long for its button: broken at its comma, then
+    /// between words, with no unit left alone and no line too wide.
+    #[test]
+    fn classic_rows_break_at_clauses() {
+        let fits = "Brain: Best on the GPU, first word in about 825 ms";
+        assert_eq!(classic_lines(fits, CLASSIC_TEXT), [fits]);
+        assert_eq!(
+            classic_lines(
+                "Voice: Expressive voice on the GPU, first sound in about 90 ms",
+                CLASSIC_TEXT
+            ),
+            [
+                "Voice: Expressive voice on the GPU",
+                "First sound in about 90 ms"
+            ]
+        );
+        let long = "Listening: Speech recognition on 2 CPU threads in the background \
+                    of the game, about 500 ms";
+        let lines = classic_lines(long, CLASSIC_TEXT);
+        assert!(
+            lines.iter().all(|l| classic_width(l) <= CLASSIC_TEXT),
+            "{lines:?}"
+        );
+        assert!(
+            lines.len() == 2 && lines[1].ends_with("about 500 ms"),
+            "{lines:?}"
+        );
+        let words = word_lines("a sentence that ends with a lone ms", 150.0);
+        assert!(words.last().is_some_and(|l| l.contains(' ')), "{words:?}");
+    }
 
     #[test]
     fn rows_follow_voice_and_advanced() {

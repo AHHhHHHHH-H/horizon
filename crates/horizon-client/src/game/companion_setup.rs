@@ -9,7 +9,7 @@ use super::{
 };
 use horizon_client::{
     companion as c,
-    companion_options::Action,
+    companion_options::{Action, PlanLine, device_words},
     text::{self, Text},
 };
 use horizon_companion::{
@@ -134,11 +134,11 @@ impl Game<'_> {
                     Part::ALL.iter().map(|p| (*p, Vec::new())).collect();
                 for option in setup.options() {
                     let runs = match option.runs {
-                        Runs::Cpu => "processor",
-                        Runs::Gpu => "graphics card",
+                        Runs::Cpu => "the CPU",
+                        Runs::Gpu => "the GPU",
                     };
                     if let Some((_, list)) = choices.iter_mut().find(|(p, _)| *p == option.part) {
-                        list.push((option.id.clone(), format!("{} ({runs})", option.label)));
+                        list.push((option.id.clone(), format!("{} on {runs}", option.label)));
                     }
                 }
                 let disk = setup.disk_usage();
@@ -313,31 +313,45 @@ impl Game<'_> {
     }
 }
 
-fn plan_lines(plan: &Plan) -> Vec<String> {
-    let mut lines: Vec<String> = plan
+fn plan_lines(plan: &Plan) -> Vec<PlanLine> {
+    let mut lines: Vec<PlanLine> = plan
         .picks
         .iter()
         .map(|p| {
             let device = match &p.device {
-                Device::Cpu { threads } => format!("on the processor ({threads} threads)"),
-                Device::Gpu { name, .. } => format!("on {name}"),
+                Device::Cpu { threads } => device_words(false, *threads),
+                Device::Gpu { .. } => device_words(true, 0),
             };
             let wait = if p.latency_ms >= 1000 {
                 format!("{:.1} s", f64::from(p.latency_ms) / 1000.0)
             } else {
                 format!("{} ms", p.latency_ms)
             };
-            format!(
-                "{}: {} {device}, first word in about {wait}",
-                part_name(p.option.part),
-                p.option.label
-            )
+            // How soon the player notices it: a reply, a sound, an order or
+            // their words understood.
+            let when = match p.option.part {
+                Part::Brain => "first word in about",
+                Part::TextToSpeech => "first sound in about",
+                Part::Classifier | Part::SpeechToText => "about",
+            };
+            PlanLine {
+                part: part_name(p.option.part).into(),
+                what: format!("{} on {device}", p.option.label),
+                when: format!("{when} {wait}"),
+            }
         })
         .collect();
-    lines.extend(
-        plan.missing
-            .iter()
-            .map(|m| format!("{}: {}", part_name(m.part), m.reason)),
-    );
+    lines.extend(plan.missing.iter().map(|m| PlanLine {
+        part: part_name(m.part).into(),
+        what: capitalized(&m.reason),
+        when: String::new(),
+    }));
     lines
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }

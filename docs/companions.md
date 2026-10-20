@@ -243,7 +243,7 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
 
   It talks in the game's language. Personality, role and perception can be changed live from the
   Companion screen, or by telling it ("you're a pirate now", kept as a memory note).
-- **Voices.** The Companion screen's "Sounds like" picks the voice, with **Play sample** (a short line in
+- **Voices.** The Companion screen's "Sounds like" picks the voice, with **Sample: Play** (a short line in
   that voice; tests write it to a WAV, never aloud). What it offers depends on the voice model:
   - With the voice pack installed (the cast's clips, `senses::voice_pack_dir`: `<home>/companion/voices/v1/`,
     or `HORIZON_COMPANION_VOICES=<dir>` until the pack is hosted), a cloning model (Qwen3-TTS Base, Pocket
@@ -388,7 +388,7 @@ Helper reads as Assistant, Super strong as Bodyguard, Partner as Teammate.
   health or more), death and advancements become brain remarks, at most one per `remark_cooldown`.
 - **The Companion section** (both menu styles, `companion_options.rs`): the PC, the plan, Set up with
   progress, the status, then name, personality, role, perception, language (Clean, Salty 18+ with its
-  confirmation, Kid-friendly), chattiness, voice with its picker and Play sample, the push-to-talk key and
+  confirmation, Kid-friendly), chattiness, voice with its picker and its sample, the push-to-talk key and
   Spawn / Dismiss; Advanced picks every part, Salty's brain, and deletes the models. Create World has
   "Start with a companion" and "Companion role" in both styles (buttons in the classic screen, two
   segmented rows in Horizon's). No AI (Extras, or the launcher) hides all of it, sends

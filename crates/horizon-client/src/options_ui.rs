@@ -945,6 +945,17 @@ impl OptionsUi {
     }
     /// Jump straight to a page (control socket / tests).
     pub fn show(&mut self, page: Page) {
+        // Horizon's menus have the Companion page as a section of their own.
+        if page == Page::Companion && crate::ui_theme::horizon() {
+            self.stack.truncate(1);
+            self.section = crate::options_horizon::SECTIONS
+                .iter()
+                .position(|section| section.name == "Companion")
+                .unwrap_or(0);
+            self.section_shown = None;
+            self.hscroll = 0.0;
+            return;
+        }
         if page != Page::Main {
             self.push(page);
         }
@@ -1058,27 +1069,33 @@ impl OptionsUi {
                 };
                 co::rows(&s.companion)
                     .into_iter()
-                    .map(|row| {
+                    .flat_map(|row| {
                         let (caption, text, control) =
                             co::row_parts(row, &s.companion, &talk, self.companion_name.as_deref());
                         match (row, control) {
-                            (co::Row::Header(h), _) => Row::Header(h),
+                            (co::Row::Header(h), _) => vec![Row::Header(h)],
+                            // What doesn't fit the button goes on the next ones.
                             (_, Control::None) => {
                                 let line = if caption.is_empty() {
                                     text
                                 } else {
                                     format!("{caption}: {text}")
                                 };
-                                Row::Buttons(
-                                    inactive(button(
-                                        0.0,
-                                        0.0,
-                                        310.0,
-                                        Text::literal(line),
-                                        Act::None,
-                                    )),
-                                    None,
-                                )
+                                co::classic_lines(&line, co::CLASSIC_TEXT)
+                                    .into_iter()
+                                    .map(|line| {
+                                        Row::Buttons(
+                                            inactive(button(
+                                                0.0,
+                                                0.0,
+                                                310.0,
+                                                Text::literal(line),
+                                                Act::None,
+                                            )),
+                                            None,
+                                        )
+                                    })
+                                    .collect()
                             }
                             (_, control) => {
                                 let value = match control {
@@ -1089,15 +1106,21 @@ impl OptionsUi {
                                     Control::TextBox(v, false) => v,
                                     Control::None => String::new(),
                                 };
-                                let label = Text::literal(if caption.is_empty() {
-                                    value
-                                } else {
-                                    format!("{caption}: {value}")
-                                });
-                                Row::Buttons(
+                                let line = format!("{caption}: {value}");
+                                // A value too long beside its caption shows alone.
+                                let label = Text::literal(
+                                    if caption.is_empty()
+                                        || co::classic_width(&line) > co::CLASSIC_TEXT
+                                    {
+                                        value
+                                    } else {
+                                        line
+                                    },
+                                );
+                                vec![Row::Buttons(
                                     button(0.0, 0.0, 310.0, label, Act::Companion(row)),
                                     None,
-                                )
+                                )]
                             }
                         }
                     })
@@ -2315,6 +2338,10 @@ impl OptionsUi {
         }
     }
     pub fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32) {
+        if crate::ui_theme::horizon() && self.page() == Page::Main {
+            self.scroll_horizon(amount);
+            return;
+        }
         let (_, top, bottom, content) = self.layout(s, size.0, size.1);
         self.scroll -= amount * 18.0;
         self.clamp_scroll(top, bottom, content);

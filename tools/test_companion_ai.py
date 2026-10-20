@@ -491,41 +491,64 @@ def stop(process):
 
 def scenario_pages(client, resources, home, shots, offscreen):
     """Screenshots in both menu styles: Create New World with the companion role, and the
-    Companion page's simple view, in a throwaway home sharing `home`'s companion folder."""
+    Companion page (its top, the companion's rows, its end, then with Show advanced on) at GUI
+    scale 2 and at the largest (3 in a 1280x720 window), in a throwaway home sharing `home`'s
+    companion folder."""
     shots.mkdir(parents=True, exist_ok=True)
     for style in ('classic', 'horizon'):
-        with tempfile.TemporaryDirectory(prefix='horizon-pages-') as directory:
-            temp = Path(directory)
-            (temp / 'companion').symlink_to(home / 'companion')
-            endpoint = temp / 'control.sock'
-            with (temp / 'client.log').open('w+') as log:
-                before = {int(l.split()[0]) for l in leftovers(home)}
-                process = start(client, resources, temp, endpoint, log, offscreen, style=style)
-                try:
-                    wait_for(endpoint, 'screen', lambda v: v['screen'] == 'title', timeout=60, what='the title')
-                    command(endpoint, 'singleplayer')
-                    time.sleep(4)
-                    command(endpoint, f'screenshot {shots / f"create-world-{style}.png"}')
-                    open_world(endpoint, 'Pages')
-                    command(endpoint, 'options companion')
-                    time.sleep(3)
-                    command(endpoint, f'screenshot {shots / f"companion-page-{style}.png"}')
-                    time.sleep(5)  # the voice rows appear once the setup check has run
-                    command(endpoint, 'options companion 11')
-                    time.sleep(1)
-                    command(endpoint, f'screenshot {shots / f"companion-page-{style}-companions.png"}')
-                    command(endpoint, 'quit')
-                    assert process.wait(timeout=60) == 0
-                    time.sleep(2)
-                    left = leftovers(home, before) + leftovers(temp, before)
-                    assert not left, left
-                    print(style, 'pages captured')
-                except Exception:
-                    log.seek(0)
-                    print('\n'.join(log.read().splitlines()[-40:]))
-                    raise
-                finally:
-                    stop(process)
+        for scale in (2, 3):
+            with tempfile.TemporaryDirectory(prefix='horizon-pages-') as directory:
+                temp = Path(directory)
+                (temp / 'companion').symlink_to(home / 'companion')
+                (temp / 'options.txt').write_text(f'guiScale:{scale}\n')
+                endpoint = temp / 'control.sock'
+                with (temp / 'client.log').open('w+') as log:
+                    before = {int(l.split()[0]) for l in leftovers(home)}
+                    process = start(client, resources, temp, endpoint, log, offscreen, style=style)
+                    try:
+                        wait_for(endpoint, 'screen', lambda v: v['screen'] == 'title', timeout=60,
+                                 what='the title')
+                        if scale == 2:
+                            command(endpoint, 'singleplayer')
+                            time.sleep(4)
+                            command(endpoint, f'screenshot {shots / f"create-world-{style}.png"}')
+                        open_world(endpoint, 'Pages')
+                        command(endpoint, 'options companion')
+                        time.sleep(8)  # the plan and the voice rows appear once the setup check has run
+                        command(endpoint, 'options companion')
+                        time.sleep(1)
+                        command(endpoint, f'screenshot {shots / f"companion-page-{style}-gui{scale}.png"}')
+                        command(endpoint, 'options companion 11')
+                        time.sleep(1)
+                        command(endpoint, f'screenshot {shots / f"companion-page-{style}-gui{scale}-companion.png"}')
+                        command(endpoint, 'options companion 30')
+                        time.sleep(1)
+                        command(endpoint, f'screenshot {shots / f"companion-page-{style}-gui{scale}-end.png"}')
+                        # Show advanced: each part's model choices, at the end of the page.
+                        for label in ('Show advanced: OFF', 'Show advanced'):
+                            try:
+                                command(endpoint, f'click-button {label}')
+                                break
+                            except AssertionError:
+                                continue
+                        else:
+                            raise AssertionError('no Show advanced switch')
+                        time.sleep(1)
+                        command(endpoint, 'options companion 60')
+                        time.sleep(1)
+                        command(endpoint, f'screenshot {shots / f"companion-page-{style}-gui{scale}-advanced.png"}')
+                        command(endpoint, 'quit')
+                        assert process.wait(timeout=60) == 0
+                        time.sleep(2)
+                        left = leftovers(home, before) + leftovers(temp, before)
+                        assert not left, left
+                        print(style, f'gui {scale}: pages captured')
+                    except Exception:
+                        log.seek(0)
+                        print('\n'.join(log.read().splitlines()[-40:]))
+                        raise
+                    finally:
+                        stop(process)
 
 
 def scenario_fresh(client, resources, offscreen):
