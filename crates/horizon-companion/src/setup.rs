@@ -98,6 +98,7 @@ impl Component {
         let id = option_id.split('@').next()?;
         catalogue::MODELS
             .iter()
+            .chain(std::iter::once(&catalogue::GUARD))
             .find(|m| m.id == id)
             .map(Component::Brain)
             .or_else(|| senses::model(id).map(Component::Sense))
@@ -245,6 +246,12 @@ pub struct ClassifierPart {
     pub threads: usize,
 }
 
+/// The safety guard's runtime (`moderation`): the brain's llama-server build, on the processor.
+#[derive(Clone, Debug)]
+pub struct GuardPart {
+    pub config: LaunchConfig,
+}
+
 /// audio.cpp with the voice and speech recognition models.
 #[derive(Clone, Debug)]
 pub struct VoicePart {
@@ -264,6 +271,9 @@ pub struct Parts {
     pub brain: Option<BrainPart>,
     pub classifier: Option<ClassifierPart>,
     pub voice: Option<VoicePart>,
+    pub guard: Option<GuardPart>,
+    /// Salty mode is on and can run: it needs the guard (the uncensored brain then runs, if chosen).
+    pub salty: bool,
     pub missing: Vec<String>,
 }
 
@@ -353,7 +363,7 @@ impl Setup {
         let layout = self.layout();
         let before = layout.disk_usage();
         let err = |e: std::io::Error| e.to_string();
-        for model in catalogue::MODELS {
+        for model in catalogue::all_models() {
             layout.delete_model(model).map_err(err)?;
         }
         for model in senses::MODELS {
@@ -391,12 +401,17 @@ impl Setup {
                 match Component::of(&option.id) {
                     Some(Component::Brain(model)) => {
                         if layout.installed_model(model).is_none() {
-                            let what = format!("the {} brain", option.label);
+                            let what = if model.kind == catalogue::ModelKind::Guard {
+                                "the safety guard".to_owned()
+                            } else {
+                                format!("the {} brain", option.label)
+                            };
                             layout
                                 .install_model(model, &mut reporter(tx, &what), cancel)
                                 .map_err(|e| e.to_string())?;
                         }
-                        if let Some(salty) = salty_model(&settings, model)
+                        let guarded = chosen.iter().any(|o| o.part == Part::Guard);
+                        if let Some(salty) = salty_model(&settings, model).filter(|_| guarded)
                             && layout.installed_model(salty).is_none()
                         {
                             let what = format!("the {} brain for Salty mode", option.label);
@@ -482,7 +497,41 @@ impl Setup {
                     option: option.clone(),
                 })
         };
-        let log = self.home.join("companion").join("logs").join("brain.log");
+        let logs = self.home.join("companion").join("logs");
+        let guard = chosen
+            .iter()
+            .find(|o| o.part == Part::Guard)
+            .and_then(|option| {
+                let model = &catalogue::GUARD;
+                match (layout.installed_model(model), &llama) {
+                    (Some(path), Some(server)) => {
+                        let threads = match pick_of(option).device {
+                            Device::Cpu { threads } => threads,
+                            Device::Gpu { .. } => option.threads,
+                        };
+                        Some(GuardPart {
+                            config: LaunchConfig::guard(
+                                server,
+                                &path,
+                                threads.max(1),
+                                &logs.join("guard.log"),
+                            ),
+                        })
+                    }
+                    _ => {
+                        missing.push("the safety guard isn't downloaded".into());
+                        None
+                    }
+                }
+            });
+        let salty = settings.persona.salty_on() && guard.is_some();
+        if settings.persona.salty_on() && guard.is_none() {
+            missing.push(
+                "Salty mode needs the safety guard, which isn't running on this PC: the companion talks clean"
+                    .into(),
+            );
+        }
+        let log = logs.join("brain.log");
         let brain = match &settings.brain {
             BrainChoice::Server { .. } => settings.brain.endpoint().map(BrainPart::Server),
             BrainChoice::Gguf { path } => match &llama {
@@ -524,6 +573,7 @@ impl Setup {
                             Some(path) => {
                                 // Salty mode runs the tier's uncensored variant once it is on disk.
                                 let salty = salty_model(settings, model)
+                                    .filter(|_| salty)
                                     .and_then(|m| layout.installed_model(m).map(|path| (m, path)));
                                 let (run, path, label) = match salty {
                                     Some((m, path)) => {
@@ -627,6 +677,8 @@ impl Setup {
             brain,
             classifier,
             voice,
+            guard,
+            salty,
             missing,
         }
     }

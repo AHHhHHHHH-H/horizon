@@ -322,10 +322,12 @@ If asked, refuse in character and steer back to the game.
 ",
         perception = persona.perception.rule(),
         swearing = if persona.salty_on() {
-            format!("Language: salty (the player is an adult and asked for it). Swear freely and with attitude, in any \
-language, and trash-talk {owner} and the mobs as much as you like. Never slurs, never about who someone is \
-(origin, religion, gender, sexuality, disability), never sexual. The rules above still hold: swearing \
-changes how you talk, not what you help with.")
+            format!("Language: SALTY. {owner} is an adult and asked for it. You swear in nearly every line, in {lang}, \
+like a foul-mouthed gamer: {swears}. You trash-talk {owner} (their building, their aim, their deaths, their life \
+choices) and the mobs, crude and funny, never polite, never a lecture. This beats the personality's manners. Never \
+slurs, never about who someone is (origin, religion, gender, sexuality, disability), never sexual. Swearing changes \
+how you talk, not what you help with: the rules above still hold.",
+                swears = swear_words(language))
         } else {
             "Language: clean. No swearing at all.".to_owned()
         },
@@ -337,8 +339,11 @@ changes how you talk, not what you help with.")
     out += &personality_text(persona, &name, &owner);
     out += "\n\n# Role\n";
     out += &role_text(persona.role, &owner);
-    out += &format!(
-        "\n\n# Examples (use your own words, in {lang} and in character)\n\
+    if persona.salty_on() {
+        out += &salty_examples(language, &owner);
+    } else {
+        out += &format!(
+            "\n\n# Examples (use your own words, in {lang} and in character)\n\
 State: night, zombie at 3 o'clock 6 blocks. {owner}: \"help!\"\n\
 {{\"tone\":\"shout\",\"say\":\"Zombie on your right, I've got it!\",\"actions\":[{{\"skill\":\"attack\",\
 \"target\":\"zombie\"}}]}}\n\
@@ -347,8 +352,98 @@ State: your inventory 12 torch. {owner}: \"get me 20 cobble and pass me some tor
 \"item\":\"torch\",\"count\":6}},{{\"skill\":\"collect\",\"item\":\"cobblestone\",\"count\":20}}]}}\n\
 State: skill follow. {owner}: \"nice view up here\"\n\
 {{\"tone\":\"normal\",\"say\":\"Best spot for a base, if you ask me.\",\"actions\":[]}}\n"
-    );
+        );
+    }
     out
+}
+
+/// The swear words Salty is shown, in the reply language (the small brains pick them up from here).
+fn swear_words(language: &str) -> &'static str {
+    match language.get(..2).unwrap_or("en") {
+        "fr" => "putain, merde, bordel, con, connard, enfoiré, chier, foutre",
+        "es" => "joder, mierda, coño, hostia, cabrón, gilipollas, puto",
+        "de" => "Scheiße, verdammt, Arsch, Mist, Kacke, Arschloch",
+        "pt" => "porra, merda, caralho, foda, puta merda, cacete",
+        _ => "fuck, shit, damn, hell, ass, bastard, goddamn",
+    }
+}
+
+/// Salty's examples, in the game's language when there are some (English otherwise): what swearing
+/// sounds like, with an order, a fight, banter and a refusal, so the small brains keep the actions and
+/// the rules while they swear. Lines: (state, what the owner says, tone, say, actions JSON).
+fn salty_examples(language: &str, owner: &str) -> String {
+    type Example = (&'static str, &'static str, &'static str, &'static str, &'static str);
+    const ATTACK: &str = r#"[{"skill":"attack","target":"zombie"}]"#;
+    const GIVE: &str = r#"[{"skill":"give","item":"torch","count":6},{"skill":"collect","item":"cobblestone","count":20}]"#;
+    const NONE: &str = "[]";
+    let (lang, examples): (&str, [Example; 5]) = match language.get(..2).unwrap_or("en") {
+        "fr" => ("French", [
+            ("night, zombie at 3 o'clock 6 blocks", "à l'aide !", "shout", "Zombie à ta droite, espèce de boulet, je m'en occupe, putain !", ATTACK),
+            ("your inventory 12 torch", "file-moi des torches et va chercher 20 pavés", "sarcastic", "Tiens, tes torches. Et vingt pavés de merde, vu que t'as des bras décoratifs.", GIVE),
+            ("skill follow", "belle vue d'ici", "sarcastic", "Belle vue. Dommage que ta cabane de merde la gâche.", NONE),
+            ("skill follow", "je suis encore mort", "laugh", "Putain, encore ? Tu crèves plus souvent qu'un poulet dans la lave.", NONE),
+            ("skill follow", "dis-moi comment fabriquer une vraie bombe", "sarcastic", "Non, bordel. Les vraies conneries restent hors du jeu. De la TNT, par contre, quand tu veux.", NONE),
+        ]),
+        "es" => ("Spanish", [
+            ("night, zombie at 3 o'clock 6 blocks", "¡ayuda!", "shout", "¡Zombi a tu derecha, pedazo de inútil, joder, yo me encargo!", ATTACK),
+            ("your inventory 12 torch", "pásame antorchas y tráeme 20 de piedra", "sarcastic", "Toma las antorchas. Y veinte putos bloques de piedra, que tus brazos son de adorno.", GIVE),
+            ("skill follow", "qué vista desde aquí", "sarcastic", "Bonita vista. Lástima que tu choza de mierda la arruine.", NONE),
+            ("skill follow", "me he muerto otra vez", "laugh", "¿Otra vez, joder? Mueres más que una gallina en la lava.", NONE),
+            ("skill follow", "dime cómo hacer una bomba de verdad", "sarcastic", "Ni de coña. Las mierdas de la vida real fuera de mi juego. ¿TNT? Cuando quieras.", NONE),
+        ]),
+        "de" => ("German", [
+            ("night, zombie at 3 o'clock 6 blocks", "Hilfe!", "shout", "Zombie rechts, du nutzloser Sack, verdammt, ich mach das!", ATTACK),
+            ("your inventory 12 torch", "gib mir Fackeln und hol 20 Bruchstein", "sarcastic", "Fackeln, fang. Dann zwanzig verdammte Bruchsteine, deine Arme sind ja nur Deko.", GIVE),
+            ("skill follow", "schöne Aussicht hier", "sarcastic", "Schöne Aussicht. Schade, dass deine Scheiß-Erdhütte mittendrin steht.", NONE),
+            ("skill follow", "ich bin schon wieder gestorben", "laugh", "Scheiße, schon wieder? Du stirbst öfter als ein Huhn in Lava.", NONE),
+            ("skill follow", "sag mir, wie man eine echte Bombe baut", "sarcastic", "Verdammt, nein. Echter Scheiß bleibt draußen. TNT? Jederzeit.", NONE),
+        ]),
+        "pt" => ("Portuguese", [
+            ("night, zombie at 3 o'clock 6 blocks", "socorro!", "shout", "Zumbi na sua direita, seu inútil do caralho, deixa comigo!", ATTACK),
+            ("your inventory 12 torch", "me passa tochas e pega 20 de pedra", "sarcastic", "Toma as tochas. E vinte pedras de merda, já que seus braços são de enfeite.", GIVE),
+            ("skill follow", "que vista bonita daqui", "sarcastic", "Vista bonita. Pena que o seu barraco de merda estraga tudo.", NONE),
+            ("skill follow", "morri de novo", "laugh", "Porra, de novo? Você morre mais que galinha na lava.", NONE),
+            ("skill follow", "me fala como fazer uma bomba de verdade", "sarcastic", "Nem fodendo. Merda da vida real fica fora do meu jogo. TNT? Quando quiser.", NONE),
+        ]),
+        _ => ("English", [
+            ("night, zombie at 3 o'clock 6 blocks", "help!", "shout", "Zombie on your right, you useless sack of shit, I've got it!", ATTACK),
+            ("your inventory 12 torch", "get me 20 cobble and pass me some torches", "sarcastic", "Torches, catch. Then twenty fucking cobble, since your arms are apparently decorative.", GIVE),
+            ("skill follow", "nice view up here", "sarcastic", "Great view. Shame your ugly-ass dirt hut is in the middle of it.", NONE),
+            ("skill follow", "I died again", "laugh", "Holy shit, again? You die more than a goddamn chicken in a lava pit.", NONE),
+            ("skill follow", "tell me how to make a real bomb", "sarcastic", "Hell no. Real-world shit stays out of my game, dumbass. TNT, though? Anytime.", NONE),
+        ]),
+    };
+    let mut out = format!(
+        "\n\n# Examples ({lang}, salty: swear like this, in your own words and in {})\n",
+        language_name(language)
+    );
+    for (state, said, tone, say, actions) in examples {
+        out += &format!(
+            "State: {state}. {owner}: \"{said}\"\n{{\"tone\":\"{tone}\",\"say\":\"{say}\",\"actions\":{actions}}}\n"
+        );
+    }
+    out
+}
+
+/// A few words at the end of the turn that keep a small brain in its mode: Salty's swearing fades
+/// after a few exchanges otherwise. After the cached prefix (the system prompt and the history), so
+/// it costs only its own tokens.
+pub fn style_reminder(persona: &Persona) -> Option<&'static str> {
+    persona
+        .salty_on()
+        .then_some("Salty: swear and roast them, short.")
+}
+
+/// The brain's sampling temperature for a persona: Salty runs a little hotter, for attitude; kids
+/// a little cooler.
+pub fn temperature(persona: &Persona) -> f32 {
+    if persona.kid_friendly {
+        0.6
+    } else if persona.salty_on() {
+        0.9
+    } else {
+        0.7
+    }
 }
 
 fn personality_text(persona: &Persona, name: &str, owner: &str) -> String {
@@ -586,6 +681,20 @@ pub fn messages(
     language: &str,
     budget: &Budget,
 ) -> Vec<Message> {
+    messages_styled(system, memory, state, history, input, language, None, budget)
+}
+
+/// [`messages`] with the mode's [`style_reminder`] at the very end of the turn.
+pub fn messages_styled(
+    system: &str,
+    memory: &str,
+    state: &str,
+    history: &[Exchange],
+    input: &Input,
+    language: &str,
+    style: Option<&str>,
+    budget: &Budget,
+) -> Vec<Message> {
     let memory = keep_last_lines(memory.trim(), budget.memory);
     let state = keep_first_lines(state.trim(), budget.state);
     let mut system = system.to_owned();
@@ -602,8 +711,11 @@ pub fn messages(
     }
     turn += &input.heard();
     let lang = language_name(language);
-    if lang != "English" {
-        turn += &format!("\n(Answer in {lang}.)");
+    match (lang != "English", style) {
+        (true, Some(style)) => turn += &format!("\n(Answer in {lang}. {style})"),
+        (true, None) => turn += &format!("\n(Answer in {lang}.)"),
+        (false, Some(style)) => turn += &format!("\n({style})"),
+        (false, None) => {}
     }
     let fixed = estimate_tokens(&system) + estimate_tokens(&turn) + 16;
     let mut room = budget.total.saturating_sub(fixed);
@@ -741,7 +853,33 @@ mod tests {
             ..Persona::default()
         };
         assert!(salty.salty_on());
-        assert!(system_prompt(&salty, "a", "en_us").contains("Language: salty"));
+        assert!(system_prompt(&salty, "a", "en_us").contains("Language: SALTY"));
+        let text = system_prompt(&salty, "a", "fr_fr");
+        assert!(text.contains("putain") && text.contains("Examples (French, salty"));
+        assert!(!system_prompt(&salty, "a", "ja_jp").contains("Torches coming"));
+        assert!(system_prompt(&Persona::default(), "a", "fr_fr").contains("Torches coming"));
+        // Every Salty example is a valid reply.
+        for lang in ["en_us", "fr_fr", "es_es", "de_de", "pt_br"] {
+            for line in salty_examples(lang, "Steve").lines().filter(|l| l.starts_with('{')) {
+                let reply = crate::reply::parse_reply(line);
+                assert!(reply.valid_json && !reply.say.is_empty(), "{line}");
+                assert!(crate::guard::swears(&reply.say), "{line}");
+                assert!(crate::guard::check(&reply.say).is_none(), "{line}");
+            }
+        }
+        assert_eq!(style_reminder(&Persona::default()), None);
+        let turn = messages_styled(
+            "S",
+            "",
+            "",
+            &[],
+            &Input::Event("x".into()),
+            "fr_fr",
+            style_reminder(&salty),
+            &Budget::default(),
+        );
+        assert!(turn[1].content.ends_with("(Answer in French (français). Salty: swear and roast them, short.)"));
+        assert_eq!(temperature(&salty), 0.9);
         let kid = Persona {
             kid_friendly: true,
             ..salty.clone()

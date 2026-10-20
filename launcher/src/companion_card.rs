@@ -659,8 +659,9 @@ impl Launcher {
             (Part::Classifier, "Command recognition"),
             (Part::SpeechToText, "Speech recognition"),
             (Part::TextToSpeech, "Voice"),
+            (Part::Guard, "Safety guard"),
         ] {
-            if part != Part::Classifier && !c.settings.voice {
+            if matches!(part, Part::SpeechToText | Part::TextToSpeech) && !c.settings.voice {
                 continue;
             }
             let choice = c.settings.choice(part);
@@ -719,6 +720,7 @@ impl Launcher {
                             match part {
                                 Part::Classifier => s.classifier = value.clone(),
                                 Part::SpeechToText => s.speech_to_text = value.clone(),
+                                Part::Guard => s.guard = value.clone(),
                                 _ => s.text_to_speech = value.clone(),
                             }
                             this.companion.save();
@@ -1040,6 +1042,12 @@ impl Launcher {
         ));
         // Salty: real swearing, for adults only (confirmed once), never with Kid-friendly.
         let kid = c.settings.persona.kid_friendly;
+        let guard = c.plan.as_ref().is_some_and(|plan| {
+            c.settings
+                .selection(plan, &options)
+                .iter()
+                .any(|o| o.part == Part::Guard)
+        });
         let salty = switch("companion-salty", c.settings.persona.salty_on(), &t).on_click(
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 let c = &mut this.companion;
@@ -1063,8 +1071,10 @@ impl Launcher {
                 div()
                     .child(if kid {
                         "Real swearing and attitude. Not with Kid-friendly on."
+                    } else if !guard {
+                        "Needs the safety guard, which this PC can't run beside the brain (or it is off in Advanced)."
                     } else {
-                        "Real swearing and attitude, and an uncensored brain where one is chosen. Anything harmful is still refused. Off: clean."
+                        "Real swearing and attitude, and an uncensored brain where one is chosen. The safety guard checks every line: anything harmful is still refused. Off: clean."
                     })
                     .into_any_element(),
             ),

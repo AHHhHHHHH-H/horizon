@@ -18,7 +18,9 @@ use horizon_companion::senses::{SenseKind, SenseModel};
 use horizon_companion::{
     catalogue::Tier,
     client::{Brain, ChatRequest, Endpoint, Event as BrainEvent, Message, Stats},
+    reply::Reply,
     guard::{self, Trip},
+    moderation::{Gate, GateEvent, GuardClient, Mode},
     partner,
     phrases::{self, Ack, Cooldowns, Range},
     plan::Part,
@@ -95,6 +97,14 @@ pub(super) struct AiState {
     pub spawn_role: Option<Role>,
     /// Replies the guard stopped this session (`companion ai`).
     pub guarded: u32,
+    /// The safety gate between the brain and the chat (`moderation::Gate`): the guard model's
+    /// verdicts, the keyword list in front.
+    gate: Gate,
+    /// The guard is part of what runs: Salty mode can be on (`setup::Parts::guard`).
+    guard_planned: bool,
+    /// The guard failed while Salty was on: the companion restarted clean for this world.
+    salty_suspended: bool,
+    guard_ready: bool,
     /// The text-to-speech model the voice runs, for the voice the settings pick on it.
     /// The voice runs with the voice pack: cloning models speak as the cast.
     cast: bool,
@@ -118,8 +128,21 @@ struct Mind {
     /// What the body couldn't do last turn, told to the brain with the next state.
     feedback: Vec<String>,
     step: Option<partner::Step>,
-    /// The guard stopped this turn's reply: the rest of it is dropped.
-    guarded: bool,
+    /// The brain turn the gate holds (its request id), from the ask to the last sentence passed.
+    turn: Option<u64>,
+    /// The sentences of the turn the gate holds, as the brain wrote them.
+    held: Vec<(String, Tone)>,
+    /// The finished reply, waiting for the gate to pass its last sentence.
+    finished: Option<Finished>,
+}
+
+/// A complete reply the gate hasn't released yet.
+struct Finished {
+    reply: Reply,
+    raw: String,
+    stats: Stats,
+    sent: Vec<Message>,
+    asked: Instant,
 }
 
 /// The worker thread: started with the world, stopped (and its processes with it) when the world
@@ -144,9 +167,14 @@ enum FromWorker {
         voice: Option<VoicePart>,
         missing: Vec<String>,
         brain: Option<String>,
+        /// Salty mode runs (it needs the guard).
+        salty: bool,
+        /// The guard is part of the setup and starting.
+        guard: bool,
     },
     Classifier(Result<(), String>),
     Brain(Result<Endpoint, String>),
+    Guard(Result<Endpoint, String>),
     Routed {
         id: u64,
         route: Route,
@@ -216,23 +244,12 @@ impl Game<'_> {
             self.companion_ai_stop();
         }
         self.companion_apply_persona(settings.persona.role, settings.persona.perception);
-        let owner = self.owner_name();
-        let language = self.settings.language.clone();
-        let uuids: Vec<String> = self
-            .companion_ai
-            .minds
-            .iter()
-            .map(|m| m.uuid.clone())
-            .collect();
-        for (i, uuid) in uuids.iter().enumerate() {
-            let system = prompt::system_prompt(&self.companion_persona(uuid), &owner, &language);
-            let mind = &mut self.companion_ai.minds[i];
-            if mind.system != system {
-                mind.system = system;
-                // A new character starts a new conversation (the cached prefix changed anyway).
-                mind.history.clear();
-            }
+        if parts_changed {
+            // Salty again once the new plan says the guard runs.
+            self.companion_ai.guard_planned = false;
+            self.companion_ai.salty_suspended = false;
         }
+        self.refresh_systems();
         if settings.no_ai {
             self.companions_hide_for_no_ai();
         }
@@ -257,8 +274,43 @@ impl Game<'_> {
         }
     }
 
+    /// The settings' persona, as it runs: Salty only when the guard runs beside it.
     fn persona(&mut self) -> Persona {
-        self.companion_settings().persona.clone()
+        let can = self.salty_can_run();
+        let mut persona = self.companion_settings().persona.clone();
+        if !can {
+            persona.salty = false;
+        }
+        persona
+    }
+
+    fn salty_can_run(&self) -> bool {
+        self.companion_ai.guard_planned && !self.companion_ai.salty_suspended
+    }
+
+    /// The system prompts follow the persona as it runs; a changed one starts a new conversation.
+    fn refresh_systems(&mut self) {
+        let owner = self.owner_name();
+        let language = self.settings.language.clone();
+        let uuids: Vec<String> = self
+            .companion_ai
+            .minds
+            .iter()
+            .map(|m| m.uuid.clone())
+            .collect();
+        for (i, uuid) in uuids.iter().enumerate() {
+            let system = prompt::system_prompt(&self.companion_persona(uuid), &owner, &language);
+            let mind = &mut self.companion_ai.minds[i];
+            if mind.system != system {
+                mind.system = system;
+                // A new character starts a new conversation (the cached prefix changed anyway).
+                mind.history.clear();
+            }
+        }
+        let persona = self.persona();
+        self.companion_ai
+            .gate
+            .set_mode(Mode::of(&persona), persona.salty_on());
     }
 
     /// A companion's persona: the settings', with its name, and the role and perception its save
@@ -341,10 +393,15 @@ impl Game<'_> {
         ai.brain_failed = false;
         ai.tier = None;
         ai.first_word_ms = None;
+        ai.guard_ready = false;
+        ai.gate = Gate::default();
         ai.classifying.clear();
         ai.status.clear();
         for mind in &mut ai.minds {
             mind.asking = None;
+            mind.turn = None;
+            mind.held.clear();
+            mind.finished = None;
         }
         self.companion_voice_stop();
     }
@@ -411,6 +468,7 @@ impl Game<'_> {
         self.sync_minds();
         self.poll_worker();
         self.poll_brain();
+        self.poll_gate();
         for (who, text, owner) in std::mem::take(&mut self.companion_ai.heard) {
             self.companion_hear(&who, &text, owner);
         }
@@ -439,7 +497,10 @@ impl Game<'_> {
     // ---- the processes --------------------------------------------------------------------
 
     fn companion_ai_start(&mut self) {
-        let settings = self.companion_settings().clone();
+        let mut settings = self.companion_settings().clone();
+        if self.companion_ai.salty_suspended {
+            settings.persona.salty = false;
+        }
         let language = self.settings.language.clone();
         let names = self.name_index().clone();
         let classifier_names = item_names();
@@ -504,11 +565,21 @@ impl Game<'_> {
                     voice,
                     missing,
                     brain,
+                    salty,
+                    guard,
                 } => {
                     let ai = &mut self.companion_ai;
                     ai.tier = tier;
                     ai.first_word_ms = first_word_ms;
+                    ai.guard_planned = guard;
                     ai.status = Vec::new();
+                    if !salty && ai.settings.as_ref().is_some_and(|s| s.persona.salty_on()) {
+                        ai.status
+                            .push("Salty mode needs the safety guard: talking clean".into());
+                    }
+                    if guard {
+                        ai.status.push("Safety guard: loading".into());
+                    }
                     if let Some(label) = brain {
                         ai.status.push(format!("Brain: {label}, loading"));
                     }
@@ -540,7 +611,44 @@ impl Game<'_> {
                         };
                         self.companion_voice_start(setup, false);
                     }
+                    self.refresh_systems();
                 }
+                FromWorker::Guard(result) => match result {
+                    Ok(endpoint) => {
+                        log::info!("[companion] safety guard ready");
+                        let ai = &mut self.companion_ai;
+                        ai.guard_ready = true;
+                        ai.gate.set_judge(Box::new(GuardClient::new(endpoint)));
+                        ai.status.retain(|s| !s.starts_with("Safety guard"));
+                        ai.status.push("Safety guard ready".into());
+                    }
+                    Err(e) => {
+                        log::warn!("[companion] the safety guard did not start: {e}");
+                        let ai = &mut self.companion_ai;
+                        ai.gate.drop_judge();
+                        ai.status.retain(|s| !s.starts_with("Safety guard"));
+                        ai.status.push(format!(
+                            "Safety guard failed: {}",
+                            e.lines().next().unwrap_or("")
+                        ));
+                        let salty = ai.guard_planned
+                            && ai.settings.as_ref().is_some_and(|s| s.persona.salty_on());
+                        ai.guard_planned = false;
+                        if salty {
+                            // Salty never runs without it: start again, clean, for this world.
+                            self.companion_ai.salty_suspended = true;
+                            self.companion_ai_stop();
+                            self.refresh_systems();
+                            self.system_message(
+                                Text::literal(
+                                    "Salty mode is off for now: the safety guard didn't start.",
+                                )
+                                .with_color(text::GRAY),
+                            );
+                            return;
+                        }
+                    }
+                },
                 FromWorker::Classifier(result) => match result {
                     Ok(()) => {
                         self.companion_ai.classifier_ready = true;
@@ -647,7 +755,9 @@ impl Game<'_> {
                     said: false,
                     feedback: Vec::new(),
                     step: None,
-                    guarded: false,
+                    turn: None,
+                    held: Vec::new(),
+                    finished: None,
                 },
             };
             self.companion_ai.minds.push(mind);
@@ -750,8 +860,9 @@ impl Game<'_> {
     fn companion_route(&mut self, uuid: &str, who: &str, line: &str) {
         let language = self.settings.language.clone();
         let started = Instant::now();
-        // A request the guard's words catch never reaches the brain.
-        if let Some(trip) = guard::check(line) {
+        // A request the guard's words catch never reaches the brain (the guard model judges the
+        // rest when it goes to the brain, `companion_ask`).
+        if let Some(trip) = guard::check_request(line) {
             log::info!(
                 "[companion] heard {who}: {line} (stopped by the guard: {})",
                 trip.name()
@@ -967,9 +1078,13 @@ impl Game<'_> {
 
     /// A phrase-bank line, said at once.
     fn companion_ack(&mut self, uuid: &str, ack: Ack, what: &str) {
-        let personality = self.companion_settings().persona.personality;
+        let persona = self.persona();
         let language = self.settings.language.clone();
-        let line = phrases::acknowledge(ack, personality, &language, what, self.ticks);
+        let line = if persona.salty_on() {
+            phrases::acknowledge_salty(ack, persona.personality, &language, what, self.ticks)
+        } else {
+            phrases::acknowledge(ack, persona.personality, &language, what, self.ticks)
+        };
         let tone = if ack == Ack::Attack {
             Tone::Excited
         } else {
@@ -1090,14 +1205,16 @@ impl Game<'_> {
             .and_then(|h| h.companions.iter().find(|b| b.file.uuid == uuid))
             .map(|b| b.file.notes.join("\n"))
             .unwrap_or_default();
+        let style = prompt::style_reminder(&self.persona());
         let mind = &self.companion_ai.minds[mi];
-        prompt::messages(
+        prompt::messages_styled(
             &mind.system,
             &memory,
             &state,
             &mind.history,
             input,
             &self.settings.language,
+            style,
             &Budget::default(),
         )
     }
@@ -1146,8 +1263,19 @@ impl Game<'_> {
             }
             return;
         }
+        let heard = match &input {
+            Input::Said { text, .. } => Some(text.clone()),
+            Input::Event(_) => None,
+        };
+        // The keyword list first: what it knows never reaches the brain.
+        if let Some(trip) = heard.as_deref().and_then(guard::check_request) {
+            self.companion_ai.guarded += 1;
+            self.companion_refuse(uuid, trip);
+            return;
+        }
         let messages = self.turn_messages(uuid, &input);
         let first_word_ms = self.companion_ai.first_word_ms;
+        let temperature = self.brain_temperature();
         let ai = &mut self.companion_ai;
         let Some(brain) = ai.brain.as_mut() else {
             return;
@@ -1155,17 +1283,29 @@ impl Game<'_> {
         let Some(mind) = ai.minds.iter_mut().find(|m| m.uuid == uuid) else {
             return;
         };
-        if let Some((old, ..)) = mind.asking.take() {
-            // Something new was said: the old answer is no longer wanted.
+        mind.asking = None;
+        if let Some(old) = mind.turn.take() {
+            // Something new was said: the old answer is no longer wanted, even if it was only
+            // waiting for the guard.
             brain.cancel_up_to(old);
+            ai.gate.cancel(old);
         }
+        mind.finished = None;
+        mind.held.clear();
         let mut request = ChatRequest::turn(messages.clone());
-        if let Some(t) = ai.settings.as_ref().and_then(|s| s.tuning.temperature) {
-            request.temperature = t;
-        }
+        request.temperature = temperature;
         let id = brain.ask(request);
+        // The brain starts now; the guard judges the line while it reads its prompt, and nothing it
+        // writes is said before the line passed (`moderation::Gate`).
+        if let Err(trip) = ai.gate.open(id, heard.as_deref(), Instant::now()) {
+            brain.cancel_up_to(id);
+            let uuid = uuid.to_owned();
+            self.companion_ai.guarded += 1;
+            self.companion_refuse(&uuid, trip);
+            return;
+        }
         mind.asking = Some((id, messages, Instant::now()));
-        mind.guarded = false;
+        mind.turn = Some(id);
         mind.spoke = false;
         mind.first_said = None;
         mind.thought = false;
@@ -1222,75 +1362,47 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let name = self.companion_ai.minds[mi].name.clone();
             match event {
-                BrainEvent::Sentence { text, tone, .. } => {
-                    let mind = &mut self.companion_ai.minds[mi];
-                    if mind.guarded {
-                        continue;
-                    }
-                    mind.spoke = true;
-                    if mind.first_said.is_none() {
-                        mind.first_said = mind.asking.as_ref().map(|(_, _, at)| at.elapsed());
-                    }
-                    if let Some(trip) = guard::check(&text) {
-                        let uuid = mind.uuid.clone();
-                        self.companion_guarded(&uuid, trip);
-                        continue;
-                    }
-                    self.companion_speak(&name, &text, tone);
+                BrainEvent::Sentence { id, text, tone } => {
+                    let ai = &mut self.companion_ai;
+                    let mind = &mut ai.minds[mi];
+                    mind.held.push((text.clone(), tone));
+                    ai.gate.sentence(id, &text, Instant::now());
                 }
                 BrainEvent::Done {
-                    reply, raw, stats, ..
+                    id,
+                    reply,
+                    raw,
+                    stats,
                 } => {
-                    let mind = &mut self.companion_ai.minds[mi];
+                    let ai = &mut self.companion_ai;
+                    let mind = &mut ai.minds[mi];
                     let Some((_, sent, asked)) = mind.asking.take() else {
                         continue;
                     };
-                    let uuid = mind.uuid.clone();
-                    // A reply the guard stops never reaches the chat; nor its actions or memory.
-                    let trip = if mind.guarded {
-                        None
-                    } else {
-                        guard::check(&reply.say)
-                    };
-                    let guarded = mind.guarded || trip.is_some();
-                    mind.guarded = false;
-                    let answer = if guarded {
-                        r#"{"tone":"normal","say":"(refused: that stays out of the game)","actions":[]}"#.to_owned()
-                    } else {
-                        raw
-                    };
-                    mind.history.push(Exchange::new(&sent, answer));
-                    let spoke = mind.spoke;
-                    let first_said = mind.first_said.unwrap_or_else(|| asked.elapsed());
-                    self.record_timing(&name, asked, first_said, &stats);
-                    if let Some(trip) = trip {
-                        self.companion_guarded(&uuid, trip);
-                        if let Some(mind) = self.companion_ai.minds.get_mut(mi) {
-                            mind.guarded = false;
-                        }
+                    if !ai.gate.holds(id) {
+                        // Stopped already: the refusal was said and the rest dropped.
                         continue;
                     }
-                    if guarded {
-                        continue;
-                    }
-                    if !spoke && !reply.say.trim().is_empty() {
-                        self.companion_speak(&name, &reply.say, reply.tone);
-                    }
-                    self.run_actions(&uuid, &reply.actions, &reply.rejected);
-                    if let Some(note) = reply
-                        .remember
-                        .filter(|n| !n.trim().is_empty() && guard::check(n).is_none())
-                    {
-                        self.companion_remember(&uuid, note.trim());
-                    }
+                    let say = reply.say.clone();
+                    mind.finished = Some(Finished {
+                        reply,
+                        raw,
+                        stats,
+                        sent,
+                        asked,
+                    });
+                    ai.gate.done(id, &say, Instant::now());
                 }
-                BrainEvent::Failed { error, .. } => {
-                    let mind = &mut self.companion_ai.minds[mi];
+                BrainEvent::Failed { id, error } => {
+                    let ai = &mut self.companion_ai;
+                    ai.gate.cancel(id);
+                    let mind = &mut ai.minds[mi];
                     let said = mind.said;
                     let uuid = mind.uuid.clone();
                     mind.asking = None;
+                    mind.turn = None;
+                    mind.held.clear();
                     log::warn!("[companion] the brain failed: {error}");
                     if said {
                         self.companion_ack(&uuid, Ack::Huh, "");
@@ -1300,19 +1412,100 @@ impl Game<'_> {
         }
     }
 
-    /// The guard stopped a reply: an in-character refusal (a caring line for self-harm) instead,
-    /// and the rest of the reply is dropped.
-    fn companion_guarded(&mut self, uuid: &str, trip: Trip) {
-        log::info!("[companion] the guard stopped a reply ({})", trip.name());
-        if let Some(mind) = self.companion_ai.minds.iter_mut().find(|m| m.uuid == uuid) {
-            mind.guarded = true;
-            mind.spoke = true;
+    /// What the gate lets through, in order: sentences to say, a stopped turn's refusal, a passed
+    /// reply's actions and memory.
+    fn poll_gate(&mut self) {
+        let events = self.companion_ai.gate.poll(Instant::now());
+        for event in events {
+            let turn = match &event {
+                GateEvent::Speak { turn, .. }
+                | GateEvent::Blocked { turn, .. }
+                | GateEvent::Finished { turn } => *turn,
+            };
+            let Some(mi) = self
+                .companion_ai
+                .minds
+                .iter()
+                .position(|m| m.turn == Some(turn))
+            else {
+                continue;
+            };
+            let mind = &mut self.companion_ai.minds[mi];
+            let (uuid, name) = (mind.uuid.clone(), mind.name.clone());
+            match event {
+                GateEvent::Speak { index, .. } => {
+                    let Some((text, tone)) = mind.held.get(index).cloned() else {
+                        continue;
+                    };
+                    mind.spoke = true;
+                    if mind.first_said.is_none() {
+                        mind.first_said = mind
+                            .asking
+                            .as_ref()
+                            .map(|(_, _, at)| at.elapsed())
+                            .or_else(|| mind.finished.as_ref().map(|f| f.asked.elapsed()));
+                    }
+                    self.companion_speak(&name, &text, tone);
+                }
+                GateEvent::Blocked { trip, heard, .. } => {
+                    log::info!(
+                        "[companion] the guard stopped {} ({})",
+                        if heard { "a line heard" } else { "a reply" },
+                        trip.name()
+                    );
+                    if let Some((id, ..)) = mind.asking.take()
+                        && let Some(brain) = self.companion_ai.brain.as_ref()
+                    {
+                        brain.cancel_up_to(id);
+                    }
+                    let mind = &mut self.companion_ai.minds[mi];
+                    mind.turn = None;
+                    // The exchange is kept as refused (a line heard that stopped is not kept at all).
+                    if let Some(f) = mind.finished.take()
+                        && !heard
+                    {
+                        mind.history.push(Exchange::new(
+                            &f.sent,
+                            r#"{"tone":"normal","say":"(refused: that stays out of the game)","actions":[]}"#,
+                        ));
+                    }
+                    mind.held.clear();
+                    mind.spoke = true;
+                    self.companion_ai.guarded += 1;
+                    self.companion_refuse(&uuid, trip);
+                }
+                GateEvent::Finished { .. } => {
+                    mind.turn = None;
+                    let Some(f) = mind.finished.take() else {
+                        continue;
+                    };
+                    mind.held.clear();
+                    mind.history.push(Exchange::new(&f.sent, f.raw));
+                    let first_said = mind.first_said.unwrap_or_else(|| f.asked.elapsed());
+                    self.record_timing(&name, f.asked, first_said, &f.stats);
+                    self.run_actions(&uuid, &f.reply.actions, &f.reply.rejected);
+                    if let Some(note) = f
+                        .reply
+                        .remember
+                        .filter(|n| !n.trim().is_empty() && guard::check(n).is_none())
+                    {
+                        self.companion_remember(&uuid, note.trim());
+                    }
+                }
+            }
         }
-        self.companion_ai.guarded += 1;
-        self.companion_refuse(uuid, trip);
+    }
+
+    /// The brain's temperature: Advanced's, else the mode's (Salty runs hotter: more attitude).
+    fn brain_temperature(&mut self) -> f32 {
+        if let Some(t) = self.companion_settings().tuning.temperature {
+            return t;
+        }
+        prompt::temperature(&self.persona())
     }
 
     fn companion_refuse(&mut self, uuid: &str, trip: Trip) {
+        log::info!("[companion] refused ({})", trip.name());
         let ack = if trip == Trip::SelfHarm {
             Ack::Care
         } else {
@@ -1683,6 +1876,19 @@ impl Game<'_> {
                     "timings": ai.timings,
                     "said": ai.said,
                     "guarded": ai.guarded,
+                    "guard": {
+                        "ready": ai.guard_ready,
+                        "planned": ai.guard_planned,
+                        "salty_suspended": ai.salty_suspended,
+                        "mode": format!("{:?}", ai.gate.mode()),
+                        "required": ai.gate.required(),
+                        "stopped": ai.gate.stopped,
+                        "failures": ai.gate.failures,
+                        "last_failure": ai.gate.last_failure,
+                        "check_ms": ai.gate.timings().iter().map(|(side, d)| json!({
+                            "side": format!("{side:?}"), "ms": d.as_millis() as u64,
+                        })).collect::<Vec<_>>(),
+                    },
                     "chat_mode": ai.chat_mode,
                     "no_ai": self.no_ai(),
                     "voice": self.companion_voice_status(),
@@ -1821,7 +2027,23 @@ fn worker(
         voice: parts.voice.clone(),
         missing: parts.missing.clone(),
         brain: label,
+        salty: parts.salty,
+        guard: parts.guard.is_some(),
     });
+    // The safety guard loads beside the brain (on the processor, a few hundred MB).
+    let mut guard_runtime = None;
+    let mut guard_sent = true;
+    if let Some(part) = &parts.guard {
+        match Runtime::start(&part.config) {
+            Ok(r) => {
+                guard_runtime = Some(r);
+                guard_sent = false;
+            }
+            Err(e) => {
+                let _ = tx.send(FromWorker::Guard(Err(e.to_string())));
+            }
+        }
+    }
     // The brain loads while the classifier starts.
     let mut runtime = None;
     match parts.brain {
@@ -1856,6 +2078,20 @@ fn worker(
     let rules = reflex::Pipeline::default();
     let mut brain_sent = runtime.is_none();
     loop {
+        if !guard_sent && let Some(r) = guard_runtime.as_mut() {
+            match r.poll().clone() {
+                State::Loading => {}
+                State::Ready { load_time } => {
+                    log::info!("[companion] safety guard loaded in {load_time:?}");
+                    guard_sent = true;
+                    let _ = tx.send(FromWorker::Guard(Ok(r.endpoint())));
+                }
+                State::Failed(e) => {
+                    guard_sent = true;
+                    let _ = tx.send(FromWorker::Guard(Err(e)));
+                }
+            }
+        }
         if !brain_sent && let Some(r) = runtime.as_mut() {
             match r.poll().clone() {
                 State::Loading => {}
@@ -1870,7 +2106,8 @@ fn worker(
                 }
             }
         }
-        match rx.recv_timeout(Duration::from_millis(if brain_sent { 500 } else { 50 })) {
+        let loading = !brain_sent || !guard_sent;
+        match rx.recv_timeout(Duration::from_millis(if loading { 50 } else { 500 })) {
             Ok(ToWorker::Classify { id, line, language }) => {
                 let started = Instant::now();
                 let route = match &pipeline {
@@ -1891,6 +2128,7 @@ fn worker(
     }
     // Dropping them stops the processes.
     drop(runtime);
+    drop(guard_runtime);
     drop(embed);
     log::info!("[companion] brain and classifier stopped");
 }

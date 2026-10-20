@@ -48,6 +48,7 @@ struct Checked {
 fn part_name(part: Part) -> &'static str {
     match part {
         Part::Brain => "Brain",
+        Part::Guard => "Safety guard",
         Part::Classifier => "Commands",
         Part::TextToSpeech => "Voice",
         Part::SpeechToText => "Listening",

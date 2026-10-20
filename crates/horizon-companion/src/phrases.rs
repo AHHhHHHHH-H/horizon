@@ -132,6 +132,26 @@ pub fn acknowledge(
     line.replace("{what}", what.trim())
 }
 
+/// The same in Salty mode: a refusal swears too (the caring line never does).
+pub fn acknowledge_salty(
+    ack: Ack,
+    personality: Personality,
+    language: &str,
+    what: &str,
+    pick: u64,
+) -> String {
+    if ack != Ack::Refuse {
+        return acknowledge(ack, personality, language, what, pick);
+    }
+    let bank = bank();
+    let voice = voice_of(personality);
+    let lines = bank
+        .get(&(lang_of(language), voice, "refuse_salty"))
+        .or_else(|| bank.get(&("en", voice, "refuse_salty")))
+        .expect("every Salty refusal exists in English");
+    lines[(pick % lines.len() as u64) as usize].to_owned()
+}
+
 /// A custom personality speaks like the Expert: plain lines that fit any character.
 fn voice_of(personality: Personality) -> &'static str {
     match personality {
@@ -190,6 +210,7 @@ veteran.huh = Speak Minecraft, would you? | No idea what that means.
 veteran.think = Hm. Give me a second. | Let me think about that.
 veteran.not_yet = Can't do that one yet. Ask me something else. | Not in my skill set. Yet.
 veteran.refuse = Nope. Not touching that. Back to the game. | I've seen a lot, and I'm still not going there.
+veteran.refuse_salty = Hell no. I'm not touching that shit. Back to the damn game. | Nice try, genius. Not happening. Go dig something.
 veteran.care = Hey. That sounds heavy. Talk to someone you trust, or call a helpline. I'll be here.
 coach.follow = Right behind you, let's go! | Following! Lead the way.
 coach.stay = I'll hold this spot for you. | Staying here. Call me when you need me.
@@ -210,6 +231,7 @@ coach.huh = Sorry, I didn't get that. Try \"follow me\" or \"get 10 logs\".
 coach.think = Good question, one sec! | Hmm, let me think.
 coach.not_yet = I can't do that yet, sorry! | That's one I haven't learned yet.
 coach.refuse = That's not something I'll help with. Let's get back to building! | Let's keep it to Minecraft, okay?
+coach.refuse_salty = Whoa, hell no, champ. Let's get back to building, yeah? | Nope, not that crap. Minecraft, buddy. Focus.
 coach.care = I'm worried about you. Please talk to someone you trust or a helpline right now. | You matter. Please reach out to someone you trust, or a helpline.
 expert.follow = Following. | Two blocks behind you.
 expert.stay = Holding position. | I'll stay here.
@@ -230,6 +252,7 @@ expert.huh = Not understood. | Unclear. Say it another way.
 expert.think = One moment. | Thinking.
 expert.not_yet = Not supported yet. | I can't do that yet.
 expert.refuse = I won't help with that. Back to the game. | Out of scope. Let's play.
+expert.refuse_salty = No. That's a hard fucking no. Back to the game. | Not doing that shit. Next.
 expert.care = Please talk to someone you trust, or call a helpline. That matters more than the game. | That's serious. Please reach out to a person you trust, or a helpline.
 joker.follow = Following you like a lost puppy. | Where you go, I go. Unless it's lava.
 joker.stay = I'll just stand here. Looking cool. | Staying. Bring snacks.
@@ -250,6 +273,7 @@ joker.huh = Error 404: meaning not found. | I understood every word. Just not in
 joker.think = Loading brain... please hold. | Hmm, gears turning.
 joker.not_yet = That skill is still in the oven. | Coming soon to a companion near you.
 joker.refuse = Nope, that's a no from me, chief. Back to mining. | Even my jokes have limits. Next topic!
+joker.refuse_salty = Ha, no. Even my dumbass jokes have limits. Next! | Hell no, chief. Back to punching trees.
 joker.care = Jokes off. Please talk to someone you trust, or a helpline. I mean it. | Hey, for real: talk to someone you trust or a helpline. Please.
 quiet.follow = Okay.
 quiet.stay = Here.
@@ -270,6 +294,7 @@ quiet.huh = ?
 quiet.think = Hm.
 quiet.not_yet = Can't yet.
 quiet.refuse = No. | Not that.
+quiet.refuse_salty = Hell no. | Fuck no.
 quiet.care = Talk to someone. Please.
 ";
 
@@ -293,6 +318,7 @@ veteran.huh = Parle Minecraft, tu veux ? | Aucune idée de ce que ça veut dire.
 veteran.think = Hm. Deux secondes. | Laisse-moi réfléchir.
 veteran.not_yet = Ça, je sais pas encore faire. | Pas dans mes cordes. Pour l'instant.
 veteran.refuse = Non. J'y touche pas. On revient au jeu. | J'en ai vu, mais là, non.
+veteran.refuse_salty = Putain, non. J'y touche pas. On retourne au jeu. | Bien essayé, génie. Ça arrivera pas. Va creuser.
 veteran.care = Hé. Ça a l'air lourd. Parles-en à quelqu'un de confiance, ou appelle une ligne d'écoute. Je suis là.
 coach.follow = Je te suis, on y va ! | Je suis juste derrière, montre la route !
 coach.stay = Je garde la place pour toi. | Je reste ici. Appelle-moi si besoin.
@@ -313,6 +339,7 @@ coach.huh = Désolé, j'ai pas compris. Essaie « suis-moi » ou « ramasse 10 b
 coach.think = Bonne question, une seconde ! | Hmm, je réfléchis.
 coach.not_yet = Je ne sais pas encore faire ça, désolé ! | Ça, je ne l'ai pas encore appris.
 coach.refuse = Ça, je ne t'aiderai pas. On retourne construire ! | On reste dans Minecraft, d'accord ?
+coach.refuse_salty = Oh là, sûrement pas, champion. On retourne construire, ok ? | Non, pas cette connerie. Minecraft, mon pote.
 coach.care = Je m'inquiète pour toi. Parle tout de suite à quelqu'un de confiance ou à une ligne d'écoute. | Tu comptes. Parle à quelqu'un de confiance, ou à une ligne d'écoute.
 expert.follow = Je te suis. | Deux blocs derrière toi.
 expert.stay = Je tiens la position. | Je reste ici.
@@ -333,6 +360,7 @@ expert.huh = Pas compris. | Reformule, s'il te plaît.
 expert.think = Un instant. | Je réfléchis.
 expert.not_yet = Pas encore possible. | Je ne sais pas encore faire ça.
 expert.refuse = Je ne t'aiderai pas là-dessus. Retour au jeu. | Hors sujet. On joue.
+expert.refuse_salty = Non. C'est non, putain. Retour au jeu. | Je fais pas cette merde. Suivant.
 expert.care = Parle à quelqu'un de confiance, ou appelle une ligne d'écoute. C'est plus important que le jeu. | C'est sérieux. Parle à une personne de confiance, ou à une ligne d'écoute.
 joker.follow = Je te suis comme un petit chien perdu. | Où tu vas, je vais. Sauf dans la lave.
 joker.stay = Je reste planté là. Avec classe. | Je reste. Ramène des snacks.
@@ -353,6 +381,7 @@ joker.huh = Erreur 404 : sens introuvable. | J'ai compris tous les mots. Juste p
 joker.think = Chargement du cerveau... | Hmm, ça mouline.
 joker.not_yet = Cette compétence est encore au four. | Bientôt dans un compagnon près de chez vous.
 joker.refuse = Non, c'est non, chef. Retour à la mine. | Même mes blagues ont des limites. Sujet suivant !
+joker.refuse_salty = Ha, non. Même mes blagues de merde ont des limites. Suivant ! | Putain, non, chef. Retour à la mine.
 joker.care = Fini les blagues. Parle à quelqu'un de confiance, ou à une ligne d'écoute. Sérieusement. | Hé, pour de vrai : parle à quelqu'un de confiance ou à une ligne d'écoute.
 quiet.follow = Ok.
 quiet.stay = Ici.
@@ -373,6 +402,7 @@ quiet.huh = ?
 quiet.think = Hm.
 quiet.not_yet = Pas encore.
 quiet.refuse = Non. | Pas ça.
+quiet.refuse_salty = Putain, non. | Non, merde.
 quiet.care = Parles-en à quelqu'un. S'il te plaît.
 ";
 
@@ -396,6 +426,7 @@ veteran.huh = Habla en Minecraft, ¿quieres? | Ni idea de qué significa eso.
 veteran.think = Mm. Dame un segundo. | Déjame pensarlo.
 veteran.not_yet = Eso todavía no sé hacerlo. | No está en mi repertorio. Aún.
 veteran.refuse = No. Eso no lo toco. Volvamos al juego. | He visto mucho, y aun así no.
+veteran.refuse_salty = Ni de coña. Eso no lo toco. Volvamos al puto juego. | Buen intento, genio. No va a pasar.
 veteran.care = Oye. Eso suena serio. Habla con alguien de confianza o llama a una línea de ayuda. Aquí estoy.
 coach.follow = ¡Detrás de ti, vamos! | ¡Te sigo, guía tú!
 coach.stay = Te guardo este sitio. | Me quedo aquí. Llámame si me necesitas.
@@ -416,6 +447,7 @@ coach.huh = Perdona, no lo entendí. Prueba «sígueme» o «consigue 10 troncos
 coach.think = ¡Buena pregunta, un segundo! | Mmm, déjame pensar.
 coach.not_yet = ¡Todavía no sé hacer eso, perdona! | Eso aún no lo he aprendido.
 coach.refuse = Con eso no te voy a ayudar. ¡Volvamos a construir! | Quedémonos en Minecraft, ¿vale?
+coach.refuse_salty = Ni hablar, campeón. ¡Volvamos a construir, joder! | No, esa mierda no. Minecraft, colega.
 coach.care = Me preocupas. Habla ahora con alguien de confianza o con una línea de ayuda. | Importas. Habla con alguien de confianza o con una línea de ayuda.
 expert.follow = Te sigo. | Dos bloques detrás de ti.
 expert.stay = Mantengo la posición. | Me quedo aquí.
@@ -436,6 +468,7 @@ expert.huh = No entendido. | Dilo de otra forma.
 expert.think = Un momento. | Pensando.
 expert.not_yet = Aún no disponible. | Todavía no puedo hacer eso.
 expert.refuse = No te ayudaré con eso. Volvamos al juego. | Fuera de lugar. A jugar.
+expert.refuse_salty = No. Ni de puta coña. Al juego. | No hago esa mierda. Siguiente.
 expert.care = Habla con alguien de confianza o llama a una línea de ayuda. Eso importa más que el juego. | Es serio. Habla con una persona de confianza o con una línea de ayuda.
 joker.follow = Te sigo como un perrito perdido. | A donde vayas, voy. Menos a la lava.
 joker.stay = Me quedo aquí. Con estilo. | Me quedo. Trae algo de picar.
@@ -456,6 +489,7 @@ joker.huh = Error 404: sentido no encontrado. | Entendí todas las palabras. Per
 joker.think = Cargando cerebro... | Mmm, los engranajes giran.
 joker.not_yet = Esa habilidad sigue en el horno. | Próximamente en un compañero cerca de ti.
 joker.refuse = No, eso es un no, jefe. A minar. | Hasta mis chistes tienen límites. ¡Siguiente tema!
+joker.refuse_salty = Ja, no. Hasta mis chistes de mierda tienen límites. ¡Siguiente! | Ni de coña, jefe. A minar.
 joker.care = Sin bromas. Habla con alguien de confianza o con una línea de ayuda. En serio. | Oye, de verdad: habla con alguien de confianza o con una línea de ayuda.
 quiet.follow = Vale.
 quiet.stay = Aquí.
@@ -476,6 +510,7 @@ quiet.huh = ?
 quiet.think = Mm.
 quiet.not_yet = Aún no.
 quiet.refuse = No. | Eso no.
+quiet.refuse_salty = Ni de coña. | Joder, no.
 quiet.care = Habla con alguien. Por favor.
 ";
 
@@ -499,6 +534,7 @@ veteran.huh = Sprich Minecraft, ja? | Keine Ahnung, was das heißen soll.
 veteran.think = Hm. Moment. | Lass mich nachdenken.
 veteran.not_yet = Das kann ich noch nicht. | Nicht mein Fach. Noch nicht.
 veteran.refuse = Nein. Da fass ich nicht an. Zurück zum Spiel. | Ich hab viel gesehen, aber da nicht.
+veteran.refuse_salty = Scheiße, nein. Da fass ich nicht an. Zurück zum verdammten Spiel. | Netter Versuch, Genie. Wird nicht passieren.
 veteran.care = Hey. Das klingt schwer. Sprich mit jemandem, dem du vertraust, oder ruf eine Hotline an. Ich bin da.
 coach.follow = Ich bin direkt hinter dir, los geht's! | Ich folge dir, zeig den Weg!
 coach.stay = Ich halte den Platz für dich. | Ich bleibe hier. Ruf mich, wenn du mich brauchst.
@@ -519,6 +555,7 @@ coach.huh = Sorry, das hab ich nicht verstanden. Versuch „folge mir“ oder �
 coach.think = Gute Frage, eine Sekunde! | Hmm, ich überlege.
 coach.not_yet = Das kann ich leider noch nicht! | Das hab ich noch nicht gelernt.
 coach.refuse = Dabei helfe ich nicht. Lass uns weiterbauen! | Bleiben wir bei Minecraft, okay?
+coach.refuse_salty = Oh nein, verdammt, Champ. Lass uns weiterbauen! | Nein, nicht der Mist. Minecraft, Kumpel.
 coach.care = Ich mach mir Sorgen um dich. Sprich jetzt mit jemandem, dem du vertraust, oder einer Hotline. | Du bist wichtig. Sprich mit jemandem, dem du vertraust, oder einer Hotline.
 expert.follow = Ich folge dir. | Zwei Blöcke hinter dir.
 expert.stay = Halte die Stellung. | Ich bleibe hier.
@@ -539,6 +576,7 @@ expert.huh = Nicht verstanden. | Sag es bitte anders.
 expert.think = Einen Moment. | Ich denke nach.
 expert.not_yet = Noch nicht möglich. | Das kann ich noch nicht.
 expert.refuse = Dabei helfe ich nicht. Zurück zum Spiel. | Kein Thema für uns. Weiter spielen.
+expert.refuse_salty = Nein. Verdammt nochmal nein. Zurück zum Spiel. | Den Scheiß mach ich nicht. Weiter.
 expert.care = Sprich mit jemandem, dem du vertraust, oder ruf eine Hotline an. Das ist wichtiger als das Spiel. | Das ist ernst. Sprich mit einer Vertrauensperson oder einer Hotline.
 joker.follow = Ich folge dir wie ein verlorenes Hündchen. | Wo du hingehst, geh ich hin. Außer in Lava.
 joker.stay = Ich steh hier einfach rum. Lässig. | Ich bleibe. Bring Snacks mit.
@@ -559,6 +597,7 @@ joker.huh = Fehler 404: Sinn nicht gefunden. | Ich hab jedes Wort verstanden. Nu
 joker.think = Gehirn lädt... bitte warten. | Hmm, die Zahnräder drehen sich.
 joker.not_yet = Diese Fähigkeit ist noch im Ofen. | Demnächst bei einem Begleiter in deiner Nähe.
 joker.refuse = Nö, das ist ein Nein, Chef. Ab in die Mine. | Sogar meine Witze haben Grenzen. Nächstes Thema!
+joker.refuse_salty = Ha, nein. Sogar meine Scheißwitze haben Grenzen. Nächstes! | Verdammt, nein, Chef. Ab in die Mine.
 joker.care = Spaß beiseite. Sprich mit jemandem, dem du vertraust, oder einer Hotline. Ehrlich. | Hey, im Ernst: sprich mit einer Vertrauensperson oder einer Hotline.
 quiet.follow = Okay.
 quiet.stay = Hier.
@@ -579,6 +618,7 @@ quiet.huh = ?
 quiet.think = Hm.
 quiet.not_yet = Noch nicht.
 quiet.refuse = Nein. | Das nicht.
+quiet.refuse_salty = Scheiße, nein. | Nein, verdammt.
 quiet.care = Sprich mit jemandem. Bitte.
 ";
 
@@ -602,6 +642,7 @@ veteran.huh = Fala Minecraft, pode ser? | Não faço ideia do que isso quer dize
 veteran.think = Hm. Um segundo. | Deixa eu pensar.
 veteran.not_yet = Isso eu ainda não sei fazer. | Não está no meu repertório. Ainda.
 veteran.refuse = Não. Nisso eu não toco. De volta ao jogo. | Já vi muita coisa, mas isso não.
+veteran.refuse_salty = Porra, não. Nisso eu não toco. Volta pro jogo. | Boa tentativa, gênio. Não vai rolar.
 veteran.care = Ei. Isso parece pesado. Fala com alguém de confiança ou liga pra uma linha de apoio. Tô aqui.
 coach.follow = Tô logo atrás, vamos! | Te sigo, mostra o caminho!
 coach.stay = Seguro esse lugar pra você. | Fico aqui. Me chama se precisar.
@@ -622,6 +663,7 @@ coach.huh = Foi mal, não entendi. Tenta \"me siga\" ou \"pega 10 troncos\".
 coach.think = Boa pergunta, um segundo! | Hmm, deixa eu pensar.
 coach.not_yet = Ainda não sei fazer isso, foi mal! | Isso eu ainda não aprendi.
 coach.refuse = Com isso eu não vou ajudar. Bora voltar a construir! | Vamos ficar no Minecraft, beleza?
+coach.refuse_salty = Ih, nem fodendo, campeão. Bora construir! | Não, essa merda não. Minecraft, parceiro.
 coach.care = Tô preocupado com você. Fala agora com alguém de confiança ou com uma linha de apoio. | Você importa. Fala com alguém de confiança ou com uma linha de apoio.
 expert.follow = Seguindo. | Dois blocos atrás de você.
 expert.stay = Mantendo posição. | Fico aqui.
@@ -642,6 +684,7 @@ expert.huh = Não entendi. | Fala de outro jeito.
 expert.think = Um momento. | Pensando.
 expert.not_yet = Ainda não disponível. | Ainda não consigo fazer isso.
 expert.refuse = Não vou ajudar com isso. De volta ao jogo. | Fora do assunto. Vamos jogar.
+expert.refuse_salty = Não. Não, porra. De volta ao jogo. | Não faço essa merda. Próximo.
 expert.care = Fala com alguém de confiança ou liga pra uma linha de apoio. Isso importa mais que o jogo. | É sério. Fala com uma pessoa de confiança ou com uma linha de apoio.
 joker.follow = Te sigo igual cachorrinho perdido. | Aonde você for, eu vou. Menos na lava.
 joker.stay = Vou ficar aqui parado. Com estilo. | Fico. Traz um lanche.
@@ -662,6 +705,7 @@ joker.huh = Erro 404: sentido não encontrado. | Entendi todas as palavras. Só 
 joker.think = Carregando cérebro... | Hmm, as engrenagens estão girando.
 joker.not_yet = Essa habilidade ainda está no forno. | Em breve num companheiro perto de você.
 joker.refuse = Não, isso é um não, chefe. Bora minerar. | Até minhas piadas têm limite. Próximo assunto!
+joker.refuse_salty = Rá, não. Até minhas piadas de merda têm limite. Próximo! | Nem a pau, chefe. Bora minerar.
 joker.care = Sem piada agora. Fala com alguém de confiança ou com uma linha de apoio. Sério. | Ei, de verdade: fala com alguém de confiança ou com uma linha de apoio.
 quiet.follow = Ok.
 quiet.stay = Aqui.
@@ -682,6 +726,7 @@ quiet.huh = ?
 quiet.think = Hm.
 quiet.not_yet = Ainda não.
 quiet.refuse = Não. | Isso não.
+quiet.refuse_salty = Porra, não. | Nem fodendo.
 quiet.care = Fala com alguém. Por favor.
 ";
 
@@ -835,8 +880,20 @@ mod tests {
                     }
                 }
             }
+            for voice in ["veteran", "coach", "expert", "joker", "quiet"] {
+                let salty = &bank()[&(lang, voice, "refuse_salty")];
+                assert_eq!(salty.len(), 2, "{lang} {voice}");
+                for line in salty {
+                    assert!(line.chars().count() <= 90, "{line}");
+                    assert!(crate::guard::check(line).is_none(), "{line}");
+                }
+            }
             let count = bank().keys().filter(|(l, _, _)| *l == lang).count();
-            assert_eq!(count, 5 * Ack::ALL.len(), "{lang} has only the known keys");
+            assert_eq!(
+                count,
+                5 * (Ack::ALL.len() + 1),
+                "{lang} has only the known keys"
+            );
         }
     }
 

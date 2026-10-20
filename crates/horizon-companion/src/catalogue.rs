@@ -322,6 +322,8 @@ pub enum ModelKind {
     SpeechToText,
     TextToSpeech,
     VoiceActivity,
+    /// The safety guard model (`moderation`): judges what the companion hears and says.
+    Guard,
 }
 
 /// How the model's chat template turns thinking off.
@@ -469,9 +471,48 @@ pub const MODELS: &[Model] = &[
     },
 ];
 
+/// The safety guard (`moderation`, docs/companions.md "Safety"), picked 2026-10-21: Qwen3Guard-Gen
+/// 0.6B (Apache-2.0, ungated, 119 languages, judges both prompts and replies). The Q8_0 of
+/// mradermacher's GGUF (the Qwen team publishes safetensors only); Q4_K_M lost accuracy on the
+/// tuning lines for little speed. Runs on the processor beside the brain.
+pub const GUARD: Model = Model {
+    id: "qwen3guard-gen-0.6b-q8_0",
+    kind: ModelKind::Guard,
+    label: "Safety guard",
+    name: "Qwen3Guard-Gen 0.6B",
+    family: Family::None,
+    quantisation: "Q8_0",
+    repo: "mradermacher/Qwen3Guard-Gen-0.6B-GGUF",
+    revision: "2a59799e089fba3807d534a89c6b95bdf38ee76a",
+    files: &[ModelFile {
+        path: "Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+        size: 804753920,
+        sha256: "127e8833aa16c6839613cd08df5409440302e8c61e90617914b3100f2141411a",
+    }],
+    license: "Apache-2.0",
+    credit: "Qwen3Guard by the Qwen team (Alibaba Cloud); GGUF quantisation by mradermacher",
+    // Measured on the Mac mini, CPU, 2 threads, 2 slots of 1K context: see docs/companions.md.
+    memory_mb: GUARD_RAM_MB,
+};
+
+/// The guard's resident memory while it runs (measured, `GUARD`).
+pub const GUARD_RAM_MB: u64 = 1100;
+
 /// The models of one kind (for chat, use [`Tier::model`]).
 pub fn models(kind: ModelKind) -> impl Iterator<Item = &'static Model> {
-    MODELS.iter().filter(move |m| m.kind == kind)
+    MODELS
+        .iter()
+        .chain(std::iter::once(&GUARD))
+        .filter(move |m| m.kind == kind)
+}
+
+/// Every model the companion may download from this catalogue: the brains, their uncensored
+/// variants and the guard.
+pub fn all_models() -> impl Iterator<Item = &'static Model> {
+    MODELS
+        .iter()
+        .chain(UNCENSORED.iter().map(|u| &u.model))
+        .chain(std::iter::once(&GUARD))
 }
 
 #[cfg(test)]
@@ -517,6 +558,21 @@ mod tests {
                 assert!(u.url(f).ends_with(f.path));
             }
         }
+    }
+
+    #[test]
+    fn the_guard_is_pinned_and_free() {
+        assert_eq!(GUARD.kind, ModelKind::Guard);
+        assert_eq!(GUARD.revision.len(), 40);
+        assert_eq!(GUARD.main_file().sha256.len(), 64);
+        assert_eq!(GUARD.license, "Apache-2.0");
+        assert_eq!(models(ModelKind::Guard).count(), 1);
+        assert!(all_models().any(|m| m.id == GUARD.id));
+        assert_eq!(
+            all_models().count(),
+            MODELS.len() + UNCENSORED.len() + 1,
+            "ids are unique"
+        );
     }
 
     #[test]

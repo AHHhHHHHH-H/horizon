@@ -12,6 +12,7 @@ pub mod client;
 pub mod download;
 pub mod guard;
 pub mod hardware;
+pub mod moderation;
 pub mod partner;
 pub mod phrases;
 pub mod plan;

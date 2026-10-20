@@ -1,0 +1,109 @@
+# Words that name a group of real people (guard::names_a_group), in the five reflex languages, folded
+# like guard_words.txt (lowercase, no accents; a trailing * matches any ending). Not slurs: the guard
+# model files hate and insults under one category, and in Salty mode a line it flags there stops only
+# when it names one of these, so trash talk aimed at the player passes and hate against a group doesn't.
+gay*
+gai
+gais
+lesbian*
+lesbienne*
+lesbiana*
+lesbe*
+homo
+homos
+homosexu*
+bisexu*
+trans
+transgender*
+transgenre*
+transexu*
+transsexu*
+queer*
+jew
+jews
+jewish
+juif*
+juive*
+judio*
+judia*
+jude
+juden
+judisch*
+judeu*
+judaica*
+muslim*
+moslem*
+musulman*
+muculman*
+islam*
+christian*
+chretien*
+cristian*
+christen
+christlich*
+catholi*
+catoli*
+katholi*
+hindu*
+sikh*
+buddhist*
+bouddhist*
+budist*
+black people
+blacks
+les noirs
+schwarze
+negros
+negroes
+pretos
+white people
+les blancs
+weisse
+immigrant*
+immigre*
+inmigrant*
+imigrant*
+einwander*
+migrant*
+refugee*
+refugie*
+refugiad*
+fluchtling*
+arab*
+araber*
+mexican*
+mexicain*
+mexicano*
+mexikaner*
+asian*
+asiat*
+chinese
+chinois*
+chino
+chinos
+chinesen
+african*
+africain*
+african*
+afrikaner*
+gypsy
+gypsies
+gitan*
+zigeuner*
+cigano*
+roms
+women
+woman
+femmes
+mujeres
+frauen
+mulheres
+girls are
+filles sont
+disabled
+handicap*
+behindert*
+deficient*
+discapacitad*
+autist*
+autis*

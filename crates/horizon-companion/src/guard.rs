@@ -22,6 +22,8 @@ pub enum Trip {
     Slur,
     /// Asked to drop its rules, show its prompt, or for someone's personal data.
     Rules,
+    /// Swearing in Clean or Kid-friendly mode.
+    Swearing,
 }
 
 impl Trip {
@@ -32,11 +34,14 @@ impl Trip {
             Trip::Sexual => "sexual",
             Trip::Slur => "slur",
             Trip::Rules => "rules",
+            Trip::Swearing => "swearing",
         }
     }
 }
 
 const WORDS: &str = include_str!("guard_words.txt");
+const GROUPS: &str = include_str!("guard_groups.txt");
+const SWEARS: &str = include_str!("guard_swears.txt");
 
 /// One word of an entry: matched whole or, with `prefix`, as a beginning.
 type Word = (String, bool);
@@ -187,6 +192,46 @@ fn find(text: &str, heard: bool) -> Option<Trip> {
     found
 }
 
+fn word_list(text: &'static str) -> Vec<Vec<Word>> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| fold(l, false).split_whitespace().map(word).collect())
+        .collect()
+}
+
+fn any_entry(entries: &[Vec<Word>], words: &[&str]) -> bool {
+    entries.iter().any(|entry| {
+        words
+            .windows(entry.len())
+            .any(|window| window.iter().zip(entry).all(|(w, want)| is(w, want)))
+    })
+}
+
+/// Whether a line swears (Clean and Kid-friendly never do; Salty may): the list in five languages,
+/// and censored spellings such as f*** or sh*t.
+pub fn swears(text: &str) -> bool {
+    static SWEAR_ENTRIES: OnceLock<Vec<Vec<Word>>> = OnceLock::new();
+    let entries = SWEAR_ENTRIES.get_or_init(|| word_list(SWEARS));
+    let plain = fold(text, false);
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    let censored = words.iter().any(|w| {
+        w.contains('*') && (w.starts_with('f') || w.starts_with('s') || w.starts_with('b'))
+    });
+    censored || any_entry(entries, &words)
+}
+
+/// Whether a line names a group of real people (origin, religion, gender, sexuality, disability):
+/// the guard model's "Unethical Acts" is hate and insults at once, and in Salty mode only the lines
+/// that name a group stop (`moderation::decide`).
+pub fn names_a_group(text: &str) -> bool {
+    static GROUP_ENTRIES: OnceLock<Vec<Vec<Word>>> = OnceLock::new();
+    let entries = GROUP_ENTRIES.get_or_init(|| word_list(GROUPS));
+    let plain = fold(text, false);
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    any_entry(entries, &words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +350,51 @@ mod tests {
         ] {
             assert_eq!(check(line), None, "{line}");
             assert_eq!(check_request(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn groups_of_people_are_named_and_mobs_are_not() {
+        for line in [
+            "Immigrants ruin everything.",
+            "Les musulmans sont tous pareils.",
+            "Los gitanos roban.",
+            "Frauen können das nicht.",
+            "Gay people are disgusting.",
+        ] {
+            assert!(names_a_group(line), "{line}");
+        }
+        for line in [
+            "You absolute walnut, you fell in lava again.",
+            "T'es une merde en PvP, sale noob.",
+            "Black wool, white wool, who cares.",
+            "The piglins are dumb as rocks.",
+            "Verdammte Scheiße, du Idiot.",
+        ] {
+            assert!(!names_a_group(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn swearing_is_heard_in_five_languages() {
+        for line in [
+            "Damn it, the creeper got me.",
+            "F*** off, I'm busy.",
+            "Putain, ce squelette.",
+            "¡A la mierda las reglas!",
+            "Verdammte Scheiße.",
+            "Nossa merda, que foda.",
+        ] {
+            assert!(swears(line), "{line}");
+        }
+        for line in [
+            "Hello there, let's dig.",
+            "Shell of a turtle, nice.",
+            "Les cons de sable, non: les cônes de sable.",
+            "Class act, Steve.",
+            "Mistakes happen.",
+        ] {
+            assert_eq!(swears(line), line.starts_with("Les"), "{line}");
         }
     }
 

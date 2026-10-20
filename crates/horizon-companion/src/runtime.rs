@@ -33,7 +33,13 @@ pub enum Mode {
     Chat(Family),
     /// `/v1/embeddings` only (`--embeddings`), for the senses' classifier.
     Embeddings,
+    /// The safety guard (`moderation`): raw `/completion` on two slots, one for what is heard and one
+    /// for what is said, so each keeps its fixed prompt prefix cached.
+    Guard,
 }
+
+/// The guard's context: two slots of 1K tokens (its prompt is about 330 tokens plus the texts).
+pub const GUARD_CONTEXT: u32 = 2048;
 
 /// How to start a runtime.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +125,20 @@ impl LaunchConfig {
         }
     }
 
+    /// The safety guard on `threads` CPU threads (`moderation`).
+    pub fn guard(server: &Path, model: &Path, threads: usize, log: &Path) -> LaunchConfig {
+        LaunchConfig {
+            server: server.to_owned(),
+            model: model.to_owned(),
+            mode: Mode::Guard,
+            threads,
+            offload: Offload::None,
+            context: GUARD_CONTEXT,
+            log: log.to_owned(),
+            extra_args: Vec::new(),
+        }
+    }
+
     /// The command line, without the program.
     pub fn args(&self, port: u16, api_key: &str) -> Vec<String> {
         let mut args: Vec<String> = [
@@ -135,7 +155,7 @@ impl LaunchConfig {
             "--ctx-size",
             &self.context.to_string(),
             "--parallel",
-            "1",
+            if self.mode == Mode::Guard { "2" } else { "1" },
             "--threads",
             &self.threads.to_string(),
             "--no-webui",
@@ -183,6 +203,17 @@ impl LaunchConfig {
                 }
             }
             Mode::Embeddings => args.push("--embeddings".into()),
+            Mode::Guard => args.extend(
+                [
+                    "--cache-prompt",
+                    "--cache-ram",
+                    "0",
+                    // Its prompt is processed in one batch on as many threads as it generates with.
+                    "--threads-batch",
+                    &self.threads.to_string(),
+                ]
+                .map(String::from),
+            ),
         }
         match &self.offload {
             Offload::All { device } => {

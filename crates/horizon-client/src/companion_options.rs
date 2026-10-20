@@ -130,7 +130,7 @@ pub fn rows(view: &CompanionView) -> Vec<Row> {
     rows.push(Row::Advanced);
     if view.advanced {
         rows.push(Row::Header("Advanced"));
-        rows.extend([Part::Brain, Part::Classifier].map(Row::Part));
+        rows.extend([Part::Brain, Part::Guard, Part::Classifier].map(Row::Part));
         if view.settings.voice {
             rows.extend([Part::SpeechToText, Part::TextToSpeech].map(Row::Part));
         }
@@ -216,7 +216,7 @@ pub fn row_parts(
             if p.kid_friendly {
                 "Gentle humour, no swearing, nothing scary."
             } else if p.salty_on() {
-                "Real swearing and attitude. Still refuses anything harmful."
+                "Real swearing and attitude, behind the safety guard. Still refuses anything harmful."
             } else {
                 "No swearing. Salty (18+) swears for real; Kid-friendly is gentler."
             }
@@ -287,6 +287,7 @@ pub fn row_parts(
         Row::Part(part) => {
             let caption = match part {
                 Part::Brain => "Brain",
+                Part::Guard => "Safety guard",
                 Part::Classifier => "Command recognition",
                 Part::SpeechToText => "Speech recognition",
                 Part::TextToSpeech => "Voice model",
@@ -407,6 +408,7 @@ pub fn click(row: Row, view: &mut CompanionView, back: bool) -> Option<Action> {
                     };
                     match part {
                         Part::Classifier => s.classifier = choice,
+                        Part::Guard => s.guard = choice,
                         Part::SpeechToText => s.speech_to_text = choice,
                         _ => s.text_to_speech = choice,
                     }
@@ -433,6 +435,7 @@ fn current_id(s: &CompanionSettings, part: Part) -> Option<String> {
             _ => return None,
         },
         Part::Classifier => &s.classifier,
+        Part::Guard => &s.guard,
         Part::SpeechToText => &s.speech_to_text,
         Part::TextToSpeech => &s.text_to_speech,
     };

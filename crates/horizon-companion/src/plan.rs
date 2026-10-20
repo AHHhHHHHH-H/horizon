@@ -24,6 +24,10 @@ pub const BRAIN_FIRST_WORD_MS: u32 = 2000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     Brain,
+    /// The safety guard model (`moderation`): checks what the companion hears and says. Salty mode
+    /// needs it; without it the companion talks Clean, behind the model's own refusals and the
+    /// keyword list.
+    Guard,
     /// The embedding classifier behind the rules (`reflex::IntentClassifier`).
     Classifier,
     /// The companion's voice.
@@ -33,16 +37,20 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 4] = [
+    /// In the order they are given room: the guard comes last and takes the threads left, sharing
+    /// one with the brain when none are.
+    pub const ALL: [Part; 5] = [
         Part::Brain,
         Part::Classifier,
         Part::TextToSpeech,
         Part::SpeechToText,
+        Part::Guard,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Part::Brain => "brain",
+            Part::Guard => "safety guard",
             Part::Classifier => "command recognition",
             Part::SpeechToText => "speech recognition",
             Part::TextToSpeech => "voice",
@@ -148,6 +156,41 @@ pub fn brain_options() -> Vec<PartOption> {
     out
 }
 
+/// The guard's option: the processor, beside the brain (`moderation`). Its checks overlap the brain's
+/// work (the line heard while the brain reads its prompt, each sentence while it writes the next), so
+/// it keeps threads of its own when there are any; see [`Room::threads_for`].
+pub fn guard_options() -> Vec<PartOption> {
+    let model = &catalogue::GUARD;
+    let runtime = catalogue::runtime_builds_here()
+        .into_iter()
+        .find(|b| b.backend == Backend::Cpu)
+        .or_else(|| catalogue::runtime_builds_here().into_iter().next())
+        .map(|b| (b.key(), b.size));
+    vec![PartOption {
+        id: format!("{}@cpu", model.id),
+        part: Part::Guard,
+        label: model.label.into(),
+        name: model.name.into(),
+        quality: 1,
+        runs: Runs::Cpu,
+        backends: Vec::new(),
+        download: model.size(),
+        runtime,
+        ram_mb: model.memory_mb,
+        vram_mb: 0,
+        threads: 2,
+        before_brain: false,
+        latency_ms: GUARD_CHECK_MS,
+        detail: format!("{}, sentence by sentence", model.quantisation),
+    }]
+}
+
+/// One guard check (a sentence of about 20 words) on two threads of a current desktop CPU: measured
+/// on two M4 Pro cores, with a recent x86 core assumed 1.5x slower (see docs/companions.md).
+const GUARD_CHECK_MS: u32 = 520;
+/// A guard slower than this per sentence is not worth it: the wait before each sentence would show.
+pub const GUARD_MAX_MS: u32 = 1500;
+
 /// Every part's options for a game language (`fr_fr`): the brain's and the senses'.
 pub fn options(language: &str) -> Vec<PartOption> {
     options_with(language, false)
@@ -156,6 +199,7 @@ pub fn options(language: &str) -> Vec<PartOption> {
 /// The same, with the cloning voices when the voice pack (the cast's clips) is installed.
 pub fn options_with(language: &str, cast: bool) -> Vec<PartOption> {
     let mut out = brain_options();
+    out.extend(guard_options());
     out.extend(sense_options(language, cast));
     out
 }
@@ -413,13 +457,20 @@ impl Room {
                 gb(self.ram_mb)
             ));
         }
-        let needed = if option.before_brain {
-            option.threads
+        if option.part == Part::Guard {
+            // It shares a busy processor rather than go without, unless that makes it too slow.
+            if latency_on(option, self) > GUARD_MAX_MS {
+                return Some("it would be too slow next to the brain on this processor".into());
+            }
         } else {
-            self.taken_threads + self.threads_for(option)
-        };
-        if needed > self.threads {
-            return Some("the processor has no core to spare".into());
+            let needed = if option.before_brain {
+                option.threads
+            } else {
+                self.taken_threads + self.threads_for(option)
+            };
+            if needed > self.threads {
+                return Some("the processor has no core to spare".into());
+            }
         }
         if let Some(disk) = self.disk
             && download > disk
@@ -455,8 +506,14 @@ impl Room {
                     .min(left - spare)
                     .max(option.threads)
             }
+            // What is free, up to its own two; one shared thread on a processor the brain fills.
+            (Runs::Cpu, Part::Guard) => self.spare_threads().clamp(1, option.threads),
             (Runs::Cpu, _) => option.threads,
         }
+    }
+
+    fn spare_threads(&self) -> usize {
+        self.threads.saturating_sub(self.taken_threads)
     }
 
     fn take(&mut self, option: &PartOption, download: u64) {
@@ -468,7 +525,12 @@ impl Room {
         self.vram_mb -= gpu_mb;
         self.ram_mb -= self.ram_charge(option);
         if !option.before_brain {
-            self.taken_threads += self.threads_for(option);
+            // A guard sharing the brain's threads takes none of its own.
+            let own = match option.part {
+                Part::Guard => self.threads_for(option).min(self.spare_threads()),
+                _ => self.threads_for(option),
+            };
+            self.taken_threads += own;
         }
         if let Some(disk) = &mut self.disk {
             *disk -= download;
@@ -623,10 +685,23 @@ fn latency_on(option: &PartOption, room: &Room) -> u32 {
             1.0
         };
         (option.latency_ms as f64 * option.threads as f64 / threads * slowdown) as u32
+    } else if option.part == Part::Guard && option.runs == Runs::Cpu {
+        let threads = room.threads_for(option).max(1) as f64;
+        let mut ms = option.latency_ms as f64 * option.threads as f64 / threads;
+        if room.small_cpu {
+            ms *= SMALL_CPU_SLOWDOWN;
+        }
+        if room.spare_threads() == 0 {
+            ms *= GUARD_SHARED_SLOWDOWN;
+        }
+        ms as u32
     } else {
         option.latency_ms
     }
 }
+
+/// A guard on a thread the brain also runs on, while the brain writes.
+const GUARD_SHARED_SLOWDOWN: f64 = 1.6;
 
 fn gb(mb: u64) -> String {
     if mb < 1024 {
@@ -683,6 +758,9 @@ fn summary(plan: &Plan) -> String {
         }
         None => {}
     }
+    if plan.missing.iter().any(|m| m.part == Part::Guard) {
+        out += ", no Salty mode (the safety guard doesn't fit beside the brain)";
+    }
     if plan.download > 0 {
         out += &format!(": {} to download", gb(plan.download.div_ceil(1 << 20)));
     }
@@ -704,6 +782,7 @@ pub fn part_of(kind: ModelKind) -> Option<Part> {
         ModelKind::Classifier => Some(Part::Classifier),
         ModelKind::SpeechToText => Some(Part::SpeechToText),
         ModelKind::TextToSpeech => Some(Part::TextToSpeech),
+        ModelKind::Guard => Some(Part::Guard),
         ModelKind::VoiceActivity => None,
     }
 }
@@ -1104,6 +1183,82 @@ mod tests {
                 .map(|o| o.id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn guard(plan: &Plan) -> Option<&Pick> {
+        plan.pick(Part::Guard)
+    }
+
+    #[test]
+    fn the_guard_runs_on_the_processor_on_every_pc_that_has_a_brain() {
+        // A gaming PC: its own two threads, the brain on the card.
+        let hw = pc(
+            16,
+            6,
+            12,
+            vec![gpu(
+                "Vulkan0",
+                "NVIDIA GeForce RTX 3060",
+                12,
+                11_500,
+                GpuKind::Discrete,
+            )],
+        );
+        let plan = plan(&hw, &all(), &[], None);
+        let g = guard(&plan).expect("a guard");
+        assert_eq!(g.device, Device::Cpu { threads: 2 });
+        assert!(g.latency_ms <= GUARD_MAX_MS);
+        assert!(!plan.summary.contains("Salty"), "{}", plan.summary);
+        stays_within(&plan, &hw);
+        // The Mac mini.
+        let hw = pc(
+            64,
+            14,
+            14,
+            vec![gpu("MTL0", "Apple M4 Pro", 51, 53_083, GpuKind::Integrated)],
+        );
+        let plan = super::plan(&hw, &all(), &[], None);
+        assert!(guard(&plan).is_some());
+        assert!(plan.missing.is_empty(), "{:?}", plan.missing);
+        // Its RAM is counted.
+        let without: Vec<PartOption> = all()
+            .into_iter()
+            .filter(|o| o.part != Part::Guard)
+            .collect();
+        let lighter = super::plan(&hw, &without, &[], None);
+        assert_eq!(plan.ram_mb - lighter.ram_mb, catalogue::GUARD_RAM_MB);
+    }
+
+    #[test]
+    fn a_two_core_laptop_has_no_salty_mode() {
+        // The ThinkPad: two cores, both busy with the brain and the game. The guard would share a
+        // thread with the brain and wait too long before each sentence.
+        let hw = pc(32, 2, 4, vec![hd620()]);
+        let plan = plan(&hw, &all(), &[], None);
+        assert!(guard(&plan).is_none(), "{plan:#?}");
+        let why = &plan
+            .missing
+            .iter()
+            .find(|m| m.part == Part::Guard)
+            .unwrap()
+            .reason;
+        assert!(why.contains("too slow"), "{why}");
+        assert!(plan.summary.contains("no Salty mode"), "{}", plan.summary);
+        stays_within(&plan, &hw);
+        // With 8 GB there is no room for it either.
+        let hw = pc(8, 2, 4, vec![hd620()]);
+        let plan = super::plan(&hw, &all(), &[], None);
+        assert!(guard(&plan).is_none());
+        assert!(plan.summary.contains("no Salty mode"), "{}", plan.summary);
+    }
+
+    #[test]
+    fn a_six_core_pc_without_a_card_shares_but_keeps_the_guard() {
+        let hw = pc(16, 6, 12, Vec::new());
+        let plan = plan(&hw, &all(), &[], None);
+        let g = guard(&plan).expect("a guard");
+        assert!(g.latency_ms <= GUARD_MAX_MS, "{}", g.latency_ms);
+        stays_within(&plan, &hw);
     }
 
     #[test]
