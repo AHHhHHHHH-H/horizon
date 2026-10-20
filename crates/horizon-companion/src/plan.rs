@@ -547,9 +547,13 @@ fn gb(mb: u64) -> String {
     }
 }
 
-/// "RTX 3060" from "NVIDIA GeForce RTX 3060".
+/// "RTX 3060" from "NVIDIA GeForce RTX 3060", "Radeon RX 6600" from "AMD Radeon RX 6600 (RADV NAVI23)".
 fn short_gpu_name(name: &str) -> String {
     let mut short = name.replace("(TM)", "").replace("(R)", "");
+    // The Vulkan driver's own suffix.
+    if let Some(i) = short.find(" (") {
+        short.truncate(i);
+    }
     for prefix in ["NVIDIA ", "GeForce ", "AMD ", "Intel "] {
         if let Some(rest) = short.trim_start().strip_prefix(prefix) {
             short = rest.to_owned();
@@ -941,7 +945,7 @@ mod tests {
         assert_eq!(voice(&plan), Some(("Natural voice", Runs::Cpu)));
         assert!(
             plan.summary
-                .starts_with("Standard brain on your Radeon RX 6600 (RADV NAVI23), natural voice"),
+                .starts_with("Standard brain on your Radeon RX 6600, natural voice"),
             "{}",
             plan.summary
         );

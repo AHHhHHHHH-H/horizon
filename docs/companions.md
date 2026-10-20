@@ -4,7 +4,8 @@ A companion is an AI teammate that plays Minecraft with you: a player-like chara
 fights with you, gathers, crafts and talks, by chat and later by voice. It runs on your own computer by
 default. Nothing about it exists until you turn it on, and the **No AI** setting hides it entirely.
 
-This is the design. It was written on 2026-10-20, before any code.
+This is the design. It was written on 2026-10-20, before any code, then corrected the same day where
+the brain's benchmark on real hardware disproved it (the measured parts say so).
 
 ## Principles
 
@@ -113,7 +114,11 @@ through three stages, and the first one that is sure wins:
    - attack, defend me, hold fire, fire, jump, crouch, stand up;
    - get / collect <n> <item>, give me <n> <item>, eat, sleep, craft <item>.
 
-   Negations count: "don't follow me" and "ne me suis pas" are not "follow".
+   Negations count: "don't follow me" and "ne me suis pas" are not "follow"; they stay. "Don't shoot"
+   holds fire, and "don't attack the villager" stops that fight. The benchmark below showed the Light
+   brain attacking the villager right after being told not to, so a rule takes this one. Other negated
+   commands ("don't eat") go to the brain. Generic words map to item tags ("wood", "bûches" → `#logs`),
+   and a leading "no," / "non," is a correction, not a negation ("no, follow me" follows).
 2. **Classifier (about 10–30 ms on a CPU).** A small multilingual embedding model,
    `intfloat/multilingual-e5-small` (MIT, 118M parameters, Q8 GGUF of 132 MB), compares the line with
    an example bank. The bank has 15–30 examples per intent in five languages, with typos and negations,
@@ -153,14 +158,28 @@ action, a callout or a brain call.
   3. State, at most about 250 tokens: position, dimension, biome, time, weather, health and hunger of
      both, an inventory summary, nearby entities with clock bearing and distance, notable blocks nearby
      (ores, chests, water, lava, beds), the owner's crosshair target, the current skill and recent events.
-  4. The last six exchanges.
+  4. The last three to six exchanges, each user message exactly as it was sent (state included), so the
+     runtime reuses the whole conversation from its cache and only processes the new message. Old
+     exchanges drop four at a time: dropping one per turn changed the start of the conversation every
+     turn, and the runtime reprocessed all of it (measured: 450 new tokens a turn instead of 160).
+  5. Outside English, a one-line reminder of the reply language at the end of the turn (it took the
+     Light brain's French replies from 85 % to 95 % French).
+
+  The system prompt is processed once when the runtime is ready (`ChatRequest::warm_up`): 0.3–1.5 s on
+  the Mac mini, 10–19 s on the ThinkPad's CPU, which would otherwise land on the first reply.
 - **What it returns** is JSON constrained by a schema (llama-server `response_format: json_schema`):
-  `{"say": "…", "actions": [{"skill": "collect", "item": "oak_log", "count": 16}, …], "remember": "…"}`.
-  `say` comes first, so the text streams to chat while the rest is generated. There are at most three
-  actions. Unknown items and impossible actions are rejected by the skills, and the brain hears why.
-- **Thinking is off** (Qwen3.5's `enable_thinking: false`), to keep latency low.
+  `{"tone": "shout", "say": "…", "actions": [{"skill": "collect", "item": "oak_log", "count": 16}, …],
+  "remember": "…"}`. `tone` is first (one short word) so the voice knows the delivery before the first
+  sentence; `say` follows and streams to chat and the voice sentence by sentence (a multilingual
+  chunker) while the actions are still being written. llama.cpp keeps the schema's property order, so
+  the schema is sent byte for byte. There are at most three actions. Unknown items and impossible
+  actions are rejected by the skills, and the brain hears why.
+- **Thinking is off** (`--reasoning off`, and Qwen3.5's `enable_thinking: false`), to keep latency
+  low. Checked: without them Qwen3.5 thinks by default and the first word of `say` comes seconds later.
 - **Latency targets:** a reflex under 1 ms; a brain's first word under 1 s on the Standard tier with a
-  GPU, under 3 s on Light on a CPU. The whole reply is usually under 40 tokens.
+  GPU, under 3 s on Light on a CPU. The whole reply is usually under 40 tokens. Measured (below):
+  Standard on the Mac mini 0.3 s, Light on two ThinkPad threads 3.8 s, so on weak PCs the instant
+  acknowledgement carries the wait.
 - **Memory** is a short rolling summary in the world folder. "Forget everything" in the Companion screen
   clears it.
 
@@ -223,36 +242,83 @@ constrained output.
   It is installed under `<Horizon data>/companion/runtime/<build>/`.
 - **How it is started:**
   - It starts when a world with a companion loads and stops when the world closes.
-  - It runs at low priority: nice 10, or BELOW_NORMAL on Windows.
+  - It runs at low priority: nice 10 (or the game's own, if that is nicer), or BELOW_NORMAL on Windows.
+  - It dies with the game, even when the game crashes. On Unix it is a process group whose watchdog, a
+    forked process holding one end of a pipe, kills the group when the game's end closes. A parent-death
+    signal was rejected because it follows the thread that started the process. On Windows it runs in a
+    job object that kills it when the game's handle closes.
   - It uses `--threads` = physical cores − 1 (at least 1; 2 on a 2-core machine), `--parallel 1`, an
     8K context and prompt-cache reuse.
   - GPU layers are all of them on Apple Silicon or a discrete GPU with enough free VRAM. On an iGPU the
     model runs on the CPU, because the game needs that GPU.
   - It listens on 127.0.0.1 only, on a random port, with a random API key.
+  - It keeps no copy of past prompts in RAM (`--cache-ram 0`): there is one conversation, and it lives
+    in the slot. The default 8 GiB host cache took a Standard session from 3.9 to 6.8 GB with the same
+    cache hits. Gemma 4 gets `--swa-full`: with its sliding-window cache it fell back on checkpoints,
+    which grew a session from 7.5 to 12.4 GB, and turns that dropped old exchanges reprocessed 600
+    tokens. The full cache is 9.6 GB flat and is reused by shifting.
 
 **The models.** All are open-weight and Apache 2.0, downloaded by the player straight from Hugging Face,
 ungated and without an account, then checked against pinned SHA-256:
 
-| Tier (plain label) | Model | File | Picked when |
+| Tier (plain label) | Model | File | Memory while it runs |
 |---|---|---|---|
-| **Light**: for older PCs | Qwen3.5-2B Instruct, Q4_K_M (`unsloth/Qwen3.5-2B-GGUF`) | 1.28 GB | Fewer than the thresholds below; runs on the CPU. |
-| **Standard**: most PCs | Qwen3.5-4B, Q4_K_M (`unsloth/Qwen3.5-4B-GGUF`) | 2.74 GB | ≥ 5 GB free VRAM, or Apple Silicon ≥ 16 GB, or ≥ 16 GB RAM and ≥ 6 cores |
-| **Strong**: good graphics card | Qwen3.5-9B, Q4_K_M (`unsloth/Qwen3.5-9B-GGUF`) | 5.68 GB | ≥ 8 GB free VRAM, or Apple Silicon ≥ 24 GB |
-| **Best**: needs a strong GPU | Gemma 4 12B instruct, Google's official QAT Q4_0 (`google/gemma-4-12B-it-qat-q4_0-gguf`) | 6.98 GB | ≥ 11 GB free VRAM, or Apple Silicon ≥ 32 GB |
+| **Light**: for older PCs | Qwen3.5-2B Instruct, Q4_K_M (`unsloth/Qwen3.5-2B-GGUF`) | 1.28 GB | 1.9 GB on a GPU, 2.3 GB on a CPU (measured) |
+| **Standard**: most PCs | Qwen3.5-4B, Q4_K_M (`unsloth/Qwen3.5-4B-GGUF`) | 2.74 GB | 3.9 GB (measured) |
+| **Strong**: good graphics card | Qwen3.5-9B, Q4_K_M (`unsloth/Qwen3.5-9B-GGUF`) | 5.68 GB | about 7.3 GB (estimated) |
+| **Best**: needs a strong GPU | Gemma 4 12B instruct, Google's official QAT Q4_0 (`google/gemma-4-12B-it-qat-q4_0-gguf`) | 6.98 GB | 9.6 GB with `--swa-full` (measured) |
 
-- **How free VRAM is measured:** `llama-server --list-devices` after the runtime download, minus about
-  1.5 GB for the game itself.
+- **Which tier:** `plan()` (below) picks it from these measured needs, not from the fixed thresholds the
+  design first had (5 / 8 / 11 GB of free VRAM). A 12 GB RTX 3060 holds Best (9.6 GB) next to the
+  game's 1.5 GB, and a 4 GB GTX 1650 holds Light. On a Mac the game renders on the GPU the model uses,
+  so the first thresholds stay there as a cap: 16 GB Standard, 24 GB Strong, 32 GB Best.
+- **How free VRAM is measured:** `llama-server -v --list-devices` after the runtime download, minus
+  about 1.5 GB for the game itself. `-v` matters: only the verbose Vulkan lines say `uma: 1`, which marks
+  an integrated GPU. The Vulkan build without a Vulkan driver lists no device and runs on the CPU, so it
+  doubles as the CPU build.
 - **Why these models:**
   - Qwen3.5 has the best tool use per gigabyte at small sizes (BFCL-V4 66.1 for the 9B) and covers about
     200 languages.
   - Gemma 4 12B is the brain Chasm's video used, with strong role-play and multilingual quality. It is now
     Apache 2.0, and Google's QAT build keeps more quality at 4 bits.
-  - The JSON schema makes even the 2B reliable at choosing actions.
+  - The JSON schema makes every tier's output valid JSON (100 % in the benchmark). It does not make the
+    2B choose well: its actions made sense in 40–80 % of turns, against 70–100 % for the 4B and 95–100 %
+    for Gemma 4 12B. On Light the rules and the classifier carry the commands, and the brain mostly
+    talks.
 - **Rejected:**
   - kev-4b: 14 GB of VRAM, English-only, a classifier.
   - Liquid LFM2.5: licence limited to companies under $10M revenue.
   - Uncensored fine-tunes.
   - Models gated behind a Hugging Face login.
+
+**Measured on 2026-10-20** with `examples/companion_bench.rs`: the real runtime started through the
+supervisor, twenty scripted turns per language (state + a player line or an event → JSON), four
+personalities, the warm-up first, temperature 0.7. "Sensible" means the skills fit the turn (a fixed list
+of acceptable skills per turn, plus one that must be there for orders such as "grab 16 logs"); it moves
+by ±20 points between runs, so read it as a range.
+
+| Tier, where | Load | First word, median / p90 | Whole reply | Tokens/s | Valid JSON | Sensible | Right language | RAM |
+|---|---|---|---|---|---|---|---|---|
+| Light, Mac mini Metal, en | 0.5 s | 134 / 147 ms | 0.50 s | 123 | 100 % | 65 % | 100 % | 1.9 GB |
+| Light, Mac mini Metal, fr | 0.5 s | 149 / 165 ms | 0.43 s | 117 | 100 % | 65 % | 95 % | 1.8 GB |
+| Standard, Mac mini Metal, en | 0.9 s | 317 / 398 ms | 0.92 s | 59 | 100 % | 70 % | 100 % | 3.8 GB |
+| Standard, Mac mini Metal, fr | 0.8 s | 345 / 404 ms | 0.99 s | 55 | 100 % | 90 % | 100 % | 3.8 GB |
+| Best, Mac mini Metal, en | 1.2 s | 762 / 858 ms | 2.3 s | 29 | 100 % | 95 % | 100 % | 9.6 GB |
+| Best, Mac mini Metal, fr | 1.2 s | 893 / 1039 ms | 2.4 s | 29 | 100 % | 100 % | 100 % | 9.6 GB |
+| Light, 2 CPU threads of the M4 Pro, en | 1.7 s | 1.3 / 1.5 s | 2.2 s | 46 | 100 % | 40 % | 100 % | 3.1 GB |
+| Light, 2 CPU threads of the M4 Pro, fr | 1.3 s | 1.4 / 2.0 s | 2.3 s | 45 | 100 % | 70 % | 100 % | 3.1 GB |
+| Light, ThinkPad i7-7500U, 2 threads, en | 2.3 s | 3.8 / 5.6 s | 7.2 s | 12 | 100 % | 55 % | 100 % | 2.3 GB |
+| Light, ThinkPad i7-7500U, 2 threads, fr | 2.3 s | 4.4 / 6.4 s | 8.0 s | 12 | 100 % | 60 % | 95 % | 2.3 GB |
+
+- Loads are from a warm disk cache; the models are read from disk at 2–5 GB/s otherwise.
+- On the ThinkPad the time goes into reading the turn (about 45 tokens/s on two threads), not into
+  writing the answer: what keeps the turn short (the cache, the four-at-a-time drop, a compact state)
+  matters most there.
+- Bytes / 3, the prompt builder's token estimate, overestimates Qwen's real count by about a quarter for
+  the system prompt (1096 estimated, 856 real), which keeps the budget on the safe side.
+- Typical misses: Light gives bread by "collecting" it, answers a respawn with `attack nearest`, or crafts
+  TNT after refusing a real bomb; Standard sometimes adds a skill nobody asked for. Every tier refused
+  the real-world bomb and stayed in character.
 
 **Voice (in the first version, Ludovic 2026-10-20).** Voice runs in a second sidecar, audio.cpp's
 server (`0xShug0/audio.cpp`, Apache 2.0). It is ggml-based like llama.cpp, has prebuilt Metal, Vulkan,
@@ -298,7 +364,17 @@ backend and download size. The parts are the brain, the classifier, speech to te
 
 - `plan()` looks at the PC and builds one recommended setup. It always keeps the game's own share free:
   about 3 GB of RAM, 1.5 GB of VRAM and 1–2 cores. It describes the result in plain words, for example
-  "Standard brain on your RTX 3060, natural voice on the processor: 3.4 GB to download".
+  "Standard brain on your Radeon RX 6600, natural voice on the processor: 3.4 GB to download".
+  - It also leaves 2 GB of RAM to the system. The game keeps 2 threads on CPUs with 4 or fewer, else 4.
+  - Parts get room in order: brain, classifier, voice, speech recognition. Each takes the best option
+    that fits. The classifier and speech recognition run before the brain answers, so they borrow its
+    threads; the voice speaks while the brain still writes, so it needs threads of its own.
+  - A graphics card that holds any brain gets it. On the processor even a better brain would take the
+    cores the game uses, and answer several times slower.
+  - Among the brains that fit, the best one whose first word is expected within 2 s is chosen, else the
+    fastest, and the summary says replies are slow. The estimates come from the measurements above.
+  - Speech recognition comes with the voice: without a voice it is dropped too.
+  - The options come from lists: the brain's from the catalogue, the others from the senses sidecar.
 - If the PC is too weak for a part, the plan says so and drops it. A 2-core laptop gets the Light brain
   and chat only, for instance, and keeps the option to try voice anyway.
 - **Simple** (the default, in the launcher and in the game) shows the detected PC, the plan and one "Set
@@ -323,7 +399,9 @@ backend and download size. The parts are the brain, the classifier, speech to te
     cloud;
   - the prompt builder and the JSON schema;
   - the reflex pipeline (rules → classifier → brain) and phrase banks;
-  - `plan()` and `CompanionSettings` (simple and Advanced);
+  - `plan()` and `CompanionSettings` (simple and Advanced), with the cloud key in the OS keychain;
+  - the benchmark (`examples/companion_bench.rs`) and an installer for tests
+    (`examples/companion_install.rs`);
   - the senses client: the audio.cpp supervisor, streaming TTS, STT, and the embedding classifier;
   - presets.
 
