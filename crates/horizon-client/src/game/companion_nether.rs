@@ -56,7 +56,7 @@ fn budget(leg: Leg) -> u64 {
         Leg::Enter => 1200,
         Leg::Fortress => 14_400,
         Leg::Blazes => 14_400,
-        Leg::Pearls => 18_000,
+        Leg::Pearls => 24_000,
         Leg::Home => 9600,
         Leg::Eyes => 2400,
         Leg::Triangulate => 6000,
@@ -66,6 +66,10 @@ fn budget(leg: Leg) -> u64 {
         Leg::Done => u64::MAX,
     }
 }
+
+/// Ticks into the pearls leg after which, with under a third of its pearls,
+/// it hunts them on an Overworld night instead.
+const OVERWORLD_PEARLS_AFTER: u64 = 6000;
 
 /// Blocks from the portal the Fair fortress search goes at most.
 const SEARCH_LIMIT: i32 = 1200;
@@ -171,6 +175,34 @@ pub(super) struct NetherRun {
     /// The body's tick count when it left the hub (a new body counts
     /// from 0; the run's times go on from here).
     pub body_ticks: u64,
+    /// The cheap long walk (game/companion_cruise.rs), and until when it is
+    /// off after it found no way.
+    cruise: super::companion_cruise::Cruise,
+    cruise_off_until: u64,
+    /// The column its staircase goes down by (dry ground near the
+    /// stronghold's start).
+    shaft: Option<[i32; 2]>,
+    /// The dry ground it makes for when it stands in water there.
+    ashore: Option<[i32; 3]>,
+    /// The portal room's frames, once known.
+    frames: Option<[i32; 3]>,
+    /// Where it hides from the blazes while it heals, and when that was
+    /// worked out.
+    cover: Option<[i32; 3]>,
+    cover_at: u64,
+    /// How near it came to the cover, and since when.
+    cover_best: Option<(f64, u64)>,
+    /// Firmer ground it makes for to dig its pit.
+    pit_spot: Option<[i32; 3]>,
+    firm_tries: u32,
+    /// The hoglin or wither skeleton it is fighting: since when (the last
+    /// check) and its health then; and those it gave up on, until when.
+    engaged: Option<(u32, u64, f32)>,
+    ignored: Vec<(u32, u64)>,
+    /// An angry enderman it goes after out of the pit.
+    chase: Option<u32>,
+    /// The armour modifiers put on its attributes (`nether_wear_armor`).
+    armor_mods: Vec<(String, String)>,
 }
 
 impl NetherRun {
@@ -212,6 +244,20 @@ impl NetherRun {
             hoglin_wait: None,
             hoglin_quiet: 0,
             body_ticks: 0,
+            cruise: Default::default(),
+            cruise_off_until: 0,
+            shaft: None,
+            ashore: None,
+            frames: None,
+            cover: None,
+            cover_at: 0,
+            cover_best: None,
+            pit_spot: None,
+            firm_tries: 0,
+            engaged: None,
+            ignored: Vec::new(),
+            chase: None,
+            armor_mods: Vec::new(),
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -272,6 +318,12 @@ impl Game<'_> {
         }
         let now = b.ticks;
         b.nether = Some(Box::new(NetherRun::new(from, until, targets, now)));
+        // Started on a later leg: the portal it stands by is the way back.
+        if let Some(g) = host.hub.guest(b.conn)
+            && let Some(p) = self.portal_cell_within(feet(g.position), 32)
+        {
+            b.senses.memory_mut().places.insert("portal".into(), p);
+        }
         self.companion_nether_gear(host, b);
         self.companion_report(
             b,
@@ -330,7 +382,23 @@ impl Game<'_> {
             "throws": run.throws.iter().map(|t| json!({ "from": t.from, "dir": t.dir })).collect::<Vec<_>>(),
             "pit": run.pit.as_ref().map(|p| format!("{:?} at {:?}", p.step, p.pit.top)),
             "waypoint": run.waypoint,
+            "cruise": format!("{:?} off until {}", run.cruise, run.cruise_off_until),
         })
+    }
+
+    /// Its worn armour protects it: the hub never puts a guest's armour
+    /// modifiers on its attributes (`LivingEntity.collectEquipmentChanges`),
+    /// so blazes and piglins hit as through none. The local player's
+    /// `apply_equipment`, for the guest, with its own list. (The same as the
+    /// End route's `end_wear_armor`; one of the two goes when they meet.)
+    fn nether_wear_armor(&mut self, host: &mut LanHost, b: &Body, run: &mut NetherRun) {
+        let mut mods = std::mem::take(&mut run.armor_mods);
+        self.as_guest(host, b.conn, |g| {
+            std::mem::swap(&mut g.applied_modifiers, &mut mods);
+            g.apply_equipment();
+            std::mem::swap(&mut g.applied_modifiers, &mut mods);
+        });
+        run.armor_mods = mods;
     }
 
     /// The step line the Watch HUD shows.
@@ -400,6 +468,29 @@ impl Game<'_> {
             return;
         };
         if !run.finished() {
+            self.nether_wear_armor(host, b, &mut run);
+            // Short of air under water: straight up before anything else.
+            let air = host
+                .hub
+                .guest(b.conn)
+                .and_then(|g| g.motion.as_ref())
+                .map_or(300, |m| m.air);
+            let e = feet(eye(pos));
+            let under = self
+                .res
+                .facts()
+                .get(self.world.block(e[0], e[1], e[2]))
+                .fluid
+                == Fluid::Water;
+            if under && air < 120 {
+                self.companion_stop_dig(host, b);
+                b.keys = Default::default();
+                b.keys.jump = true;
+                b.pitch = -90.0;
+                run.note = "up for air".into();
+                b.nether = Some(run);
+                return;
+            }
             self.companion_nether_leg(host, b, &mut run, pos);
             // Never sinks: in water up to its eyes, it swims up.
             let e = feet(eye(pos));
@@ -427,6 +518,7 @@ impl Game<'_> {
             return false;
         };
         let health = g.health;
+        let shielded = g.offhand.as_ref().is_some_and(|s| &*s.item == SHIELD);
         run.min_health = run.min_health.min(health);
         let from = eye(pos);
         let now = b.ticks;
@@ -440,6 +532,149 @@ impl Game<'_> {
         {
             b.target = None;
         }
+        // In lava (knocked in, a flow over the path): out by the nearest
+        // dry spot, jumping, before anything else.
+        let lava_at = |p: [f64; 3]| {
+            self.res
+                .facts()
+                .get(self.world.block(
+                    p[0].floor() as i32,
+                    p[1].floor() as i32,
+                    p[2].floor() as i32,
+                ))
+                .fluid
+                == Fluid::Lava
+        };
+        // In fire (a fireball lit the floor): out of it, the nearest way.
+        let fire_at = |p: [f64; 3]| {
+            let name = &self
+                .res
+                .facts()
+                .get(self.world.block(
+                    p[0].floor() as i32,
+                    p[1].floor() as i32,
+                    p[2].floor() as i32,
+                ))
+                .name;
+            name.ends_with("minecraft:fire") || name.ends_with("soul_fire")
+        };
+        if fire_at(pos) || fire_at([pos[0], pos[1] + 0.9, pos[2]]) {
+            let here = feet(pos);
+            let out = (1..=3).find_map(|r| {
+                (-r..=r)
+                    .flat_map(|dx| (-r..=r).map(move |dz| (dx, dz)))
+                    .filter(|&(dx, dz): &(i32, i32)| dx.abs().max(dz.abs()) == r)
+                    .find_map(|(dx, dz)| {
+                        let (x, z) = (here[0] + dx, here[2] + dz);
+                        self.cruise_stand(x, here[1], z)
+                            .filter(|y| (y - here[1]).abs() <= 1)
+                            .map(|y| [x, y, z])
+                    })
+            });
+            if let Some(o) = out {
+                b.target = None;
+                self.companion_shield(host, b, run, None, pos);
+                b.yaw = c::yaw_toward(pos, at_block(o)) as f32;
+                b.pitch = 0.0;
+                b.keys.forward = true;
+                b.keys.sprint = true;
+                b.keys.jump = o[1] > here[1];
+                run.note = "out of the fire".into();
+                return true;
+            }
+        }
+        if lava_at(pos) || lava_at([pos[0], pos[1] + 0.9, pos[2]]) {
+            let here = feet(pos);
+            let out = (1..=5).find_map(|r| {
+                (-r..=r)
+                    .flat_map(|dx| (-r..=r).map(move |dz| (dx, dz)))
+                    .filter(|&(dx, dz): &(i32, i32)| dx.abs().max(dz.abs()) == r)
+                    .find_map(|(dx, dz)| {
+                        let (x, z) = (here[0] + dx, here[2] + dz);
+                        self.cruise_stand(x, here[1] + 1, z).map(|y| [x, y, z])
+                    })
+            });
+            b.target = None;
+            self.companion_shield(host, b, run, None, pos);
+            b.keys.jump = true;
+            run.note = "out of the lava".into();
+            // A dry spot it can step up to: there. Else a pillar out: a
+            // block into the lava under it at the top of each jump.
+            let reachable = out.filter(|o| o[1] <= here[1] + 1);
+            if let Some(o) = reachable {
+                b.yaw = c::yaw_toward(pos, at_block(o)) as f32;
+                b.pitch = 0.0;
+                b.keys.forward = true;
+                b.keys.sprint = false;
+                return true;
+            }
+            let floor = [here[0], here[1] - 1, here[2]];
+            let solid_below = self
+                .res
+                .facts()
+                .get(self.world.block(floor[0], floor[1], floor[2]))
+                .full_collision;
+            let blocks = host.hub.guest(b.conn).and_then(|g| {
+                g.inventory
+                    .iter()
+                    .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
+            });
+            if let Some(slot) = blocks
+                && solid_below
+                && pos[1] >= f64::from(here[1]) + 0.9
+            {
+                self.companion_hold_slot(host, b, slot);
+                self.companion_use_block(host, b, floor, 1, pos);
+            } else if let Some(slot) = blocks
+                && pos[1] - f64::from(here[1]) > 0.4
+                && !solid_below
+            {
+                // Over lava deeper than a block: a floor under it first.
+                let under = [here[0], here[1] - 2, here[2]];
+                if self
+                    .res
+                    .facts()
+                    .get(self.world.block(under[0], under[1], under[2]))
+                    .full_collision
+                {
+                    self.companion_hold_slot(host, b, slot);
+                    self.companion_use_block(host, b, under, 1, pos);
+                }
+            }
+            b.pitch = 90.0;
+            return true;
+        }
+        // Magma cubes (hard hits, they split, fire doesn't hurt them): not
+        // fought, it gets out of their way (they hop slowly).
+        let cube = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && &*m.kind.id == "minecraft:magma_cube")
+            .map(mob_at)
+            .filter(|at| c::distance(*at, pos) < 6.0 && (at[1] - pos[1]).abs() < 3.0)
+            .min_by(|x, y| c::distance(*x, pos).total_cmp(&c::distance(*y, pos)));
+        if let Some(at) = cube {
+            if b.target.is_some_and(|id| {
+                self.mobs
+                    .iter()
+                    .any(|m| m.id == id && &*m.kind.id == "minecraft:magma_cube")
+            }) {
+                b.target = None;
+            }
+            let away = [
+                pos[0] + (pos[0] - at[0]) * 3.0,
+                pos[1],
+                pos[2] + (pos[2] - at[2]) * 3.0,
+            ];
+            let safe = self.cruise_safe(pos, c::yaw_toward(pos, away) as f32);
+            if safe {
+                self.companion_shield(host, b, run, None, pos);
+                run.note = "out of a magma cube's way".into();
+                if self.companion_steer(host, b, away, 0.5, true) != Steer::Stuck {
+                    return true;
+                }
+            }
+        }
         // Something on it already (a magma cube, a piglin): that fight first.
         let pressed = self.mobs.iter().any(|m| {
             threat(m) && &*m.kind.id != "minecraft:ghast" && c::distance(mob_at(m), pos) < 6.0
@@ -451,6 +686,40 @@ impl Game<'_> {
             .filter(|m| m.alive() && &*m.kind.id == "minecraft:ghast" && m.extra.flag)
             .map(|m| [m.position.x, m.position.y + 2.0, m.position.z])
             .find(|at| c::distance(*at, pos) < 64.0 && self.in_sight(from, *at));
+        // A fireball on its way to it (a ghast's, a blaze's): the shield
+        // toward it until it lands.
+        let incoming = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| !p.stuck && p.owner.is_some_and(|o| o != Who::Player))
+            .filter(|p| {
+                use horizon_client::projectiles::ProjectileKind as K;
+                matches!(p.kind, K::LargeFireball { .. } | K::SmallFireball)
+            })
+            .map(|p| {
+                (
+                    [p.position.x, p.position.y, p.position.z],
+                    [p.velocity.x, p.velocity.y, p.velocity.z],
+                )
+            })
+            .find(|&(at, v)| {
+                let d = c::distance(at, from);
+                let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                d < 24.0
+                    && speed > 1e-4
+                    && ((from[0] - at[0]) * v[0]
+                        + (from[1] - at[1]) * v[1]
+                        + (from[2] - at[2]) * v[2])
+                        / (d.max(1e-6) * speed)
+                        > 0.9
+            });
+        if !pressed && let Some((at, _)) = incoming {
+            run.shield_until = now + 4;
+            self.companion_shield(host, b, run, Some(at), pos);
+            run.note = "shield up: a fireball".into();
+            return true;
+        }
         if let Some(at) = ghast {
             run.shield_until = now + 30;
             self.companion_shield(host, b, run, Some(at), pos);
@@ -461,8 +730,10 @@ impl Game<'_> {
             // The fireball is on its way: the shield stays up.
             return true;
         }
-        // Wither skeletons: not when it is weak.
+        // Wither skeletons: the shield against them (with the hoglins,
+        // below); without one, not when it is weak.
         if health < 12.0
+            && !shielded
             && let Some(at) = self
                 .mobs
                 .iter()
@@ -494,13 +765,23 @@ impl Game<'_> {
             self.companion_shield(host, b, run, None, pos);
             self.companion_start_eating(host, b);
         }
-        // Hoglins (40 health, a toss in the air each hit): the shield toward
-        // the one after it, a blow in the moment after each of its attacks
-        // lands on the shield.
+        // Hoglins (40 health, a toss in the air each hit) and wither
+        // skeletons (the wither on each hit): the shield toward the one after
+        // it, a blow in the moment after each of its attacks lands on the
+        // shield.
         let hoglin = self
             .mobs
             .iter()
-            .filter(|m| m.alive() && &*m.kind.id == "minecraft:hoglin" && !m.is_baby())
+            .filter(|m| {
+                !run.ignored
+                    .iter()
+                    .any(|&(id, until)| id == m.id && now < until)
+            })
+            .filter(|m| {
+                m.alive()
+                    && ((&*m.kind.id == "minecraft:hoglin" && !m.is_baby())
+                        || (shielded && &*m.kind.id == "minecraft:wither_skeleton"))
+            })
             .filter(|m| {
                 m.ai.target == Some(Who::Player)
                     && host.mob_players.get(&m.id) == Some(&b.conn)
@@ -511,12 +792,36 @@ impl Game<'_> {
                     m.id,
                     mob_at(m),
                     box_distance(from, m.bounds()),
-                    m.extra.anim_ticks,
+                    if m.ai.swinging { 1 } else { m.extra.anim_ticks },
                 )
             })
             .min_by(|x, y| x.2.total_cmp(&y.2));
         // One that stays just out of reach (it can't get round) is left
         // after a few seconds.
+        // One it has fought a long while without hurting it (out of its
+        // reach behind something): left alone for a time.
+        let hoglin = hoglin.filter(|(id, _, reach, _)| {
+            let hp = self
+                .mobs
+                .iter()
+                .find(|m| m.id == *id)
+                .map_or(0.0, |m| m.health);
+            match run.engaged {
+                Some((e, since, start)) if e == *id => {
+                    if now.saturating_sub(since) > 400 {
+                        // (One at it is fought on.)
+                        if hp >= start && *reach > n::REACH {
+                            run.ignored.push((*id, now + 600));
+                            run.engaged = None;
+                            return false;
+                        }
+                        run.engaged = Some((*id, now, hp));
+                    }
+                }
+                _ => run.engaged = Some((*id, now, hp)),
+            }
+            true
+        });
         let hoglin = hoglin.filter(|(id, _, reach, _)| {
             if *reach <= n::REACH {
                 run.hoglin_wait = None;
@@ -539,7 +844,7 @@ impl Game<'_> {
             b.target = None;
             b.walk.reset();
             let centre = [at[0], at[1] + 0.7, at[2]];
-            run.note = "shield up: a hoglin".into();
+            run.note = "shield up: hoglin or wither skeleton".into();
             let charged = now.saturating_sub(run.last_swing) >= SWING;
             // Its attack just came (its swing animation runs 10 ticks).
             run.hoglin_quiet = if swinging > 0 || reach > n::REACH {
@@ -591,6 +896,28 @@ impl Game<'_> {
             .collect();
         if foes.is_empty() {
             self.companion_shield(host, b, run, None, pos);
+            // Hidden from blazes still about: it stays until it has healed
+            // (while its food lets it), so it doesn't walk back into their
+            // fire hurt.
+            let blazes_about = self.mobs.iter().any(|m| {
+                m.alive()
+                    && &*m.kind.id == "minecraft:blaze"
+                    && box_distance(from, m.bounds()) < BLAZE_RANGE
+            });
+            let food = host.hub.guest(b.conn).map_or(0, |g| g.food);
+            if health < 16.0 && blazes_about && run.cover.is_some() {
+                if food < 20 {
+                    self.companion_start_eating(host, b);
+                }
+                if b.eating.is_some() || food >= 18 {
+                    b.keys = Default::default();
+                    run.note = "healing in cover".into();
+                    return true;
+                }
+            }
+            if health >= 16.0 {
+                run.cover = None;
+            }
             return false;
         }
         b.target = None;
@@ -641,25 +968,77 @@ impl Game<'_> {
                 run.note = "shooting a blaze".into();
             }
             Stance::Retreat => {
-                // The shield only while one shoots at it; else away out of
-                // their sight, eating as it goes (one use at a time).
+                // Out of their sight: behind a wall or a pillar it heals
+                // (eating if it can), and the fight goes on one blaze at a
+                // time when it comes out. On the way, the shield only while
+                // one is about to shoot.
+                let hungry = host.hub.guest(b.conn).is_some_and(|g| g.food < 20);
+                if foes.iter().all(|f| !f.2.sees) {
+                    self.companion_shield(host, b, run, None, pos);
+                    b.keys = Default::default();
+                    if hungry {
+                        self.companion_start_eating(host, b);
+                    }
+                    run.note = "healing in cover".into();
+                    return true;
+                }
                 let shooting = foes.iter().find(|f| f.2.sees && f.2.charging);
-                let (_, at, _) = shooting.copied().unwrap_or(foes[0]);
+                let eyes: Vec<[f64; 3]> = foes.iter().map(|f| f.1).collect();
+                if now >= run.cover_at + 10 || run.cover.is_some_and(|c| !self.hidden_at(c, &eyes))
+                {
+                    let found = self.cover_spot(pos, &eyes, &run.bad);
+                    if found != run.cover
+                        && let (Some(f), Some((_, since))) = (found, run.cover_best)
+                    {
+                        // Another spot: measured afresh, but the clock
+                        // runs on (two spots in turn mustn't hold it).
+                        run.cover_best = Some((c::horizontal(pos, at_block(f)), since));
+                    }
+                    run.cover = found;
+                    run.cover_at = now;
+                }
                 if let Some((_, at, _)) = shooting
                     && b.eating.is_none()
                 {
                     self.companion_shield(host, b, run, Some(*at), pos);
                 } else {
                     self.companion_shield(host, b, run, None, pos);
-                    self.companion_start_eating(host, b);
                 }
-                let away = [
-                    pos[0] + (pos[0] - at[0]) * 2.0,
-                    pos[1],
-                    pos[2] + (pos[2] - at[2]) * 2.0,
-                ];
                 run.note = "backing off to heal".into();
-                let _ = self.companion_steer(host, b, away, 0.5, false);
+                if let Some(cv) = run.cover {
+                    // A straight run there (cover_spot checked the line);
+                    // no nearer after a second: that one is no good.
+                    run.note = "into cover from the blazes".into();
+                    let target = at_block(cv);
+                    let d = c::horizontal(pos, target);
+                    match run.cover_best {
+                        Some((best, _)) if d < best - 0.3 => run.cover_best = Some((d, now)),
+                        Some((_, since)) if now.saturating_sub(since) > 20 => {
+                            run.bad.push(cv);
+                            run.cover = None;
+                            run.cover_best = None;
+                        }
+                        None => run.cover_best = Some((d, now)),
+                        _ => {}
+                    }
+                    if d > 0.3 {
+                        b.yaw = c::yaw_toward(pos, target) as f32;
+                        b.pitch = 0.0;
+                        b.keys.forward = true;
+                        b.keys.sprint = !run.shield;
+                        b.keys.jump = cv[1] > feet(pos)[1];
+                    } else {
+                        b.keys = Default::default();
+                    }
+                } else {
+                    let (_, at, _) = shooting.copied().unwrap_or(foes[0]);
+                    let away = [
+                        pos[0] + (pos[0] - at[0]) * 2.0,
+                        pos[1],
+                        pos[2] + (pos[2] - at[2]) * 2.0,
+                    ];
+                    let _ = self.companion_steer(host, b, away, 0.5, false);
+                }
             }
             Stance::Wait => return false,
         }
@@ -726,6 +1105,55 @@ impl Game<'_> {
     }
 
     /// Whether a ray from `from` reaches `to` through no block.
+    /// No blaze at `eyes` sees a body standing at `c` (its head nor its
+    /// middle).
+    fn hidden_at(&self, c: [i32; 3], eyes: &[[f64; 3]]) -> bool {
+        let x = f64::from(c[0]) + 0.5;
+        let z = f64::from(c[2]) + 0.5;
+        eyes.iter().all(|&e| {
+            !self.in_sight(e, [x, f64::from(c[1]) + 1.5, z])
+                && !self.in_sight(e, [x, f64::from(c[1]) + 0.5, z])
+        })
+    }
+
+    /// Whether it can run straight from `pos` to the spot `c`: every column
+    /// on the way has a safe floor at most a step up or down from the last.
+    fn straight_run(&self, pos: [f64; 3], c: [i32; 3]) -> bool {
+        let to = at_block(c);
+        let d = c::horizontal(pos, to);
+        let steps = (d / 0.4).ceil().max(1.0) as i32;
+        let mut y = feet(pos)[1];
+        for i in 1..=steps {
+            let t = f64::from(i) / f64::from(steps);
+            let x = (pos[0] + (to[0] - pos[0]) * t).floor() as i32;
+            let z = (pos[2] + (to[2] - pos[2]) * t).floor() as i32;
+            match self.cruise_stand(x, y, z) {
+                Some(fy) if (fy - y).abs() <= 1 => y = fy,
+                _ => return false,
+            }
+        }
+        y == c[1]
+    }
+
+    /// The nearest safe spot within 8 blocks, near its height, that none of
+    /// the blazes sees.
+    fn cover_spot(&self, pos: [f64; 3], eyes: &[[f64; 3]], avoid: &[[i32; 3]]) -> Option<[i32; 3]> {
+        let here = feet(pos);
+        (1..=8).find_map(|r| {
+            (-r..=r)
+                .flat_map(|dx| (-r..=r).map(move |dz| (dx, dz)))
+                .filter(|&(dx, dz): &(i32, i32)| dx.abs().max(dz.abs()) == r)
+                .filter_map(|(dx, dz)| {
+                    let (x, z) = (here[0] + dx, here[2] + dz);
+                    let y = self.cruise_stand(x, here[1], z)?;
+                    ((y - here[1]).abs() <= 2).then_some([x, y, z])
+                })
+                .filter(|c| !avoid.contains(c))
+                .filter(|&c| self.straight_run(pos, c))
+                .find(|&c| self.hidden_at(c, eyes))
+        })
+    }
+
     fn in_sight(&self, from: [f64; 3], to: [f64; 3]) -> bool {
         let d = c::distance(from, to).max(1e-6);
         let dir = [
@@ -947,7 +1375,36 @@ impl Game<'_> {
             }
             _ => run.progress = Some((goal.at, left, 0)),
         }
-        let steer = self.companion_travel(host, b, goal, pos);
+        // Far: the cheap walk over the ground (game/companion_cruise.rs);
+        // near, or where it found no way, the walker that digs and builds.
+        let far = (left - 24.0).max(0.0);
+        // Only to somewhere about its own height (not down to a room).
+        let level = goal.vertical >= 64 || (goal.at[1] - f[1]).abs() <= 8;
+        let steer = if far > 0.0 && level && b.ticks >= run.cruise_off_until {
+            match self.companion_cruise(
+                host,
+                b,
+                &mut run.cruise,
+                [goal.at[0], goal.at[2]],
+                goal.near + 24.0,
+                pos,
+            ) {
+                Steer::Stuck => {
+                    // Its own way for a stretch, then the cheap walk again.
+                    run.cruise_off_until = b.ticks + 200;
+                    b.walk.reset();
+                    Steer::Moving
+                }
+                Steer::Arrived => self.companion_travel(host, b, goal, pos),
+                Steer::Moving => {
+                    b.walk.reset();
+                    Steer::Moving
+                }
+            }
+        } else {
+            run.cruise.reset();
+            self.companion_travel(host, b, goal, pos)
+        };
         if steer != Steer::Moving {
             run.progress = None;
         }
@@ -985,10 +1442,15 @@ impl Game<'_> {
     /// The nearest nether portal block on a portal's bottom row within 6
     /// blocks (the one it stands by).
     fn portal_cell_near(&self, at: [i32; 3]) -> Option<[i32; 3]> {
+        self.portal_cell_within(at, 6)
+    }
+
+    /// The nearest lit portal's bottom cell within `r` blocks across.
+    fn portal_cell_within(&self, at: [i32; 3], r: i32) -> Option<[i32; 3]> {
         let mut best: Option<[i32; 3]> = None;
-        for dx in -6..=6 {
+        for dx in -r..=r {
             for dy in -4..=4 {
-                for dz in -6..=6 {
+                for dz in -r..=r {
                     let p = [at[0] + dx, at[1] + dy, at[2] + dz];
                     if self.is_portal(p)
                         && !self.is_portal([p[0], p[1] - 1, p[2]])
@@ -1287,17 +1749,70 @@ impl Game<'_> {
             let _ = self.nether_go(host, b, run, Goal::near(feet(at), 0.5), pos);
             return;
         }
-        if hunting_ground {
-            if let Some(w) = run.waypoint {
-                // Off to firmer ground or a quieter spot first.
-                run.note = "to a spot for a pit".into();
-                if self.nether_go(host, b, run, Goal::near(w, 1.5), pos) != Steer::Moving {
-                    run.waypoint = None;
+        // Endermen are few in the Nether (a warped forest's are shared with
+        // a crowd of other mobs under the cap): after a while with few
+        // pearls, an Overworld night instead, by the portal it came in.
+        if b.dim == Dim::Nether
+            && run.pit.is_none()
+            && now.saturating_sub(run.leg_start) > OVERWORLD_PEARLS_AFTER
+            && carried_now(self, host, b, run).pearls_worth() * 3 < run.targets.pearls
+        {
+            self.leg_home(host, b, run, pos, now);
+            run.note = format!("{} (for endermen at night)", run.note);
+            return;
+        }
+        // An angry enderman that wouldn't come to the pit: after it, the
+        // shield toward it between blows.
+        if run.pit.is_none()
+            && let Some(id) = run.chase
+        {
+            let foe = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && m.alive())
+                .map(|m| (mob_at(m), box_distance(eye(pos), m.bounds())));
+            match foe {
+                Some((at, reach)) if c::distance(at, pos) < 40.0 => {
+                    run.note = "after an angry enderman".into();
+                    let charged = now.saturating_sub(run.last_swing) >= SWING;
+                    if reach <= n::REACH && charged {
+                        self.companion_shield(host, b, run, None, pos);
+                        let legs = [at[0], at[1] + 0.3, at[2]];
+                        b.yaw = c::yaw_toward(pos, legs) as f32;
+                        b.pitch = look_pitch(eye(pos), legs);
+                        self.companion_strike(host, b, id);
+                        run.last_swing = now;
+                    } else if reach <= n::REACH {
+                        self.companion_shield(host, b, run, Some([at[0], at[1] + 1.5, at[2]]), pos);
+                    } else {
+                        self.companion_shield(host, b, run, None, pos);
+                        if self.nether_go(host, b, run, Goal::near(feet(at), 2.0), pos)
+                            == Steer::Stuck
+                        {
+                            run.chase = None;
+                        }
+                    }
+                    return;
                 }
-                return;
+                _ => run.chase = None,
             }
+        }
+        // Off to firmer ground or a quieter spot first (kept to even where
+        // the forest's edge wanders: a goal that changes every few steps
+        // holds the walker on the spot).
+        if run.pit.is_none()
+            && let Some(w) = run.pit_spot
+        {
+            run.note = "to a spot for a pit".into();
+            if self.nether_go(host, b, run, Goal::near(w, 1.5), pos) != Steer::Moving {
+                run.pit_spot = None;
+            }
+            return;
+        }
+        if hunting_ground {
             match self.pit_site(here) {
                 Some(pit) => {
+                    run.firm_tries = 0;
                     run.pit = Some(PitFight {
                         pit,
                         step: PitStep::Dig,
@@ -1308,10 +1823,17 @@ impl Game<'_> {
                     b.walk.reset();
                 }
                 None => {
+                    // Firm ground a few blocks off; after a few tries there,
+                    // further (a whole patch may be no good).
                     run.note = "looking for firm ground".into();
+                    run.firm_tries += 1;
+                    let far = if run.firm_tries > 4 { 16 } else { 5 };
+                    if run.firm_tries > 4 {
+                        run.firm_tries = 0;
+                    }
                     let k = b.next_int(4);
-                    let d = [[5, 0], [-5, 0], [0, 5], [0, -5]][k as usize];
-                    run.waypoint = Some([here[0] + d[0], here[1], here[2] + d[1]]);
+                    let d = [[far, 0], [-far, 0], [0, far], [0, -far]][k as usize];
+                    run.pit_spot = Some([here[0] + d[0], here[1], here[2] + d[1]]);
                 }
             }
             return;
@@ -1324,7 +1846,22 @@ impl Game<'_> {
         if run.forest.is_none() && now.saturating_sub(run.last_cue) >= CUE_EVERY {
             run.last_cue = now;
             run.forest = if b.senses.level == PerceptionLevel::AllKnowing {
-                self.locate_biome("minecraft:warped_forest", here)
+                // The nearest it hasn't given up on (searched from a little
+                // way off when the nearest is one).
+                let given_up = |p: [i32; 3]| {
+                    run.bad
+                        .iter()
+                        .any(|q| (q[0] - p[0]).abs() + (q[2] - p[2]).abs() < 48)
+                };
+                [[0, 0], [160, 0], [-160, 0], [0, 160], [0, -160]]
+                    .iter()
+                    .filter_map(|d| {
+                        self.locate_biome(
+                            "minecraft:warped_forest",
+                            [here[0] + d[0], here[1], here[2] + d[1]],
+                        )
+                    })
+                    .find(|&p| !given_up(p))
             } else {
                 self.recall_cue(b, run, Cue::WarpedForest, here, 220)
                     .into_iter()
@@ -1508,8 +2045,13 @@ impl Game<'_> {
                         .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
                 });
                 let Some(slot) = slot else {
-                    set(fight, PitStep::Fight, b.ticks);
-                    return true;
+                    // No block to climb on: out by the walker (it digs a
+                    // stair) to a new pit a little way off, whose digging
+                    // gives blocks again.
+                    let k = b.next_int(4);
+                    let d = [[6, 0], [-6, 0], [0, 6], [0, -6]][k as usize];
+                    run.pit_spot = Some([f[0] + d[0], pit.look_feet()[1], f[2] + d[1]]);
+                    return false;
                 };
                 b.pitch = 90.0;
                 if on_ground && !fight.jumped {
@@ -1578,7 +2120,7 @@ impl Game<'_> {
                         // None about for a minute: a pit elsewhere.
                         if fight.quiet > 1200 && angry.is_empty() {
                             let h = f64::from(b.next_int(360)).to_radians();
-                            run.waypoint = Some([
+                            run.pit_spot = Some([
                                 f[0] + (h.cos() * 24.0) as i32,
                                 f[1] + 1,
                                 f[2] + (h.sin() * 24.0) as i32,
@@ -1632,6 +2174,14 @@ impl Game<'_> {
                         b.pitch = -20.0;
                         // Quiet a while, or the angry ones won't come: up
                         // to look out again.
+                        // One angry that won't come down to it (stuck on
+                        // the rim's far side): out after it.
+                        if elapsed > 400
+                            && let Some(&(id, _, _)) = angry.first()
+                        {
+                            run.chase = Some(id);
+                            return false;
+                        }
                         if elapsed > 60 && angry.iter().all(|a| a.2 > 16.0) || elapsed > 400 {
                             set(fight, PitStep::Climb, b.ticks);
                         }
@@ -1900,52 +2450,6 @@ impl Game<'_> {
         let at = [s[0] + 4, 70, s[1] + 4];
         let left = c::horizontal(pos, at_block(at));
         run.note = format!("{left:.0} blocks to go");
-        // Far yet: over the ground, 32 blocks at a time (left to itself the
-        // walker tunnels the straight line, a block at a time).
-        if left > 48.0 {
-            if run.waypoint.is_none() {
-                let here = feet(pos);
-                let (dx, dz) = (f64::from(at[0] - here[0]), f64::from(at[2] - here[2]));
-                let len = dx.hypot(dz).max(1.0);
-                let (x, z) = (
-                    here[0] + (dx / len * 32.0) as i32,
-                    here[2] + (dz / len * 32.0) as i32,
-                );
-                run.waypoint = Some(match self.ground_at(x, z) {
-                    Some(y) => [x, y, z],
-                    None => [x, i32::MIN, z],
-                });
-            }
-            if let Some(w) = run.waypoint {
-                let goal = if w[1] == i32::MIN {
-                    Goal::column([w[0], 70, w[2]], 3.0)
-                } else {
-                    Goal {
-                        at: w,
-                        near: 3.0,
-                        vertical: 4,
-                    }
-                };
-                match self.nether_go(host, b, run, goal, pos) {
-                    // Sprinting over open ground (a runner's pace).
-                    Steer::Moving => {
-                        b.keys.sprint =
-                            b.keys.forward && host.hub.guest(b.conn).is_some_and(|g| g.food > 6);
-                    }
-                    Steer::Arrived => run.waypoint = None,
-                    Steer::Stuck => {
-                        // Straight on below ground for this stretch.
-                        run.waypoint = Some([w[0], i32::MIN, w[2]]);
-                        if w[1] == i32::MIN {
-                            run.waypoint = None;
-                            run.stuck += 1;
-                        }
-                        b.walk.reset();
-                    }
-                }
-                return;
-            }
-        }
         run.waypoint = None;
         match self.nether_go(host, b, run, Goal::column(at, 6.0), pos) {
             Steer::Arrived => self.companion_nether_next(b, run, now),
@@ -1974,6 +2478,60 @@ impl Game<'_> {
                 run.visited.remove(0);
             }
         }
+        // In water (a lake or the sea over it): the staircase starts on the
+        // nearest dry ground instead (no digging down under water).
+        let wet = |y: i32| {
+            self.res
+                .facts()
+                .get(self.world.block(here[0], y, here[2]))
+                .fluid
+                != Fluid::None
+        };
+        // Once it heads ashore it keeps on until there (bobbing at the
+        // surface its feet come out of the water now and then).
+        // (Only before the staircase starts, at the surface: water met on
+        // the way down, an aquifer or a flooded corridor, is gone through,
+        // with the air rule over it.)
+        let surface = run.shaft.is_none() && here[1] >= 56;
+        let near_water = surface && !self.inland(here);
+        if surface
+            && (wet(here[1]) || wet(here[1] + 1) || wet(here[1] - 1) || near_water)
+            && run.ashore.is_none()
+        {
+            run.ashore = self.dry_spot_near(here, 96, &run.bad);
+            log::info!(
+                "[companion] {} room: in water at {here:?}, ashore at {:?}",
+                b.file.name,
+                run.ashore
+            );
+            if run.ashore.is_none() && (wet(here[1]) || wet(here[1] + 1)) {
+                // Open water as far as it sees: no shaft to dig (it would
+                // flood); stopped, classified, before it drowns.
+                self.companion_nether_end(b, run, "room: under open water, no land in view".into());
+                return;
+            }
+        }
+        if let Some(dry) = run.ashore {
+            if c::horizontal(pos, at_block(dry)) < 1.0 && !wet(here[1]) {
+                run.ashore = None;
+                run.shaft = Some([here[0], here[2]]);
+            } else {
+                run.note = "out of the water to dig down".into();
+                // The vanilla-style path swims and climbs out of water.
+                let steer = if c::horizontal(pos, at_block(dry)) < 40.0 {
+                    self.companion_steer(host, b, at_block(dry), 0.6, true)
+                } else {
+                    self.nether_go(host, b, run, Goal::near(dry, 0.5), pos)
+                };
+                if steer == Steer::Stuck {
+                    log::info!("[companion] {} room: no way ashore to {dry:?}", b.file.name);
+                    run.bad.push(dry);
+                    run.ashore = None;
+                    b.walk.reset();
+                }
+                return;
+            }
+        }
         // The frames: seen, or through walls.
         let wanted = self.states_where(|n| n == "minecraft:end_portal_frame");
         let radius = if b.senses.level == PerceptionLevel::AllKnowing {
@@ -1981,29 +2539,52 @@ impl Game<'_> {
         } else {
             96
         };
-        let around = if run.scanned { here } else { centre };
-        if let Some(found) =
-            self.companion_known(b, &wanted, around, radius, &mut run.scan, 8 * 4096)
-        {
-            run.scan = None;
-            run.scanned = b.senses.level.xray_radius(radius).is_none() || !run.scanned;
-            if let Some(f) = found.first() {
-                // Into the room: the frames' level beside them.
-                let goal = Goal {
-                    at: *f,
-                    near: 3.0,
-                    vertical: 2,
-                };
-                if goal.reached(here) {
-                    self.companion_nether_next(b, run, now);
-                    return;
+        // Looked for until found, then kept (a goal that changed every few
+        // ticks restarted the dig each time and it never got a block out).
+        if run.frames.is_none() {
+            let around = if run.scanned { here } else { centre };
+            if let Some(found) =
+                self.companion_known(b, &wanted, around, radius, &mut run.scan, 8 * 4096)
+            {
+                run.scan = None;
+                run.scanned = b.senses.level.xray_radius(radius).is_none() || !run.scanned;
+                run.frames = found.first().copied();
+                if let Some(f) = run.frames {
+                    log::info!("[companion] {} room: frames at {f:?}", b.file.name);
                 }
-                run.note = "to the portal room".into();
-                if self.nether_go(host, b, run, goal, pos) == Steer::Stuck {
+            }
+        }
+        if let Some(f) = run.frames {
+            let goal = Goal {
+                at: f,
+                near: 3.0,
+                vertical: 2,
+            };
+            if goal.reached(here) {
+                self.companion_nether_next(b, run, now);
+                return;
+            }
+            // Straight down to their level first (a staircase), then across.
+            if here[1] > f[1] + 3 && run.stuck < 3 {
+                let shaft = *run.shaft.get_or_insert([here[0], here[2]]);
+                run.note = format!("digging down to the portal room, y {}", f[1]);
+                let down = Goal {
+                    at: [shaft[0], f[1], shaft[1]],
+                    near: 2.0,
+                    vertical: 1,
+                };
+                if self.nether_go(host, b, run, down, pos) == Steer::Stuck {
                     run.stuck += 1;
+                    b.walk.reset();
                 }
                 return;
             }
+            run.note = "to the portal room".into();
+            if self.nether_go(host, b, run, goal, pos) == Steer::Stuck {
+                run.stuck += 1;
+                b.walk.reset();
+            }
+            return;
         }
         if run.waypoint.is_none() {
             let bricks = self.recall_cue(b, run, Cue::Stronghold, here, 64);
@@ -2018,11 +2599,14 @@ impl Game<'_> {
                         run.depth = 20;
                         run.stronghold =
                             Some([s[0] + (k % 3 - 1) * 24, s[1] + (k / 3 % 3 - 1) * 24]);
+                        run.shaft = None;
                     }
                 }
                 run.note = format!("digging down to y {}", run.depth);
+                // Down from where it stands (dry ground near the start).
+                let shaft = *run.shaft.get_or_insert([here[0], here[2]]);
                 let goal = Goal {
-                    at: [centre[0], run.depth, centre[2]],
+                    at: [shaft[0], run.depth, shaft[1]],
                     near: 2.0,
                     vertical: 1,
                 };
@@ -2137,22 +2721,6 @@ impl Game<'_> {
                 let _ = self.nether_go(host, b, run, Goal::near(empty[0], 2.0), pos);
             }
         }
-    }
-
-    /// Where it would stand at the top of a column (on the ground, or
-    /// swimming on water); None where the column is not loaded.
-    fn ground_at(&self, x: i32, z: i32) -> Option<i32> {
-        if !self.world.chunks.contains_key(&(x >> 4, z >> 4)) {
-            return None;
-        }
-        let facts = self.res.facts();
-        let top = self.dim.min_y() + self.dim.logical_height() - 1;
-        (self.dim.min_y()..top).rev().find_map(|y| {
-            let f = facts.get(self.world.block(x, y, z));
-            // Under the trees, not on them.
-            let tree = f.name.ends_with("_leaves") || f.name.ends_with("_log");
-            ((f.full_collision && !tree) || f.fluid != Fluid::None).then_some(y + 1)
-        })
     }
 
     fn lava_below(&self, p: [i32; 3]) -> bool {

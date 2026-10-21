@@ -1089,6 +1089,7 @@ impl Game<'_> {
                     "run": self.companion_run_status(b),
                     "nether": self.companion_nether_status(b),
                     "walk": b.walk.status(),
+                    "keys": format!("{:?} yaw {:.0} ground {}", b.keys, b.yaw, g.on_ground),
                     "ticks": b.ticks,
                     "digging": b.work.dig.map(|d| d.0),
                     "mining": host.play.get(&b.conn).and_then(|p| p.mining()),

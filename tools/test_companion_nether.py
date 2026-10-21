@@ -40,9 +40,11 @@ SEGMENTS = {
     'pearls': ('pearls', 'home', 'nether'),
     'stronghold': ('eyes', 'fill', 'overworld'),
     'full': ('enter', 'fill', 'overworld'),
+    # In the Nether with rods and pearls: back to the remembered portal and through it.
+    'home': ('home', 'home', 'nether'),
 }
 # Game ticks a segment may take at most.
-BUDGET = {'nether': 36000, 'pearls': 30000, 'stronghold': 60000, 'full': 120000}
+BUDGET = {'nether': 36000, 'pearls': 30000, 'home': 12000, 'stronghold': 60000, 'full': 120000}
 LEVELS = {'all': 'all_knowing', 'all_knowing': 'all_knowing', 'fair': 'fair', 'scout': 'scout',
           'sharp': 'sharp'}
 
@@ -101,8 +103,10 @@ def gear(endpoint, args, segment):
         items.append('shield')
     if args.bow:
         items += ['bow', 'arrow 32']
-    if segment in ('pearls',):
+    if segment in ('pearls', 'home'):
         items.append('blaze_rod 7')
+    if segment == 'home':
+        items.append('ender_pearl 13')
     if segment == 'stronghold':
         items += ['blaze_rod 7', 'ender_pearl 13']
     for item in items:
@@ -159,6 +163,14 @@ def setup(endpoint, seed, args, segment):
     elif where == 'nether':
         command(endpoint, 'command difficulty peaceful')
         into_nether(endpoint, portal_by(endpoint))
+        if segment == 'home':
+            # Off a way from the portal it came through, to walk back.
+            c = runner(endpoint)
+            x, y, z = (math.floor(v) for v in c['position'])
+            command(endpoint, f'command fill {x + 18} {y} {z - 1} {x + 22} {y + 2} {z + 1} air')
+            command(endpoint, f'command fill {x + 18} {y - 1} {z - 1} {x + 22} {y - 1} {z + 1} netherrack')
+            command(endpoint, f'command tp {NAME} {x + 20.5} {y} {z + 0.5}')
+            time.sleep(0.5)
         command(endpoint, 'command difficulty normal')
     time.sleep(0.5)
 
@@ -177,6 +189,7 @@ def one_run(endpoint, seed, args, segment, out):
     result = {'seed': seed, 'segment': segment, 'level': level, 'shield': not args.no_shield}
     done = 0
     nether = {}
+    still, dumped = [], set()
     while done < BUDGET[segment] and time.monotonic() - started < args.wall:
         sprint(endpoint, args.slice)
         done += args.slice
@@ -186,10 +199,27 @@ def one_run(endpoint, seed, args, segment, out):
             break
         nether = c.get('nether') or {}
         sample = {k: nether.get(k) for k in ('leg', 'step', 'note', 'ticks', 'rods', 'pearls', 'eyes',
-                                             'outcome', 'pit', 'waypoint')}
-        sample.update({'position': c.get('position'), 'dimension': c.get('dimension'),
+                                             'outcome', 'pit', 'waypoint', 'cruise')}
+        dig = c.get('digging')
+        sample.update({'walk': c.get('walk'), 'digging': dig, 'mining': c.get('mining'),
+                       'dig_block': block(endpoint, *dig) if dig else None,
+                       'held': c.get('held'), 'keys': c.get('keys'),
+                       'position': c.get('position'), 'dimension': c.get('dimension'),
                        'health': c.get('health'), 'food': c.get('food'),
                        'wall_s': round(time.monotonic() - started, 1)})
+        # Stalled (600 ticks without moving): what is around it, once per spot.
+        pos = c.get('position')
+        if pos:
+            still.append((done, pos))
+            while still and done - still[0][0] > 600:
+                still.pop(0)
+            spot = tuple(math.floor(v) for v in pos)
+            if (len(still) > 1 and done - still[0][0] >= 600 - args.slice and spot not in dumped
+                    and max(abs(a - b) for (_, p0) in still for a, b in zip(p0, pos)) < 0.3):
+                dumped.add(spot)
+                x, y, z = spot
+                sample['stall'] = {f'{dx},{dy},{dz}': block(endpoint, x + dx, y + dy, z + dz).replace('minecraft:', '')
+                                   for dy in range(-2, 4) for dx in range(-2, 3) for dz in range(-2, 3)}
         out.write(json.dumps(sample) + '\n')
         out.flush()
         if nether.get('outcome'):

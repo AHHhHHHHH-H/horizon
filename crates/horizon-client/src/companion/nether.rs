@@ -457,7 +457,11 @@ pub fn blaze_stance(health: f32, charged: bool, foes: &[Foe], arrows: bool) -> S
     if foes.is_empty() {
         return Stance::Wait;
     }
-    if health < 8.0 {
+    // Low, two shooting at it and not healthy, or three at once: out of
+    // their sight to heal (fire resistance is not to be had); they come
+    // round the cover one at a time.
+    let seeing = foes.iter().filter(|f| f.sees).count();
+    if health < 10.0 || (seeing >= 2 && health < 16.0) || seeing >= 3 {
         return Stance::Retreat;
     }
     let nearest = (0..foes.len())
@@ -801,6 +805,12 @@ mod tests {
         };
         assert_eq!(blaze_stance(20.0, true, &[], false), Stance::Wait);
         assert_eq!(blaze_stance(6.0, true, &[near], false), Stance::Retreat);
+        // Two shooting at it, half its health gone: away to eat.
+        assert_eq!(
+            blaze_stance(12.0, true, &[far_shooting, far], false),
+            Stance::Retreat
+        );
+        assert_eq!(blaze_stance(12.0, true, &[near], false), Stance::Strike(0));
         assert_eq!(
             blaze_stance(20.0, true, &[far_shooting, near], false),
             Stance::Strike(1)
