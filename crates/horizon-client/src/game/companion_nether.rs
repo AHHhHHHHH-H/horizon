@@ -765,6 +765,23 @@ impl Game<'_> {
             self.companion_shield(host, b, run, None, pos);
             self.companion_start_eating(host, b);
         }
+        // A fight coming (something hostile near) at an edge (a drop or
+        // lava beside it, a bridge): onto solid ground first, where a
+        // knock back doesn't throw it off.
+        let danger = self
+            .mobs
+            .iter()
+            .any(|m| m.alive() && threat(m) && c::distance(mob_at(m), pos) < 16.0);
+        if danger
+            && self.on_edge(feet(pos))
+            && let Some(g) = self.solid_ground_near(feet(pos))
+        {
+            self.companion_shield(host, b, run, None, pos);
+            run.note = "onto solid ground before the fight".into();
+            if self.companion_steer(host, b, at_block(g), 0.3, true) != Steer::Stuck {
+                return true;
+            }
+        }
         // Hoglins (40 health, a toss in the air each hit) and wither
         // skeletons (the wither on each hit): the shield toward the one after
         // it, a blow in the moment after each of its attacks lands on the
@@ -1105,6 +1122,137 @@ impl Game<'_> {
     }
 
     /// Whether a ray from `from` reaches `to` through no block.
+    /// A block into the nearest water cell round its body (feet to a block
+    /// over its head, one out, and below its feet) it can reach, against a
+    /// solid neighbour: true while it walls one off (one every 4 ticks).
+    fn companion_dry_shaft(&mut self, host: &mut LanHost, b: &mut Body, pos: [f64; 3]) -> bool {
+        let here = feet(pos);
+        let facts = self.res.facts();
+        let wet = |p: [i32; 3]| facts.get(self.world.block(p[0], p[1], p[2])).fluid == Fluid::Water;
+        let solid = |p: [i32; 3]| facts.get(self.world.block(p[0], p[1], p[2])).full_collision;
+        let mut cells: Vec<[i32; 3]> = Vec::new();
+        for dy in -2..=2 {
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let q = [here[0] + dx, here[1] + dy, here[2] + dz];
+                    // Not where its own body is.
+                    let body = dx == 0 && dz == 0 && (0..=1).contains(&dy);
+                    if !body && wet(q) {
+                        cells.push(q);
+                    }
+                }
+            }
+        }
+        if cells.is_empty() {
+            return false;
+        }
+        let Some(slot) = host.hub.guest(b.conn).and_then(|g| {
+            g.inventory
+                .iter()
+                .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
+        }) else {
+            return false;
+        };
+        const SIDES: [([i32; 3], u8); 6] = [
+            ([0, -1, 0], 1),
+            ([0, 1, 0], 0),
+            ([0, 0, 1], 2),
+            ([0, 0, -1], 3),
+            ([1, 0, 0], 4),
+            ([-1, 0, 0], 5),
+        ];
+        let from = eye(pos);
+        let pick = cells.iter().find_map(|&q| {
+            SIDES.iter().find_map(|&(d, face)| {
+                let n = [q[0] + d[0], q[1] + d[1], q[2] + d[2]];
+                (solid(n) && super::companion_work::to_block(from, n) < 4.4).then_some((n, face))
+            })
+        });
+        let Some((n, face)) = pick else {
+            return false;
+        };
+        if b.ticks.is_multiple_of(4) {
+            self.companion_stop_dig(host, b);
+            b.keys = Default::default();
+            self.companion_hold_slot(host, b, slot);
+            self.companion_use_block(host, b, n, face, pos);
+        }
+        true
+    }
+
+    /// Whether a column next to `p` drops more than 3 blocks (or onto
+    /// lava): a knock back there throws it off.
+    fn on_edge(&self, p: [i32; 3]) -> bool {
+        let facts = self.res.facts();
+        (-1..=1).any(|dx| {
+            (-1..=1).any(|dz| {
+                let floor = (1..=4).find_map(|d| {
+                    let f = facts.get(self.world.block(p[0] + dx, p[1] - d, p[2] + dz));
+                    (f.full_collision || f.fluid != Fluid::None).then_some(f.fluid)
+                });
+                !matches!(floor, Some(Fluid::None | Fluid::Water))
+            })
+        })
+    }
+
+    /// The nearest spot within 6 blocks, near its height, with no edge
+    /// beside it, that it can run straight to.
+    fn solid_ground_near(&self, p: [i32; 3]) -> Option<[i32; 3]> {
+        let pos = at_block(p);
+        (1..=6).find_map(|r| {
+            (-r..=r)
+                .flat_map(|dx| (-r..=r).map(move |dz| (dx, dz)))
+                .filter(|&(dx, dz): &(i32, i32)| dx.abs().max(dz.abs()) == r)
+                .filter_map(|(dx, dz)| {
+                    let (x, z) = (p[0] + dx, p[2] + dz);
+                    let y = self.cruise_stand(x, p[1], z)?;
+                    ((y - p[1]).abs() <= 1).then_some([x, y, z])
+                })
+                .find(|&c| !self.on_edge(c) && self.straight_run(pos, c))
+        })
+    }
+
+    /// The pit's roof: a pillar of two beside its top on firm ground and a
+    /// block from it over the pit, a block above its head when it looks
+    /// out. True while it builds (a block every 4 ticks).
+    fn pit_roof(&mut self, host: &mut LanHost, b: &mut Body, pit: Pit, pos: [f64; 3]) -> bool {
+        let t = pit.look_feet();
+        let roof = [t[0], t[1] + 2, t[2]];
+        if !self.passable(roof) {
+            return false;
+        }
+        let Some(slot) = host.hub.guest(b.conn).and_then(|g| {
+            g.inventory
+                .iter()
+                .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
+        }) else {
+            return false;
+        };
+        // (direction, face from the pillar's top toward the roof)
+        let sides: [([i32; 2], u8); 4] = [([1, 0], 4), ([-1, 0], 5), ([0, 1], 2), ([0, -1], 3)];
+        let Some((d, face)) = sides.into_iter().find(|(d, _)| {
+            let ground = [t[0] + d[0], t[1], t[2] + d[1]];
+            let low = [t[0] + d[0], t[1] + 1, t[2] + d[1]];
+            self.floor(ground) || !self.passable(low)
+        }) else {
+            return false;
+        };
+        let low = [t[0] + d[0], t[1] + 1, t[2] + d[1]];
+        let high = [t[0] + d[0], t[1] + 2, t[2] + d[1]];
+        if !b.ticks.is_multiple_of(4) {
+            return true;
+        }
+        self.companion_hold_slot(host, b, slot);
+        if self.passable(low) {
+            self.companion_use_block(host, b, [low[0], low[1] - 1, low[2]], 1, pos);
+        } else if self.passable(high) {
+            self.companion_use_block(host, b, low, 1, pos);
+        } else {
+            self.companion_use_block(host, b, high, face, pos);
+        }
+        true
+    }
+
     /// No blaze at `eyes` sees a body standing at `c` (its head nor its
     /// middle).
     fn hidden_at(&self, c: [i32; 3], eyes: &[[f64; 3]]) -> bool {
@@ -2001,6 +2149,30 @@ impl Game<'_> {
         angry.sort_by(|a, b| a.2.total_cmp(&b.2));
         calm.sort_by(|a, b| a.2.total_cmp(&b.2));
         let elapsed = b.ticks.saturating_sub(fight.since);
+        // Anything else at it in the pit (a zombie, a spider on the rim, a
+        // piglin): struck back when the blow is charged, shield up between.
+        let other = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && threat(m) && &*m.kind.id != "minecraft:enderman")
+            .map(|m| (m.id, mob_at(m), box_distance(from, m.bounds())))
+            .filter(|o| o.2 <= n::REACH)
+            .min_by(|x, y| x.2.total_cmp(&y.2));
+        if let Some((id, at, _)) = other {
+            let centre = [at[0], at[1] + 0.8, at[2]];
+            run.note = "fighting off a mob from the pit".into();
+            if b.ticks.saturating_sub(run.last_swing) >= SWING {
+                self.companion_shield(host, b, run, None, pos);
+                b.yaw = c::yaw_toward(pos, centre) as f32;
+                b.pitch = look_pitch(from, centre);
+                self.companion_strike(host, b, id);
+                run.last_swing = b.ticks;
+            } else {
+                self.companion_shield(host, b, run, Some(centre), pos);
+            }
+            return true;
+        }
+        self.companion_shield(host, b, run, None, pos);
         let set = |fight: &mut PitFight, step: PitStep, ticks: u64| {
             fight.step = step;
             fight.since = ticks;
@@ -2018,11 +2190,11 @@ impl Game<'_> {
                 }
                 if elapsed > 400 || f[0] != pit.top[0] || f[2] != pit.top[2] {
                     // Pushed off, or it won't dig: elsewhere.
-                    run.waypoint = Some([f[0] + 5, f[1], f[2] - 4]);
+                    run.pit_spot = Some([f[0] + 5, f[1], f[2] - 4]);
                     return false;
                 }
                 if !self.passable(below) && self.companion_dig_step(host, b, below, 1).is_err() {
-                    run.waypoint = Some([f[0] + 5, f[1], f[2] - 4]);
+                    run.pit_spot = Some([f[0] + 5, f[1], f[2] - 4]);
                     return false;
                 }
                 true
@@ -2091,6 +2263,13 @@ impl Game<'_> {
                         != Steer::Stuck;
                 }
                 b.walk.reset();
+                // A roof over its head a block up (a pillar beside it to
+                // hold it): no enderman fits under (2.9 high), and arrows
+                // from above stop.
+                if self.pit_roof(host, b, pit, pos) {
+                    run.note = "roofing the pit".into();
+                    return true;
+                }
                 // One coming at it: down.
                 if angry.first().is_some_and(|a| a.2 < 24.0)
                     || calm.first().is_some_and(|a| a.2 < 3.0)
@@ -2531,6 +2710,13 @@ impl Game<'_> {
                 }
                 return;
             }
+        }
+        // Digging down: the water it opens into (an aquifer, a flooded
+        // corridor) walled off with blocks as it goes, a dry shaft instead
+        // of a dig under water.
+        if run.shaft.is_some() && self.companion_dry_shaft(host, b, pos) {
+            run.note = "walling off water".into();
+            return;
         }
         // The frames: seen, or through walls.
         let wanted = self.states_where(|n| n == "minecraft:end_portal_frame");
