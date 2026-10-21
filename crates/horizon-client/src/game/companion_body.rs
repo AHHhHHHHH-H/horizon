@@ -1201,8 +1201,16 @@ impl Game<'_> {
             stacks.extend(g.offhand.take());
             stacks.extend(g.carried.take());
         }
+        // What last hurt it (the damage type), for the End's record.
+        let source = host
+            .hub
+            .guest(conn)
+            .and_then(|g| g.motion.as_ref())
+            .and_then(|m| m.health.hurt.last_source)
+            .and_then(|id| self.motion.health.damage.definition(id))
+            .map(|d| d.name.clone());
         let mut b = host.companions.remove(bi);
-        self.companion_end_died(&mut b, at);
+        self.companion_end_died(&mut b, at, source.as_deref());
         for stack in stacks {
             // Player.drop(stack, true): thrown in a random direction.
             let f = b.next_float() * 0.5;

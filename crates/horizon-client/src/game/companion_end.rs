@@ -518,7 +518,9 @@ impl Game<'_> {
     }
 
     /// Its death in the middle of the route: what killed it, as best it can tell.
-    pub(super) fn companion_end_died(&mut self, b: &mut Body, eye: [f64; 3]) {
+    /// `source` is the damage type that last hurt it: the cause comes from
+    /// it, what was round it only telling apart what the type doesn't.
+    pub(super) fn companion_end_died(&mut self, b: &mut Body, eye: [f64; 3], source: Option<&str>) {
         let at = [eye[0], eye[1] - 1.32, eye[2]];
         let near_blast = b.end.as_ref().is_some_and(|run| {
             run.known
@@ -526,10 +528,18 @@ impl Game<'_> {
                 .filter(|k| !k.gone && c::distance(k.at, at) < 14.0)
                 .any(|k| !self.end_crystal_there(k.at))
         });
-        let in_cloud = self
-            .breath_view()
+        let clouds = self.breath_view();
+        let in_cloud = clouds
             .iter()
             .any(|(cl, r, _)| e::in_breath(at, *cl, *r, 0.5));
+        let in_breath = clouds
+            .iter()
+            .any(|(cl, r, from_dragon)| *from_dragon && e::in_breath(at, *cl, *r, 0.5));
+        let enderman = self.mobs.iter().any(|m| {
+            m.alive()
+                && &*m.kind.id == "minecraft:enderman"
+                && c::distance(at, [m.position.x, m.position.y, m.position.z]) < 6.0
+        });
         let near_dragon = self.dragon_view().is_some_and(|d| {
             d.parts.iter().any(|p| {
                 let mid = [(p.0[0] + p.1[0]) / 2.0, p.0[1], (p.0[2] + p.1[2]) / 2.0];
@@ -540,7 +550,25 @@ impl Game<'_> {
             return;
         };
         let fell = run.peak - at[1] > 6.0;
-        let cause = if at[1] < 0.0 {
+        let by_source = source.map(|s| match s.trim_start_matches("minecraft:") {
+            "fall" => "a fall",
+            "out_of_world" => "the void",
+            "indirect_magic" | "magic" if in_breath => "dragon breath",
+            "indirect_magic" | "magic" if in_cloud => "a fireball's cloud",
+            "indirect_magic" | "magic" => "a cloud (gone)",
+            "dragon_breath" => "dragon breath",
+            "explosion" | "player_explosion" | "bad_respawn_point" => "a blast",
+            "mob_attack" | "mob_attack_no_aggro" if near_dragon => "the dragon",
+            "mob_attack" | "mob_attack_no_aggro" if enderman => "an enderman",
+            "mob_attack" | "mob_attack_no_aggro" => "a mob",
+            "starve" => "hunger",
+            "in_wall" => "suffocation",
+            "fly_into_wall" => "a wall",
+            _ => "other damage",
+        });
+        let cause = if let Some(cause) = by_source {
+            cause
+        } else if at[1] < 0.0 {
             "the void"
         } else if fell && run.danger == "an enderman" {
             "a fall (an enderman's hit)"
@@ -615,7 +643,7 @@ impl Game<'_> {
                 .map(|(at, _, _)| c::distance(pos, *at))
                 .fold(f64::INFINITY, f64::min);
             log::info!(
-                "[end] {} hurt {:.1} -> {health:.1} at {:?} phase {} danger '{}' dragon {dragon:?} cloud {cloud:.1} crystals {} fireballs {} note '{}' raised {:?} perch {:?} blocks {}",
+                "[end] {} hurt {:.1} -> {health:.1} at {:?} phase {} danger '{}' dragon {dragon:?} cloud {cloud:.1} crystals {} fireballs {} note '{}' raised {:?} perch {:?} blocks {} by {}",
                 b.file.name,
                 run.health - health,
                 pos.map(|v| (v * 10.0).round() / 10.0),
@@ -634,6 +662,12 @@ impl Game<'_> {
                         .unwrap_or_default(),
                     &BLOCKS
                 ),
+                host.hub
+                    .guest(b.conn)
+                    .and_then(|g| g.motion.as_ref())
+                    .and_then(|m| m.health.hurt.last_source)
+                    .and_then(|id| self.motion.health.damage.definition(id))
+                    .map_or("?", |d| d.name.as_str()),
             );
             if std::env::var_os("HORIZON_END_TRACE").is_some() {
                 let clouds: Vec<_> = self
