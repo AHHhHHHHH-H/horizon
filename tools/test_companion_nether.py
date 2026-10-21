@@ -247,6 +247,10 @@ def one_run(endpoint, seed, args, segment, out):
         'hud': hud,
         'taken_by_source': {k: round(sum(h['taken'] for h in hurts if h['source'] == k), 1)
                             for k in sorted({h['source'] for h in hurts})},
+        # Why each fireball got through: the shield down, still rising (it
+        # blocks 5 ticks after it is raised), or the fireball from beyond 90 degrees.
+        'fireball_misses': {k: sum(1 for h in hurts if h['source'] == 'minecraft:fireball' and h['blocked'] <= 0
+                                   and miss(h) == k) for k in ('shield down', 'rising', 'side or behind', 'other')},
         'fireballs_blocked': [sum(1 for h in hurts if h['source'] == 'minecraft:fireball' and h['blocked'] > 0),
                               sum(1 for h in hurts if h['source'] == 'minecraft:fireball')],
         'hurts_last': [(h['t'], h['source'].replace('minecraft:', ''), h['blocked'] > 0, round(h['taken'], 1),
@@ -263,6 +267,16 @@ def one_run(endpoint, seed, args, segment, out):
     command(endpoint, 'companion watch off')
     command(endpoint, 'quit')
     return result
+
+
+def miss(h):
+    if h.get('using') is None:
+        return 'shield down'
+    if h['using'] < 5:
+        return 'rising'
+    if h.get('angle') is not None and h['angle'] > 90:
+        return 'side or behind'
+    return 'other'
 
 
 def run_seed(args, segment, seed):

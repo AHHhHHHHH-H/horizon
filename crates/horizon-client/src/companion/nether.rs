@@ -7,10 +7,10 @@
 //! - **triangulation** from two eye-of-ender throws ([`Throw`],
 //!   [`intersect`]), as speedrunners do it: an eye's horizontal flight lies on
 //!   the line from where it was thrown toward the stronghold;
-//! - **the Fair search** for a fortress ([`Search`]): a square spiral of legs
-//!   around the portal, 128 blocks apart so that sight (64 blocks) sweeps
-//!   every block between them, skipping the region (27 × 27 chunks) of a
-//!   bastion it saw, since a region holds one Nether complex;
+//! - **the Fair search** for a fortress ([`Search`]): region by region
+//!   (`nether_complexes`: one fortress or bastion per 27 × 27 chunks, in its
+//!   first 23 × 23), the middle of each region's start area first, nearest
+//!   next, skipping the region of a bastion it saw;
 //! - what the blocks it sees mean: fortress, bastion, stronghold, portal
 //!   room ([`cue`]);
 //! - the **stance** against blazes ([`blaze_stance`]): shield up against a
@@ -322,15 +322,25 @@ pub fn region_of(x: i32, z: i32) -> [i32; 2] {
     [x.div_euclid(r), z.div_euclid(r)]
 }
 
-/// The Fair search: legs of a square spiral around where it started, each
-/// `step` blocks, skipping waypoints in regions it ruled out (a bastion seen
-/// there) and those it couldn't reach.
+/// `nether_complexes` separation: a complex starts in the first
+/// `REGION_CHUNKS - SEPARATION_CHUNKS` chunks of its region on each axis
+/// (RandomSpreadStructurePlacement: offset `nextInt(spacing - separation)`).
+pub const SEPARATION_CHUNKS: i32 = 4;
+
+/// The Fair search for a fortress, by Nether-complex region: each region
+/// (27 x 27 chunks) holds one complex, a fortress (weight 2) or a bastion
+/// (weight 3), starting somewhere in its first 23 x 23 chunks. So the search
+/// goes region by region: first the middle of each region's start area
+/// (from there sight, 64 blocks, and the complex's own size reach most of
+/// it), the nearest region next, then the four quarters of those it has not
+/// ruled out. A region where it saw a bastion is done (no fortress there).
 #[derive(Clone, Debug, Default)]
 pub struct Search {
     pub origin: [i32; 2],
-    pub step: i32,
-    /// The spiral's next point.
-    pub index: u32,
+    /// Where it is going, the last waypoint given.
+    pub at: Option<[i32; 2]>,
+    /// The waypoints given so far.
+    pub visited: HashSet<[i32; 2]>,
     /// Regions with a bastion: no fortress there.
     pub ruled_out: HashSet<[i32; 2]>,
     /// Waypoints given up on.
@@ -338,65 +348,77 @@ pub struct Search {
 }
 
 impl Search {
-    pub fn new(origin: [i32; 2], step: i32) -> Self {
+    pub fn new(origin: [i32; 2], _step: i32) -> Self {
         Self {
             origin,
-            step,
             ..Default::default()
         }
     }
-    /// The `i`-th corner of a square spiral of unit steps from the origin:
-    /// (1,0), (1,1), (-1,1), (-1,-1), (2,-1), (2,2), ...
-    pub fn spiral(i: u32) -> [i32; 2] {
-        let (mut x, mut z) = (0i32, 0i32);
-        let mut n = 0u32;
-        let mut leg = 1i32;
-        let dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-        let mut d = 0usize;
-        loop {
-            for _ in 0..2 {
-                if n == i {
-                    return [x, z];
+    /// The candidate waypoints of the regions within `limit` blocks of the
+    /// origin: pass 0 the middles of the start areas, pass 1 the quarters.
+    fn candidates(&self, limit: i32, pass: u8) -> Vec<[i32; 2]> {
+        let r = REGION_CHUNKS * 16;
+        let area = (REGION_CHUNKS - SEPARATION_CHUNKS) * 16;
+        let offsets: &[[i32; 2]] = if pass == 0 {
+            &[[area / 2, area / 2]]
+        } else {
+            &[
+                [area / 4, area / 4],
+                [area * 3 / 4, area / 4],
+                [area / 4, area * 3 / 4],
+                [area * 3 / 4, area * 3 / 4],
+            ]
+        };
+        let n = limit / r + 1;
+        let home = region_of(self.origin[0], self.origin[1]);
+        let mut out = Vec::new();
+        for rx in home[0] - n..=home[0] + n {
+            for rz in home[1] - n..=home[1] + n {
+                for o in offsets {
+                    let p = [rx * r + o[0], rz * r + o[1]];
+                    let d =
+                        f64::from(p[0] - self.origin[0]).hypot(f64::from(p[1] - self.origin[1]));
+                    if d <= f64::from(limit) {
+                        out.push(p);
+                    }
                 }
-                x += dirs[d][0] * leg;
-                z += dirs[d][1] * leg;
-                n += 1;
-                d = (d + 1) % 4;
             }
-            leg += 1;
         }
+        out
     }
-    /// The next waypoint (a column), skipping ruled-out regions; at most
-    /// `limit` blocks from the origin, else None (searched out).
+    /// The next waypoint (a column): the nearest to the last one not yet
+    /// given, in a region not ruled out; within `limit` blocks of the
+    /// origin, else None (searched out).
     pub fn next(&mut self, limit: i32) -> Option<[i32; 2]> {
-        for _ in 0..64 {
-            self.index += 1;
-            let s = Self::spiral(self.index);
-            let p = [
-                self.origin[0] + s[0] * self.step,
-                self.origin[1] + s[1] * self.step,
-            ];
-            if s[0].abs().max(s[1].abs()) * self.step > limit {
-                return None;
+        let from = self.at.unwrap_or(self.origin);
+        for pass in 0..2 {
+            let best = self
+                .candidates(limit, pass)
+                .into_iter()
+                .filter(|p| !self.visited.contains(p))
+                .filter(|p| !self.ruled_out.contains(&region_of(p[0], p[1])))
+                .min_by_key(|p| {
+                    let d = |a: [i32; 2], b: [i32; 2]| {
+                        i64::from(a[0] - b[0]).pow(2) + i64::from(a[1] - b[1]).pow(2)
+                    };
+                    (d(*p, from), d(*p, self.origin))
+                });
+            if let Some(p) = best {
+                self.visited.insert(p);
+                self.at = Some(p);
+                return Some(p);
             }
-            if self.ruled_out.contains(&region_of(p[0], p[1])) {
-                self.skipped += 1;
-                continue;
-            }
-            return Some(p);
         }
         None
     }
     /// The current waypoint again.
     pub fn current(&self) -> [i32; 2] {
-        let s = Self::spiral(self.index);
-        [
-            self.origin[0] + s[0] * self.step,
-            self.origin[1] + s[1] * self.step,
-        ]
+        self.at.unwrap_or(self.origin)
     }
     pub fn rule_out(&mut self, x: i32, z: i32) {
-        self.ruled_out.insert(region_of(x, z));
+        if self.ruled_out.insert(region_of(x, z)) {
+            self.skipped += 1;
+        }
     }
 }
 
@@ -453,7 +475,9 @@ pub const REACH: f64 = 3.0;
 /// sees it from further gets the shield while it shoots, the bow when it
 /// has arrows and none is shooting, else it walks up to the nearest
 /// between volleys (a blaze keeps its distance while it sees you).
-pub fn blaze_stance(health: f32, charged: bool, foes: &[Foe], arrows: bool) -> Stance {
+/// `low`: the health under which it backs off to heal (higher away from
+/// the spawner, where blazes come from every side and no box waits).
+pub fn blaze_stance(health: f32, low: f32, charged: bool, foes: &[Foe], arrows: bool) -> Stance {
     if foes.is_empty() {
         return Stance::Wait;
     }
@@ -462,7 +486,7 @@ pub fn blaze_stance(health: f32, charged: bool, foes: &[Foe], arrows: bool) -> S
     // shield up a volley does nothing, and blazes never come closer while
     // they see it (BlazeAttackGoal), so backing off from a crowd at a
     // spawner only leaves it hurt and none of them dead.
-    if health < 8.0 {
+    if health < low {
         return Stance::Retreat;
     }
     let nearest = (0..foes.len())
@@ -487,6 +511,34 @@ pub fn blaze_stance(health: f32, charged: bool, foes: &[Foe], arrows: bool) -> S
         return Stance::Block(nearest);
     }
     Stance::Close(nearest)
+}
+
+/// Where to hold the shield so it covers every one of `threats` (the
+/// shield blocks what comes within 90 degrees of the view, flattened): the
+/// mean of their horizontal directions from `eye`, a point 4 blocks that way
+/// at their mean height. None when they come from opposite sides (no one
+/// direction covers them all) or there are none.
+pub fn cover_point(eye: [f64; 3], threats: &[[f64; 3]]) -> Option<[f64; 3]> {
+    if threats.is_empty() {
+        return None;
+    }
+    let (mut sx, mut sz, mut sy) = (0.0, 0.0, 0.0);
+    for t in threats {
+        let (dx, dz) = (t[0] - eye[0], t[2] - eye[2]);
+        let len = dx.hypot(dz).max(1e-6);
+        sx += dx / len;
+        sz += dz / len;
+        sy += t[1];
+    }
+    let n = threats.len() as f64;
+    let (mx, mz) = (sx / n, sz / n);
+    let len = mx.hypot(mz);
+    // Every threat within 90 degrees of the mean, with a margin.
+    let covers = threats.iter().all(|t| {
+        let (dx, dz) = (t[0] - eye[0], t[2] - eye[2]);
+        (dx * mx + dz * mz) / (dx.hypot(dz).max(1e-6) * len.max(1e-6)) > 0.17
+    });
+    (len > 1e-3 && covers).then(|| [eye[0] + mx / len * 4.0, sy / n, eye[2] + mz / len * 4.0])
 }
 
 /// A waypoint `far` blocks off the line from `here` toward `goal`
@@ -750,26 +802,35 @@ mod tests {
     }
 
     #[test]
-    fn the_spiral_sweeps_outward_and_skips_bastion_regions() {
-        let firsts: Vec<[i32; 2]> = (0..7).map(Search::spiral).collect();
+    fn one_shield_direction_covers_two_blazes_unless_opposite() {
+        let eye = [0.0, 64.0, 0.0];
+        let c = cover_point(eye, &[[10.0, 66.0, 0.0], [0.0, 66.0, 10.0]]).unwrap();
+        assert!((c[0] - c[2]).abs() < 1e-9 && c[0] > 0.0);
+        assert!(cover_point(eye, &[[10.0, 66.0, 0.0], [-10.0, 66.0, 0.0]]).is_none());
+        assert!(cover_point(eye, &[]).is_none());
+    }
+
+    #[test]
+    fn the_search_goes_region_by_region_and_skips_bastion_regions() {
+        // From the middle of region (0, 0)'s start area: there first.
+        let mut s = Search::new([184, 184], 128);
+        assert_eq!(s.next(1200), Some([184, 184]));
+        // The nearest region's middle next (432 blocks over).
+        let second = s.next(1200).unwrap();
         assert_eq!(
-            firsts,
-            vec![[0, 0], [1, 0], [1, 1], [-1, 1], [-1, -1], [2, -1], [2, 2]]
+            (second[0] - 184).abs() + (second[1] - 184).abs(),
+            432,
+            "{second:?}"
         );
-        let mut s = Search::new([0, 0], 128);
-        assert_eq!(s.next(2000), Some([128, 0]));
-        // A bastion seen in the region of (128, 128): skipped.
-        s.rule_out(130, 130);
-        assert_eq!(s.next(2000), Some([-128, 128]));
-        assert_eq!(s.skipped, 1);
-        assert_eq!(s.current(), [-128, 128]);
-        // Searched out past the limit.
-        let mut s = Search::new([0, 0], 128);
+        // A bastion seen in region (1, 1): its waypoints are skipped.
+        s.rule_out(432 + 10, 432 + 10);
         let mut n = 0;
-        while s.next(300).is_some() {
+        while let Some(p) = s.next(1200) {
+            assert_ne!(region_of(p[0], p[1]), [1, 1], "{p:?}");
             n += 1;
         }
-        assert!((8..30).contains(&n), "{n}");
+        // The middles, then the quarters, all within the limit.
+        assert!((20..200).contains(&n), "{n}");
         assert_eq!(region_of(-1, 431), [-1, 0]);
         assert_eq!(region_of(432, -432), [1, -1]);
     }
@@ -804,25 +865,42 @@ mod tests {
             sees: true,
             charging: false,
         };
-        assert_eq!(blaze_stance(20.0, true, &[], false), Stance::Wait);
-        assert_eq!(blaze_stance(6.0, true, &[near], false), Stance::Retreat);
+        assert_eq!(blaze_stance(20.0, 8.0, true, &[], false), Stance::Wait);
+        assert_eq!(
+            blaze_stance(6.0, 8.0, true, &[near], false),
+            Stance::Retreat
+        );
+        // Away from the spawner it backs off sooner.
+        assert_eq!(
+            blaze_stance(11.0, 12.0, true, &[near], false),
+            Stance::Retreat
+        );
         // Two at it, half its health gone: it stays, the shield up to the
         // one shooting.
         assert_eq!(
-            blaze_stance(12.0, true, &[far_shooting, far], false),
+            blaze_stance(12.0, 8.0, true, &[far_shooting, far], false),
             Stance::Block(0)
         );
-        assert_eq!(blaze_stance(12.0, true, &[near], false), Stance::Strike(0));
         assert_eq!(
-            blaze_stance(20.0, true, &[far_shooting, near], false),
+            blaze_stance(12.0, 8.0, true, &[near], false),
+            Stance::Strike(0)
+        );
+        assert_eq!(
+            blaze_stance(20.0, 8.0, true, &[far_shooting, near], false),
             Stance::Strike(1)
         );
         assert_eq!(
-            blaze_stance(20.0, false, &[far_shooting, near], false),
+            blaze_stance(20.0, 8.0, false, &[far_shooting, near], false),
             Stance::Block(0)
         );
-        assert_eq!(blaze_stance(20.0, true, &[far], true), Stance::Shoot(0));
-        assert_eq!(blaze_stance(20.0, true, &[far], false), Stance::Close(0));
+        assert_eq!(
+            blaze_stance(20.0, 8.0, true, &[far], true),
+            Stance::Shoot(0)
+        );
+        assert_eq!(
+            blaze_stance(20.0, 8.0, true, &[far], false),
+            Stance::Close(0)
+        );
     }
 
     #[test]

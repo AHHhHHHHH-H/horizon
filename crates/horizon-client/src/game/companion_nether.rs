@@ -241,6 +241,9 @@ pub(super) struct NetherRun {
     /// The body's target (id, since, nearest it got): one it gets no nearer
     /// to is left alone.
     target_watch: Option<(u32, u64, f64)>,
+    /// The next point of the rings it walks round the fortress looking for
+    /// a spawner.
+    ring: u32,
 }
 
 impl NetherRun {
@@ -301,6 +304,7 @@ impl NetherRun {
             blaze_engaged: None,
             charging: Vec::new(),
             target_watch: None,
+            ring: 0,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -757,7 +761,9 @@ impl Game<'_> {
         let cube = self
             .mobs
             .iter()
-            .filter(|_| health < 8.0)
+            // (Not any more: they hop as fast as it runs, and every hit
+            // landed on its back; they are fought with the shield.)
+            .filter(|_| false)
             .filter(|m| m.alive() && &*m.kind.id == "minecraft:magma_cube")
             .map(mob_at)
             .filter(|at| c::distance(*at, pos) < 6.0 && (at[1] - pos[1]).abs() < 3.0)
@@ -799,7 +805,13 @@ impl Game<'_> {
         // beside it): onto solid ground first; a blast there throws it in
         // even through the shield.
         let ghast_near = self.mobs.iter().any(|m| {
-            m.alive() && &*m.kind.id == "minecraft:ghast" && c::distance(mob_at(m), pos) < 64.0
+            // One about to shoot that sees it (its fireballs are struck
+            // back; a blast still throws it when that fails).
+            m.alive()
+                && &*m.kind.id == "minecraft:ghast"
+                && m.extra.flag
+                && c::distance(mob_at(m), pos) < 64.0
+                && self.in_sight(from, [m.position.x, m.position.y + 2.0, m.position.z])
         });
         if ghast_near
             && !pressed
@@ -842,7 +854,18 @@ impl Game<'_> {
                 // Ticks until it is on it (they speed up: a little sooner).
                 toward.then(|| (at, d / speed.max(0.5)))
             })
-            .min_by(|x, y| x.1.total_cmp(&y.1));
+            .collect::<Vec<_>>();
+        // The shield toward all of those landing soon, when one direction
+        // covers them.
+        let soon: Vec<[f64; 3]> = incoming
+            .iter()
+            .filter(|(_, eta)| *eta <= 15.0)
+            .map(|(at, _)| *at)
+            .collect();
+        let incoming = incoming
+            .into_iter()
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|(at, eta)| (n::cover_point(from, &soon).unwrap_or(at), eta));
         // A blaze within reach and the attack charged: the blow first,
         // unless a fireball lands before the shield could be up again (it
         // blocks 5 ticks after it is raised). Blazes keep their distance
@@ -989,7 +1012,7 @@ impl Game<'_> {
         // after a few seconds.
         // One it has fought a long while without hurting it (out of its
         // reach behind something): left alone for a time.
-        let hoglin = hoglin.filter(|(id, _, reach, _)| {
+        let hoglin = hoglin.filter(|(id, _, _, _)| {
             let hp = self
                 .mobs
                 .iter()
@@ -998,8 +1021,9 @@ impl Game<'_> {
             match run.engaged {
                 Some((e, since, start)) if e == *id => {
                     if now.saturating_sub(since) > 400 {
-                        // (One at it is fought on.)
-                        if hp >= start && *reach > n::REACH {
+                        // (Even one in reach: 400 ticks and no blow landed,
+                        // something is between them.)
+                        if hp >= start {
                             run.ignored.push((*id, now + 600));
                             run.engaged = None;
                             return false;
@@ -1050,7 +1074,25 @@ impl Game<'_> {
                 // Up again straight after.
                 run.shield_until = 0;
             } else {
-                self.companion_shield(host, b, run, Some(centre), pos);
+                // Toward all of them close by (magma cubes split and come
+                // from every side), when one direction covers them.
+                let close: Vec<[f64; 3]> = self
+                    .mobs
+                    .iter()
+                    .filter(|m| {
+                        threat(m)
+                            && matches!(
+                                &*m.kind.id,
+                                "minecraft:magma_cube"
+                                    | "minecraft:hoglin"
+                                    | "minecraft:wither_skeleton"
+                            )
+                            && c::distance(mob_at(m), pos) < 5.0
+                    })
+                    .map(|m| [m.position.x, m.position.y + 0.7, m.position.z])
+                    .collect();
+                let toward = n::cover_point(from, &close).unwrap_or(centre);
+                self.companion_shield(host, b, run, Some(toward), pos);
             }
             return true;
         }
@@ -1129,13 +1171,17 @@ impl Game<'_> {
             .bunker
             .is_some_and(|bx| bx.built && c::horizontal(pos, at_block(bx.feet)) < 10.0);
         let here = feet(pos);
-        if health < 12.0
+        // (Away from the spawner sooner, and on a bridge or an edge too:
+        // its walls keep a knock back from throwing it off.)
+        let away = run
+            .spawner
+            .is_none_or(|s| c::horizontal(pos, at_block(s)) > 16.0);
+        if health < if away { 14.0 } else { 12.0 }
             && !box_near
             && foes.iter().any(|f| f.2.sees)
             && foes.iter().all(|f| f.2.reach > 4.0)
             && b.eating.is_none()
             && self.floor([here[0], here[1] - 1, here[2]])
-            && !self.on_edge(here)
         {
             let nearest = foes
                 .iter()
@@ -1193,7 +1239,13 @@ impl Game<'_> {
                 .spawner
                 .is_none_or(|s| c::horizontal(pos, at_block(s)) > 16.0);
         let list: Vec<Foe> = foes.iter().map(|f| f.2).collect();
-        let stance = n::blaze_stance(health, charged, &list, arrows);
+        let stance = n::blaze_stance(
+            health,
+            if travelling { 12.0 } else { 8.0 },
+            charged,
+            &list,
+            arrows,
+        );
         if let Stance::Strike(i) | Stance::Block(i) | Stance::Close(i) | Stance::Shoot(i) = stance {
             let id = foes[i].0;
             let hp = self
@@ -1225,7 +1277,15 @@ impl Game<'_> {
             }
             Stance::Block(i) => {
                 let (_, at, f) = foes[i];
-                self.companion_shield(host, b, run, Some(at), pos);
+                // Toward every blaze about to shoot, when one direction
+                // covers them all.
+                let shooters: Vec<[f64; 3]> = foes
+                    .iter()
+                    .filter(|f| f.2.sees && f.2.charging)
+                    .map(|f| f.1)
+                    .collect();
+                let toward = n::cover_point(from, &shooters).unwrap_or(at);
+                self.companion_shield(host, b, run, Some(toward), pos);
                 // Close in on one near enough and not too high to reach,
                 // where the way is safe (no lava, no drop) and it isn't
                 // passing by.
@@ -1684,7 +1744,8 @@ impl Game<'_> {
         let f = bx.feet;
         let low = [f[0] + bx.front[0], f[1], f[2] + bx.front[1]];
         let high = [low[0], f[1] + 1, low[2]];
-        if !run.sealed && health < 12.0 {
+        // A box it walled itself into to heal closes at once.
+        if !run.sealed && (health < 12.0 || bx.heal_only && health < 16.0) {
             run.sealed = true;
         }
         if run.sealed && health >= 19.0 && (food >= 18 || !beef) {
@@ -2389,9 +2450,23 @@ impl Game<'_> {
                 let seen = self.recall_cue(b, run, Cue::Fortress, fortress, 160);
                 run.waypoint = n::frontier(&seen, &run.visited, here, 20);
                 if run.waypoint.is_none() {
+                    // Nothing more of it in memory: rings round where it
+                    // found the fortress, 8 points each, 40 blocks apart
+                    // (not the region search: that leads away from it).
                     run.note = "looking round the fortress".into();
                     run.scanned = false;
-                    return self.explore(host, b, run, pos, here[1]);
+                    if run.ring >= 32 {
+                        let why = format!("{}: searched out", run.leg.id());
+                        return self.companion_nether_end(b, run, why);
+                    }
+                    let a = f64::from(run.ring % 8) * std::f64::consts::FRAC_PI_4;
+                    let r = 40.0 * f64::from(1 + run.ring / 8);
+                    run.ring += 1;
+                    run.waypoint = Some([
+                        fortress[0] + (a.cos() * r) as i32,
+                        here[1],
+                        fortress[2] + (a.sin() * r) as i32,
+                    ]);
                 }
             }
             let Some(w) = run.waypoint else { return };
