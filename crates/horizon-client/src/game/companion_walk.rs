@@ -34,6 +34,17 @@ const REPLANS: u32 = 8;
 const WAYPOINT: f64 = 40.0;
 /// Nodes a plan opens at most.
 const BUDGET: u32 = 5000;
+/// The share of a tick a walk plan may take (the rest waits for the next).
+const PLAN_SLICE: std::time::Duration = std::time::Duration::from_micros(1500);
+
+/// A walk plan under way and what it read of the world so far.
+pub(super) struct Planning {
+    search: moves::Search,
+    digs: HashMap<u32, u16>,
+    states: HashMap<u32, Cell>,
+    cells: HashMap<[i32; 3], Cell>,
+    spent: std::time::Duration,
+}
 
 /// Blocks it may place to bridge and pillar, cheapest first.
 pub(super) const THROWAWAY: [&str; 16] = [
@@ -142,6 +153,8 @@ pub(super) struct Walk {
     chase: Option<Goal>,
     /// No new plan before this tick (the last one found no way).
     wait: u64,
+    /// A plan under way, a slice a tick.
+    search: Option<Box<Planning>>,
     /// What the caller builds or digs with it (for the status line).
     pub note: String,
     /// Blocks placed and dug, plans made (the run's numbers).
@@ -154,6 +167,7 @@ pub(super) struct Walk {
 
 impl Walk {
     pub fn reset(&mut self) {
+        self.search = None;
         self.route = None;
         self.goal = None;
         self.leg = None;
@@ -338,21 +352,37 @@ impl Game<'_> {
     }
 
     /// Plan a path for `b` from `from` to `goal` with Movement 2.0.
-    pub(super) fn companion_plan_walk(&mut self, host: &LanHost, b: &mut Body, from: [i32; 3], goal: Goal) -> Route {
-        let Some(g) = host.hub.guest(b.conn) else {
-            return Route::default();
-        };
+    /// Plan a walk from `from` to `goal` a slice a tick (PLAN_SLICE of the
+    /// tick at most): the route once the search is done, None while it
+    /// goes on. The world is read afresh each slice.
+    pub(super) fn companion_plan_walk(
+        &mut self,
+        host: &LanHost,
+        b: &mut Body,
+        from: [i32; 3],
+        goal: Goal,
+    ) -> Option<Route> {
+        let _slow = super::companion::SlowLog::new("walk plan");
+        let g = host.hub.guest(b.conn)?;
         let inventory = g.inventory.clone();
-        let rules = Rules {
-            blocks: Self::companion_blocks(&inventory),
-            stone: self.stone_ticks(&inventory),
-            budget: BUDGET,
-            // A few milliseconds of the tick at most: a longer way is
-            // planned a leg at a time.
-            time: std::time::Duration::from_millis(12),
-            min_y: self.dim.min_y() + 1,
-            ..Default::default()
-        };
+        let same = b.walk.search.as_ref().is_some_and(|p| p.search.goal == goal);
+        if !same {
+            let rules = Rules {
+                blocks: Self::companion_blocks(&inventory),
+                stone: self.stone_ticks(&inventory),
+                budget: BUDGET,
+                min_y: self.dim.min_y() + 1,
+                ..Default::default()
+            };
+            b.walk.search = Some(Box::new(Planning {
+                search: moves::Search::new(from, goal, rules),
+                digs: HashMap::new(),
+                states: HashMap::new(),
+                cells: HashMap::with_capacity(8192),
+                spent: std::time::Duration::ZERO,
+            }));
+        }
+        let mut p = b.walk.search.take()?;
         let started = std::time::Instant::now();
         let route = {
             let t = GameTerrain {
@@ -360,21 +390,34 @@ impl Game<'_> {
                 inventory: &inventory,
                 level: b.senses.level,
                 memory: b.senses.memory(),
-                near: from,
+                near: p.search.from,
                 bad: &b.walk.bad,
                 keep: &b.walk.keep,
-                digs: RefCell::new(HashMap::new()),
-                states: RefCell::new(HashMap::new()),
-                cells: RefCell::new(HashMap::with_capacity(8192)),
+                digs: RefCell::new(std::mem::take(&mut p.digs)),
+                states: RefCell::new(std::mem::take(&mut p.states)),
+                cells: RefCell::new(std::mem::take(&mut p.cells)),
                 min_y: self.dim.min_y(),
             };
-            moves::find(&t, from, goal, &rules)
+            let route = p.search.run(&t, started + PLAN_SLICE);
+            p.digs = t.digs.into_inner();
+            p.states = t.states.into_inner();
+            p.cells = t.cells.into_inner();
+            route
         };
         let took = started.elapsed();
-        b.walk.plans += 1;
-        b.walk.plan_time += took;
+        p.spent += took;
         b.walk.plan_max = b.walk.plan_max.max(took);
-        route
+        match route {
+            Some(route) => {
+                b.walk.plans += 1;
+                b.walk.plan_time += p.spent;
+                Some(route)
+            }
+            None => {
+                b.walk.search = Some(p);
+                None
+            }
+        }
     }
 
     /// Go to `goal` with Movement 2.0: Arrived, Moving, or Stuck once
@@ -413,7 +456,10 @@ impl Game<'_> {
                 return Steer::Moving;
             }
             let leg = leg_toward(f, goal);
-            let route = self.companion_plan_walk(host, b, f, leg);
+            let Some(route) = self.companion_plan_walk(host, b, f, leg) else {
+                // Still planning: it waits where it is.
+                return Steer::Moving;
+            };
             // One plan every few ticks at most, whatever undoes them.
             b.walk.wait = b.ticks + 5;
             if route.steps.is_empty() {

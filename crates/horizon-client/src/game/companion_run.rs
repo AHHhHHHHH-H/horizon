@@ -228,6 +228,10 @@ struct GameKnowledge<'a, 'g> {
     game: &'a Game<'g>,
     book: Arc<super::companion_craft::BookIndex>,
     mined: Arc<HashMap<String, Vec<Mined>>>,
+    smelted: Arc<HashMap<String, Vec<String>>>,
+    /// Tool, block → whether the tool harvests it (asked for every item
+    /// it carries at every tool the plan needs).
+    harvests: std::cell::RefCell<HashMap<(String, String), bool>>,
     /// Blocks it remembers: the nearest of each, how far.
     known: HashMap<String, f64>,
     mobs: HashMap<String, f64>,
@@ -264,20 +268,20 @@ impl Knowledge for GameKnowledge<'_, '_> {
         vec![c::namespaced(mob)]
     }
     fn smelted_from(&self, item: &str) -> Vec<String> {
-        self.game
-            .res
-            .recipes()
-            .cooking
-            .iter()
-            .filter(|r| r.kind.ends_with("smelting") && *r.result.item == *item)
-            .flat_map(|r| r.ingredient.1.iter().take(2).cloned())
-            .collect()
+        self.smelted.get(item).cloned().unwrap_or_default()
     }
     fn harvests(&self, tool: &str, block: &str) -> bool {
-        self.game
+        let key = (tool.to_owned(), block.to_owned());
+        if let Some(&h) = self.harvests.borrow().get(&key) {
+            return h;
+        }
+        let h = self
+            .game
             .res
             .items()
-            .correct_for_drops(Some(&ItemStack::new(tool, 1)), block)
+            .correct_for_drops(Some(&ItemStack::new(tool, 1)), block);
+        self.harvests.borrow_mut().insert(key, h);
+        h
     }
     fn gather_cost(&self, block: &str) -> Option<u32> {
         if self.exhausted.iter().any(|b| b == block) {
@@ -462,6 +466,7 @@ impl Game<'_> {
     }
 
     fn companion_run_supervise(&mut self, host: &mut LanHost, b: &mut Body, run: &mut Run, pos: [f64; 3]) -> bool {
+        let _slow = super::companion::SlowLog::new("run supervise");
         let now = self.world.game_time.max(0) as u64;
         let Some(g) = host.hub.guest(b.conn) else {
             return false;
@@ -650,6 +655,7 @@ impl Game<'_> {
     }
 
     fn companion_run_inner(&mut self, host: &mut LanHost, b: &mut Body, run: &mut Run, pos: [f64; 3]) {
+        let _slow = super::companion::SlowLog::new("run");
         let now = self.world.game_time.max(0) as u64;
         let ticks = now.saturating_sub(run.start);
         let Some(g) = host.hub.guest(b.conn) else {
@@ -916,6 +922,7 @@ impl Game<'_> {
         goals: &[(String, u32)],
         pos: [f64; 3],
     ) -> techtree::TechPlan {
+        let _slow = super::companion::SlowLog::new("tech plan");
         let here = feet(pos);
         // What it gave up on far behind it is worth a look again.
         // Stone and the like are everywhere: a few blocks on is elsewhere.
@@ -925,11 +932,20 @@ impl Game<'_> {
         });
         let book = self.companion_book();
         let mined = self.companion_mined_index();
+        let smelted = self.companion_smelted_index();
         let facts = self.res.facts();
+        // The nearest of each state first (integers, no names), then of
+        // each block: memory holds tens of thousands of blocks.
+        let mut by_state: HashMap<u32, i64> = HashMap::new();
+        for (p, s) in b.senses.memory().iter() {
+            let d2: i64 = (0..3).map(|k| i64::from(p[k] - here[k]).pow(2)).sum();
+            let e = by_state.entry(s).or_insert(d2);
+            *e = (*e).min(d2);
+        }
         let mut known: HashMap<String, f64> = HashMap::new();
         let mut stations = Stations::default();
-        for (p, s) in b.senses.memory().iter() {
-            let d = (0..3).map(|k| f64::from(p[k] - here[k]).powi(2)).sum::<f64>().sqrt();
+        for (s, d2) in by_state {
+            let d = (d2 as f64).sqrt();
             let name = &*facts.get(horizon_world::registry::BlockStateId(s)).name;
             if d <= 16.0 && name == "minecraft:crafting_table" {
                 stations.crafting_table = true;
@@ -964,6 +980,8 @@ impl Game<'_> {
             game: self,
             book,
             mined,
+            smelted,
+            harvests: Default::default(),
             known,
             mobs,
             level: b.senses.level,
@@ -974,6 +992,23 @@ impl Game<'_> {
     }
 
     /// Item → the blocks that drop it, and the tool each needs (once).
+    /// Item → the inputs that smelt into it (two of each recipe's options).
+    fn companion_smelted_index(&mut self) -> Arc<HashMap<String, Vec<String>>> {
+        if let Some(m) = &self.companions.smelted {
+            return m.clone();
+        }
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        for r in self.res.recipes().cooking.iter().filter(|r| r.kind.ends_with("smelting")) {
+            index
+                .entry(r.result.item.to_string())
+                .or_default()
+                .extend(r.ingredient.1.iter().take(2).cloned());
+        }
+        let index = Arc::new(index);
+        self.companions.smelted = Some(index.clone());
+        index
+    }
+
     pub(super) fn companion_mined_index(&mut self) -> Arc<HashMap<String, Vec<Mined>>> {
         if let Some(m) = &self.companions.mined {
             return m.clone();
@@ -1146,6 +1181,7 @@ impl Game<'_> {
         pos: [f64; 3],
         inventory: &[Option<ItemStack>],
     ) {
+        let _slow = super::companion::SlowLog::new("cast");
         let have = |i: &str| count(inventory, i);
         if run.cast.as_ref().is_none_or(|c| c.site.is_none()) {
             b.walk.keep.clear();

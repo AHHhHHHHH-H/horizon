@@ -138,6 +138,7 @@ impl Game<'_> {
 
     /// Its eye this tick: a few rays, what they reach remembered.
     pub(super) fn companion_see(&mut self, b: &mut Body, pos: [f64; 3]) {
+        let _slow = super::companion::SlowLog::new("sight");
         let started = std::time::Instant::now();
         let table = self.companion_sight_table();
         b.senses.enter(b.dim.id());
@@ -166,6 +167,7 @@ impl Game<'_> {
         search: &mut Option<BlockSearch>,
         budget: u32,
     ) -> Option<Vec<[i32; 3]>> {
+        let _slow = super::companion::SlowLog::new("known blocks");
         let wanted = |s: u32| states.get(s as usize).copied().unwrap_or(false);
         let mut scanned = Vec::new();
         if let Some(r) = b.senses.level.xray_radius(radius) {
@@ -191,6 +193,7 @@ impl Game<'_> {
     /// `ruined_portal`, `bastion_remnant`) it knows of: seen, or at Scout and
     /// All-knowing, located as `/locate` would (once per 256 blocks moved).
     pub(super) fn companion_structure(&mut self, b: &mut Body, kind: &str, pos: [f64; 3]) -> Option<[i32; 3]> {
+        let _slow = super::companion::SlowLog::new("structure");
         let here = pos.map(|v| v.floor() as i32);
         if b.senses.level.knows_structures() {
             let key = format!("located {kind}");

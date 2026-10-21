@@ -29,6 +29,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Block reads a search makes per tick at most (a whole section is 4096).
 const SEARCH_BUDGET: u32 = 6 * 4096;
+/// Blocks a search finds before it stops (BlockSearch::done).
+const FOUND_ENOUGH: usize = 384;
 /// Ticks a target may take before it is given up as out of reach.
 const TARGET_PATIENCE: u64 = 900;
 /// Ticks a collect looks round (a full turn of its eye) before it says
@@ -95,8 +97,12 @@ impl BlockSearch {
         }
     }
 
+    /// Done when every section is read, or once it has found enough (the
+    /// sections go nearest first, so those are the nearest few hundred):
+    /// a search for stone would otherwise list a hundred thousand blocks
+    /// and sort them in one tick.
     pub fn done(&self) -> bool {
-        self.next >= self.sections.len()
+        self.next >= self.sections.len() || self.found.len() >= FOUND_ENOUGH
     }
 
     /// Scan sections until `budget` block reads are spent; true when done.
@@ -454,6 +460,7 @@ impl Game<'_> {
         command: CompanionCommand,
         resume: Skill,
     ) -> Result<Task, String> {
+        let _slow = super::companion::SlowLog::new("task");
         let g = host.hub.guest(b.conn).ok_or("no body")?;
         let (skill, kind) = match command {
             CompanionCommand::Collect { what, count } => {
@@ -564,6 +571,7 @@ impl Game<'_> {
 
     /// Before it picks a fight: it goes to bed when its owner does.
     pub(super) fn companion_work_reflexes(&mut self, host: &mut LanHost, b: &mut Body) {
+        let _slow = super::companion::SlowLog::new("work reflexes");
         // Work left over from a skill something else ended (a respawn).
         let working = matches!(
             b.skill,
@@ -616,6 +624,7 @@ impl Game<'_> {
         pos: [f64; 3],
         owner: [f64; 3],
     ) {
+        let _slow = super::companion::SlowLog::new("work");
         let started = std::time::Instant::now();
         let Some(mut task) = b.work.tasks.pop() else {
             b.skill = if b.run.is_some() { Skill::Run } else { Skill::Follow };

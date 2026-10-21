@@ -11,6 +11,7 @@
 //! made-up tech tree.
 use super::work::CraftRecipe;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// A block that drops an item, and the cheapest tool that makes it drop
@@ -131,11 +132,37 @@ const CRAFT: u32 = 10;
 /// Ticks a furnace takes per item.
 const SMELT: u32 = 200;
 
+/// The planner's state, saved and restored at every choice: cheap to
+/// clone (shared action list, shared item names).
 #[derive(Clone)]
 struct State {
-    stock: HashMap<String, u32>,
-    actions: Vec<Action>,
+    stock: HashMap<Rc<str>, u32>,
+    /// The actions planned, last first.
+    actions: Option<Rc<Planned>>,
     stations: Stations,
+}
+
+struct Planned {
+    action: Action,
+    before: Option<Rc<Planned>>,
+}
+
+impl State {
+    fn push(&mut self, action: Action) {
+        let before = self.actions.take();
+        self.actions = Some(Rc::new(Planned { action, before }));
+    }
+    /// The actions in order.
+    fn actions(&self) -> Vec<Action> {
+        let mut out = Vec::new();
+        let mut at = self.actions.as_deref();
+        while let Some(p) = at {
+            out.push(p.action.clone());
+            at = p.before.as_deref();
+        }
+        out.reverse();
+        out
+    }
 }
 
 /// Plans goals against a stock.
@@ -154,8 +181,8 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         Self {
             k,
             state: State {
-                stock,
-                actions: Vec::new(),
+                stock: stock.into_iter().map(|(i, n)| (Rc::from(i), n)).collect(),
+                actions: None,
                 stations,
             },
             visiting: Vec::new(),
@@ -198,7 +225,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
     /// (at its first place, which comes before every use of it).
     pub fn finish(self) -> TechPlan {
         let mut actions: Vec<Action> = Vec::new();
-        for a in self.state.actions {
+        for a in self.state.actions() {
             let same = actions.iter_mut().find(|b| match (&**b, &a) {
                 (
                     Action::Mine { item, block, .. },
@@ -251,12 +278,18 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
     }
 
     fn take(&mut self, item: &str, n: u32) {
-        let e = self.state.stock.entry(item.to_owned()).or_default();
-        *e = e.saturating_sub(n);
+        if let Some(e) = self.state.stock.get_mut(item) {
+            *e = e.saturating_sub(n);
+        }
     }
 
     fn put(&mut self, item: &str, n: u32) {
-        *self.state.stock.entry(item.to_owned()).or_default() += n;
+        match self.state.stock.get_mut(item) {
+            Some(e) => *e += n,
+            None => {
+                self.state.stock.insert(Rc::from(item), n);
+            }
+        }
     }
 
     /// Get `n` of `item` into the stock and take them out of it; the cost.
@@ -308,7 +341,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         // Hunted.
         for mob in self.k.hunted_from(item) {
             let c = self.k.hunt_cost(&mob).map(|per| {
-                self.state.actions.push(Action::Hunt {
+                self.state.push(Action::Hunt {
                     item: item.to_owned(),
                     count: short,
                     mob: mob.clone(),
@@ -346,7 +379,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         for (options, n) in groups {
             cost += self.one_of(options, n)?;
         }
-        self.state.actions.push(Action::Craft {
+        self.state.push(Action::Craft {
             item: item.to_owned(),
             count: times * r.count,
         });
@@ -388,7 +421,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         }
         cost += self.need(input, short)?;
         cost += self.fuel(short)?;
-        self.state.actions.push(Action::Smelt {
+        self.state.push(Action::Smelt {
             item: item.to_owned(),
             input: input.to_owned(),
             count: short,
@@ -406,7 +439,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
             .stock
             .iter()
             .filter(|(_, n)| **n > 0)
-            .filter_map(|(i, _)| super::work::fuel_value(i).map(|v| (i.clone(), v)))
+            .filter_map(|(i, _)| super::work::fuel_value(i).map(|v| (i.to_string(), v)))
             .collect();
         let mut fuels: Vec<(String, f32)> =
             FUELS.iter().map(|(i, v)| ((*i).to_owned(), *v)).collect();
@@ -432,7 +465,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
         if let Some(tool) = &m.tool {
             cost += self.ensure_tool(tool, Some(&m.block))?;
         }
-        self.state.actions.push(Action::Mine {
+        self.state.push(Action::Mine {
             item: item.to_owned(),
             count: short,
             block: m.block.clone(),
@@ -449,7 +482,7 @@ impl<'a, K: Knowledge> TechPlanner<'a, K> {
             *n > 0
                 && match block {
                     Some(b) => k.harvests(i, b),
-                    None => i == tool,
+                    None => &**i == tool,
                 }
         });
         if carried {

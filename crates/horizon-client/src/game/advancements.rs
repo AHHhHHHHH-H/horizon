@@ -394,6 +394,16 @@ impl Game<'_> {
         let Some(list) = tree.by_trigger.get(name) else {
             return;
         };
+        self.trigger_among(&tree, list, test);
+    }
+    /// [`Self::trigger`] over some of a trigger's criteria (`list`, in the
+    /// tree's order).
+    fn trigger_among(
+        &mut self,
+        tree: &Tree,
+        list: &[(usize, usize)],
+        test: impl Fn(&Value, &dyn adv::World) -> bool,
+    ) {
         let mut hits = Vec::new();
         {
             let view = View(self);
@@ -437,12 +447,26 @@ impl Game<'_> {
         } else {
             self.recipe_toast(unlocked);
         }
-        for r in unlocked {
-            let r = r.clone();
-            self.trigger("minecraft:recipe_unlocked", move |c, _| {
-                c["recipes"].as_str() == Some(r.as_str())
-            });
+        // Only the criteria naming these recipes (the trigger has one per
+        // recipe in the book).
+        if unlocked.is_empty() || self.remote.is_some() || self.no_player_here() {
+            return;
         }
+        self.load_advancements();
+        let tree = self.adv.tree.clone();
+        let index = tree.recipe_index();
+        let mut list: Vec<(usize, usize)> = unlocked
+            .iter()
+            .filter_map(|r| index.get(r))
+            .flatten()
+            .copied()
+            .collect();
+        list.sort_unstable();
+        list.dedup();
+        let set: std::collections::HashSet<&str> = unlocked.iter().map(String::as_str).collect();
+        self.trigger_among(&tree, &list, move |c, _| {
+            c["recipes"].as_str().is_some_and(|r| set.contains(r))
+        });
     }
     /// `PlayerAdvancements.award` once done: rewards, toast, announcement.
     fn award(&mut self, index: usize) {
@@ -562,7 +586,32 @@ impl Game<'_> {
                     .is_some_and(|i| s.count >= i.max_stack)
             })
             .count() as f64;
-        self.trigger("minecraft:inventory_changed", move |c, w| {
+        let ids: std::collections::HashSet<String> = stacks.iter().map(|s| s.id.to_string()).collect();
+        // `items` names only plain ids (no tag), and none is in `ids`.
+        fn absent(v: &Value, ids: &std::collections::HashSet<String>) -> bool {
+            match v {
+                Value::String(s) => !s.starts_with('#') && !ids.contains(s.as_str()),
+                Value::Array(a) => !a.is_empty() && a.iter().all(|x| absent(x, ids)),
+                _ => false,
+            }
+        }
+        if self.remote.is_some() || self.no_player_here() {
+            return;
+        }
+        self.load_advancements();
+        // Only the criteria that may match what it carries (hundreds of
+        // recipe criteria each name one item).
+        let tree = self.adv.tree.clone();
+        let index = tree.inventory_index();
+        let mut list = index.rest.clone();
+        for id in &ids {
+            if let Some(l) = index.by_item.get(id) {
+                list.extend_from_slice(l);
+            }
+        }
+        list.sort_unstable();
+        list.dedup();
+        self.trigger_among(&tree, &list, move |c, w| {
             let slots = &c["slots"];
             let range = |k: &str, v: f64| {
                 let r = &slots[k];
@@ -579,6 +628,12 @@ impl Game<'_> {
                 .as_array()
                 .map(|a| a.iter().collect())
                 .unwrap_or_default();
+            // A predicate naming only plain item ids, none of them carried,
+            // matches no stack: most of the recipe book's criteria end here
+            // without testing every stack against them.
+            if wanted.iter().any(|p| absent(&p["items"], &ids)) {
+                return false;
+            }
             for s in &stacks {
                 wanted.retain(|p| !adv::item(p, s, w));
             }
@@ -967,10 +1022,7 @@ impl Game<'_> {
             });
             positions.push((a.x, a.y));
         }
-        let mut tree = Tree {
-            list,
-            ..Tree::default()
-        };
+        let mut tree = Tree::with_list(list);
         for (i, a) in tree.list.iter().enumerate() {
             tree.by_id.insert(a.id.clone(), i);
         }

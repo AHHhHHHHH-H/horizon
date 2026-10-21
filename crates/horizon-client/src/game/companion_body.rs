@@ -120,6 +120,7 @@ impl Game<'_> {
     /// One companion's decisions; false when it stays behind in the level
     /// its owner left.
     fn tick_companion(&mut self, host: &mut LanHost, b: &mut Body, owner: [f64; 3]) -> bool {
+        let _slow = super::companion::SlowLog::new("companion tick");
         b.ticks += 1;
         b.keys = Keys::default();
         if host.hub.guest(b.conn).is_none() {
@@ -475,6 +476,7 @@ impl Game<'_> {
     /// Hostiles new in view near the owner or the companion are called out
     /// with their clock bearing from the owner's facing.
     fn companion_callouts(&mut self, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
+        let _slow = super::companion::SlowLog::new("callouts");
         let mut seen = Vec::new();
         let mut new = Vec::new();
         for m in self.mobs.iter().filter(|m| threat(m)) {
@@ -1069,6 +1071,7 @@ impl Game<'_> {
 
     /// Its best armour on and its best weapon in hand.
     pub(super) fn companion_gear(&mut self, host: &mut LanHost, b: &mut Body) {
+        let _slow = super::companion::SlowLog::new("gear");
         if b.eating.is_some() || b.work.busy_hands() {
             return;
         }

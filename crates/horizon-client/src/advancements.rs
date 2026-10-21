@@ -53,6 +53,19 @@ pub struct Tree {
     pub by_id: HashMap<String, usize>,
     /// trigger id -> (advancement index, criterion index).
     pub by_trigger: HashMap<String, Vec<(usize, usize)>>,
+    /// `inventory_changed` criteria by an item one of their predicates
+    /// names (built on first use).
+    inventory: std::sync::OnceLock<InventoryIndex>,
+    /// `recipe_unlocked` criteria by recipe (built on first use).
+    recipes: std::sync::OnceLock<HashMap<String, Vec<(usize, usize)>>>,
+}
+/// The `inventory_changed` criteria: those with a predicate naming only
+/// plain item ids, under each of those ids (none of them carried, the
+/// criterion can't match), and the rest.
+#[derive(Default)]
+pub struct InventoryIndex {
+    pub by_item: HashMap<String, Vec<(usize, usize)>>,
+    pub rest: Vec<(usize, usize)>,
 }
 fn frame(v: &Value) -> Frame {
     match v.as_str() {
@@ -93,10 +106,70 @@ impl Tree {
                 tree.list.push(a);
             }
         }
+        // Built here, off the game thread (the tree loads on a worker).
+        tree.inventory_index();
+        tree.recipe_index();
         tree
     }
     pub fn get(&self, id: &str) -> Option<&Advancement> {
         self.by_id.get(id).map(|&i| &self.list[i])
+    }
+    /// A tree of these advancements, not indexed yet.
+    pub fn with_list(list: Vec<Advancement>) -> Tree {
+        Tree {
+            list,
+            ..Tree::default()
+        }
+    }
+    /// The `recipe_unlocked` criteria naming each recipe.
+    pub fn recipe_index(&self) -> &HashMap<String, Vec<(usize, usize)>> {
+        self.recipes.get_or_init(|| {
+            let mut index: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+            for &(ai, ci) in self.by_trigger.get("minecraft:recipe_unlocked").into_iter().flatten() {
+                if let Some(r) = self.list[ai].criteria[ci].conditions["recipes"].as_str() {
+                    index.entry(r.to_owned()).or_default().push((ai, ci));
+                }
+            }
+            index
+        })
+    }
+    pub fn inventory_index(&self) -> &InventoryIndex {
+        self.inventory.get_or_init(|| {
+            fn plain(v: &Value) -> Option<Vec<String>> {
+                match v {
+                    Value::String(s) if !s.starts_with('#') => Some(vec![s.clone()]),
+                    Value::Array(a) if !a.is_empty() => {
+                        let mut out = Vec::new();
+                        for x in a {
+                            out.extend(plain(x)?);
+                        }
+                        Some(out)
+                    }
+                    _ => None,
+                }
+            }
+            let mut index = InventoryIndex::default();
+            for &(ai, ci) in self.by_trigger.get("minecraft:inventory_changed").into_iter().flatten() {
+                let c = &self.list[ai].criteria[ci].conditions;
+                let key = c["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find_map(|p| plain(&p["items"]));
+                match key {
+                    Some(ids) => {
+                        for id in ids {
+                            let list = index.by_item.entry(id).or_default();
+                            if list.last() != Some(&(ai, ci)) {
+                                list.push((ai, ci));
+                            }
+                        }
+                    }
+                    None => index.rest.push((ai, ci)),
+                }
+            }
+            index
+        })
     }
 }
 fn collect(root: &Path, dir: &Path, ns: &str, out: &mut Vec<(String, std::path::PathBuf)>) {

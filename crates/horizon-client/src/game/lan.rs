@@ -913,6 +913,7 @@ impl Game<'_> {
             return;
         };
         let metered = (!host.companions.is_empty()).then(std::time::Instant::now);
+        let metered_cpu = metered.and_then(|_| horizon_client::spans::thread_cpu());
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         // The host's own commands' (and command blocks') players moving
@@ -1052,17 +1053,26 @@ impl Game<'_> {
         if !host.companions.is_empty() {
             horizon_client::spans::time("companions", || self.tick_companions(&mut host));
         }
-        self.tick_guests(&mut host);
+        {
+            let _slow = super::companion::SlowLog::new("guests");
+            self.tick_guests(&mut host);
+        }
         self.lan_living_flags(&mut host);
         self.tick_server_travel(&mut host);
         self.lan_swings(&mut host);
-        self.lan_update_streaming(&host);
+        {
+            let _slow = super::companion::SlowLog::new("guest streaming");
+            self.lan_update_streaming(&host);
+        }
         self.lan_update_models(&mut host);
         self.lan_update_waypoints(&mut host, state.as_ref());
         drop(holding);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         if let Some(started) = metered {
-            host.cost.hub(started.elapsed());
+            let cpu = metered_cpu
+                .zip(horizon_client::spans::thread_cpu())
+                .map(|(a, b)| b.saturating_sub(a));
+            host.cost.hub(started.elapsed(), cpu);
         }
         self.lan = Some(host);
     }

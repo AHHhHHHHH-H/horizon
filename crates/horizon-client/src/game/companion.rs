@@ -99,13 +99,26 @@ pub(super) struct Cost {
     total: std::time::Duration,
     max: std::time::Duration,
     views: std::time::Duration,
+    /// Each tick's milliseconds (for the percentiles), a day's worth at most.
+    samples: Vec<f32>,
+    /// The same in the thread's CPU time (what the work took, without the
+    /// time the OS gave other threads).
+    cpu: Vec<f32>,
 }
 
 impl Cost {
-    pub fn hub(&mut self, d: std::time::Duration) {
+    pub fn hub(&mut self, d: std::time::Duration, cpu: Option<std::time::Duration>) {
+        if let Some(c) = cpu
+            && self.cpu.len() < 200_000
+        {
+            self.cpu.push(c.as_secs_f32() * 1000.0);
+        }
         self.ticks += 1;
         self.total += d;
         self.max = self.max.max(d);
+        if self.samples.len() < 200_000 {
+            self.samples.push(d.as_secs_f32() * 1000.0);
+        }
     }
     pub fn views(&mut self, d: std::time::Duration) {
         self.total += d;
@@ -114,7 +127,23 @@ impl Cost {
     /// Mean and worst milliseconds a tick, then clears.
     fn take(&mut self) -> Value {
         let n = self.ticks.max(1) as f64;
+        let mut sorted = std::mem::take(&mut self.samples);
+        sorted.sort_by(f32::total_cmp);
+        let at = |q: f64| sorted.get(((sorted.len() as f64 - 1.0) * q).round().max(0.0) as usize).copied().unwrap_or(0.0);
+        let over = |ms: f32| sorted.iter().filter(|v| **v > ms).count();
+        let mut cpu = std::mem::take(&mut self.cpu);
+        cpu.sort_by(f32::total_cmp);
+        let cpu_at = |q: f64| cpu.get(((cpu.len() as f64 - 1.0) * q).round().max(0.0) as usize).copied().unwrap_or(0.0);
         let v = json!({
+            "cpu_p99_ms": cpu_at(0.99),
+            "cpu_p999_ms": cpu_at(0.999),
+            "cpu_max_ms": cpu.last().copied().unwrap_or(0.0),
+            "cpu_over_2ms": cpu.iter().filter(|v| **v > 2.0).count(),
+            "p50_ms": at(0.5),
+            "p99_ms": at(0.99),
+            "p999_ms": at(0.999),
+            "over_2ms": over(2.0),
+            "over_5ms": over(5.0),
             "ticks": self.ticks,
             "mean_ms": self.total.as_secs_f64() * 1000.0 / n,
             "max_ms": self.max.as_secs_f64() * 1000.0,
@@ -274,6 +303,8 @@ pub(super) struct Companions {
     pub sight_cost: (u32, std::time::Duration, std::time::Duration),
     /// Item → the blocks that drop it (the tech-tree planner's).
     pub mined: Option<std::sync::Arc<std::collections::HashMap<String, Vec<horizon_client::companion::techtree::Mined>>>>,
+    /// Item → what smelts into it (the tech planner asks at every step).
+    pub smelted: Option<std::sync::Arc<std::collections::HashMap<String, Vec<String>>>>,
 }
 
 impl Companions {
@@ -1086,5 +1117,36 @@ pub(super) fn companion_index(host: &LanHost, name: Option<&str>) -> Option<usiz
             .iter()
             .position(|b| b.file.name.eq_ignore_ascii_case(n)),
         None => (!host.companions.is_empty()).then_some(0),
+    }
+}
+
+/// Logs a section of a companion's tick that took over 2 ms (the hitch
+/// hunt: `let _slow = SlowLog::new("what");`).
+pub(super) struct SlowLog {
+    name: &'static str,
+    started: std::time::Instant,
+    cpu: Option<std::time::Duration>,
+}
+
+impl SlowLog {
+    pub(super) fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            started: std::time::Instant::now(),
+            cpu: horizon_client::spans::thread_cpu(),
+        }
+    }
+}
+
+impl Drop for SlowLog {
+    fn drop(&mut self) {
+        let ms = self.started.elapsed().as_secs_f64() * 1000.0;
+        if ms > 2.0 {
+            let cpu = self
+                .cpu
+                .zip(horizon_client::spans::thread_cpu())
+                .map_or(-1.0, |(a, b)| b.saturating_sub(a).as_secs_f64() * 1000.0);
+            log::info!("[companion] slow {}: {ms:.1} ms (cpu {cpu:.1} ms)", self.name);
+        }
     }
 }

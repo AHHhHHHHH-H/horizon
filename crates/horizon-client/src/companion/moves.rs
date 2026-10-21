@@ -216,125 +216,177 @@ struct Node {
     step: Option<Step>,
 }
 
-/// Search a path from `from` (its feet) to `goal`.
+/// Search a path from `from` (its feet) to `goal`, within `rules.time`.
 pub fn find<T: Terrain>(t: &T, from: [i32; 3], goal: Goal, rules: &Rules) -> Route {
-    let started = std::time::Instant::now();
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut index: HashMap<[i32; 3], usize> = HashMap::new();
-    let mut heap: BinaryHeap<Reverse<(u32, u32, usize)>> = BinaryHeap::new();
-    let h = |p: [i32; 3]| {
-        (goal.distance(p) * f64::from(rules.walk.max(1)) * rules.greed.max(1.0)) as u32
-    };
-    nodes.push(Node {
-        p: from,
-        g: 0,
-        placed: 0,
-        parent: None,
-        step: None,
-    });
-    index.insert(from, 0);
-    heap.push(Reverse((h(from), h(from), 0)));
-    let mut best = (h(from), 0usize);
-    let mut opened = 0u32;
-    let mut closed: HashSet<usize> = HashSet::new();
-    let mut found = None;
-    let mut moves: Vec<(Step, u32)> = Vec::with_capacity(16);
-    let (mut dug, mut placed_on) = (Vec::with_capacity(32), Vec::with_capacity(32));
-    while let Some(Reverse((_, _, i))) = heap.pop() {
-        if !closed.insert(i) {
-            continue;
-        }
-        let (p, g, placed) = (nodes[i].p, nodes[i].g, nodes[i].placed);
-        if goal.reached(p) {
-            found = Some(i);
-            break;
-        }
-        let hi = h(p);
-        if hi < best.0 || hi == best.0 && g < nodes[best.1].g {
-            best = (hi, i);
-        }
-        opened += 1;
-        if opened > rules.budget || opened.is_multiple_of(256) && started.elapsed() > rules.time {
-            break;
-        }
-        moves.clear();
-        // What its own path dug and placed lately reads as it will be.
-        dug.clear();
-        placed_on.clear();
-        let mut view = Overlay {
-            t,
-            dug,
-            placed: placed_on,
-            stone: rules.stone.max(1),
-        };
-        let mut at = i;
-        for _ in 0..24 {
-            let Some(s) = nodes[at].step.as_ref() else {
-                break;
-            };
-            view.dug.extend(s.dig.iter().copied());
-            view.placed.extend(s.place);
-            match nodes[at].parent {
-                Some(parent) => at = parent,
-                None => break,
-            }
-        }
-        neighbours(
-            &view,
-            p,
+    let mut search = Search::new(from, goal, rules.clone());
+    let deadline = std::time::Instant::now() + rules.time;
+    // Out of time: the best it has.
+    search.run(t, deadline).unwrap_or_else(|| search.route(None))
+}
+
+/// A path search that runs a slice at a time (a game tick's share), the
+/// world read afresh each slice.
+pub struct Search {
+    pub from: [i32; 3],
+    pub goal: Goal,
+    rules: Rules,
+    nodes: Vec<Node>,
+    index: HashMap<[i32; 3], usize>,
+    heap: BinaryHeap<Reverse<(u32, u32, usize)>>,
+    closed: HashSet<usize>,
+    best: (u32, usize),
+    opened: u32,
+    moves: Vec<(Step, u32)>,
+    dug: Vec<[i32; 3]>,
+    placed_on: Vec<[i32; 3]>,
+}
+
+impl Search {
+    pub fn new(from: [i32; 3], goal: Goal, rules: Rules) -> Self {
+        let mut s = Self {
+            from,
+            goal,
             rules,
-            rules.blocks.saturating_sub(placed),
-            &mut moves,
-        );
-        (dug, placed_on) = (view.dug, view.placed);
-        for (step, cost) in moves.drain(..) {
-            let ng = g + cost;
-            let np = placed + u32::from(step.place.is_some());
-            let to = step.to;
-            let j = match index.get(&to) {
-                Some(&j) if nodes[j].g <= ng || closed.contains(&j) => continue,
-                Some(&j) => {
-                    nodes[j].g = ng;
-                    nodes[j].placed = np;
-                    nodes[j].parent = Some(i);
-                    nodes[j].step = Some(step);
-                    j
-                }
-                None => {
-                    nodes.push(Node {
-                        p: to,
-                        g: ng,
-                        placed: np,
-                        parent: Some(i),
-                        step: Some(step),
-                    });
-                    index.insert(to, nodes.len() - 1);
-                    nodes.len() - 1
-                }
+            nodes: vec![Node {
+                p: from,
+                g: 0,
+                placed: 0,
+                parent: None,
+                step: None,
+            }],
+            index: HashMap::new(),
+            heap: BinaryHeap::new(),
+            closed: HashSet::new(),
+            best: (0, 0),
+            opened: 0,
+            moves: Vec::with_capacity(16),
+            dug: Vec::with_capacity(32),
+            placed_on: Vec::with_capacity(32),
+        };
+        let h = s.h(from);
+        s.index.insert(from, 0);
+        s.heap.push(Reverse((h, h, 0)));
+        s.best = (h, 0);
+        s
+    }
+
+    fn h(&self, p: [i32; 3]) -> u32 {
+        (self.goal.distance(p) * f64::from(self.rules.walk.max(1)) * self.rules.greed.max(1.0)) as u32
+    }
+
+    /// Search until `deadline`: the route when done (found, or the budget
+    /// spent: the way toward the nearest it got), None while it goes on.
+    pub fn run<T: Terrain>(&mut self, t: &T, deadline: std::time::Instant) -> Option<Route> {
+        while let Some(Reverse((_, _, i))) = self.heap.pop() {
+            if !self.closed.insert(i) {
+                continue;
+            }
+            let (p, g, placed) = (self.nodes[i].p, self.nodes[i].g, self.nodes[i].placed);
+            if self.goal.reached(p) {
+                return Some(self.route(Some(i)));
+            }
+            let hi = self.h(p);
+            if hi < self.best.0 || hi == self.best.0 && g < self.nodes[self.best.1].g {
+                self.best = (hi, i);
+            }
+            self.opened += 1;
+            if self.opened > self.rules.budget {
+                return Some(self.route(None));
+            }
+            if self.opened.is_multiple_of(16) && std::time::Instant::now() > deadline {
+                // Out of this slice: the node waits for the next one.
+                self.closed.remove(&i);
+                self.opened -= 1;
+                self.heap.push(Reverse((0, 0, i)));
+                return None;
+            }
+            self.moves.clear();
+            // What its own path dug and placed lately reads as it will be.
+            self.dug.clear();
+            self.placed_on.clear();
+            let mut view = Overlay {
+                t,
+                dug: std::mem::take(&mut self.dug),
+                placed: std::mem::take(&mut self.placed_on),
+                stone: self.rules.stone.max(1),
             };
-            heap.push(Reverse((ng + h(to), h(to), j)));
+            let mut at = i;
+            for _ in 0..24 {
+                let Some(s) = self.nodes[at].step.as_ref() else {
+                    break;
+                };
+                view.dug.extend(s.dig.iter().copied());
+                view.placed.extend(s.place);
+                match self.nodes[at].parent {
+                    Some(parent) => at = parent,
+                    None => break,
+                }
+            }
+            neighbours(
+                &view,
+                p,
+                &self.rules,
+                self.rules.blocks.saturating_sub(placed),
+                &mut self.moves,
+            );
+            (self.dug, self.placed_on) = (view.dug, view.placed);
+            let mut moves = std::mem::take(&mut self.moves);
+            for (step, cost) in moves.drain(..) {
+                let ng = g + cost;
+                let np = placed + u32::from(step.place.is_some());
+                let to = step.to;
+                let j = match self.index.get(&to) {
+                    Some(&j) if self.nodes[j].g <= ng || self.closed.contains(&j) => continue,
+                    Some(&j) => {
+                        self.nodes[j].g = ng;
+                        self.nodes[j].placed = np;
+                        self.nodes[j].parent = Some(i);
+                        self.nodes[j].step = Some(step);
+                        j
+                    }
+                    None => {
+                        self.nodes.push(Node {
+                            p: to,
+                            g: ng,
+                            placed: np,
+                            parent: Some(i),
+                            step: Some(step),
+                        });
+                        self.index.insert(to, self.nodes.len() - 1);
+                        self.nodes.len() - 1
+                    }
+                };
+                let hj = self.h(to);
+                self.heap.push(Reverse((ng + hj, hj, j)));
+            }
+            self.moves = moves;
         }
+        Some(self.route(None))
     }
-    let (end, reached) = match found {
-        Some(i) => (i, true),
-        None => (best.1, false),
-    };
-    let mut steps = Vec::new();
-    let mut at = end;
-    while let Some(parent) = nodes[at].parent {
-        if let Some(s) = nodes[at].step.clone() {
-            steps.push(s);
+
+    /// The route to node `found`, or toward the best node.
+    pub fn route(&self, found: Option<usize>) -> Route {
+        let (end, reached) = match found {
+            Some(i) => (i, true),
+            None => (self.best.1, false),
+        };
+        let mut steps = Vec::new();
+        let mut at = end;
+        while let Some(parent) = self.nodes[at].parent {
+            if let Some(s) = self.nodes[at].step.clone() {
+                steps.push(s);
+            }
+            at = parent;
         }
-        at = parent;
-    }
-    steps.reverse();
-    Route {
-        places: steps.iter().filter(|s| s.place.is_some()).count() as u32,
-        digs: steps.iter().map(|s| s.dig.len() as u32).sum(),
-        cost: nodes[end].g,
-        steps,
-        reached,
-        nodes: opened,
+        steps.reverse();
+        Route {
+            places: steps.iter().filter(|s| s.place.is_some()).count() as u32,
+            digs: steps.iter().map(|s| s.dig.len() as u32).sum(),
+            cost: self.nodes[end].g,
+            steps,
+            reached,
+            nodes: self.opened,
+        }
     }
 }
 
