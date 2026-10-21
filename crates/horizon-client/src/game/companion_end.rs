@@ -897,6 +897,30 @@ impl Game<'_> {
                 });
             }
         }
+        // The healing beam to the dragon shows the crystal at its end (a
+        // bright line across the sky, seen from anywhere near).
+        if let Some(at) = self.dragon_healer_view()
+            && c::distance(from, at) < ENTITY_SIGHT
+            && !run
+                .known
+                .iter()
+                .any(|k| (k.at[0] - at[0]).abs() < 0.6 && (k.at[2] - at[2]).abs() < 0.6)
+        {
+            // (Caged or not: the bars round it show from close by.)
+            let bars = horizon_world::worldgen::end_spike::spikes_for_seed(self.level.seed)
+                .iter()
+                .any(|s| {
+                    s.guarded
+                        && (f64::from(s.center_x) + 0.5 - at[0]).abs() < 1.0
+                        && (f64::from(s.center_z) + 0.5 - at[2]).abs() < 1.0
+                });
+            run.known.push(Known {
+                at,
+                spike: Spike::under(at, bars),
+                gone: false,
+                skipped: false,
+            });
+        }
         // A spike top in sight with no crystal on it (one blown up before it
         // saw it): that one is accounted for too, so the count can reach ten.
         for s in horizon_world::worldgen::end_spike::spikes_for_seed(self.level.seed) {
