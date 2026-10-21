@@ -1013,6 +1013,7 @@ struct Game<'a> {
     /// `FogRenderer`'s evolving state.
     fog: horizon_client::fog::FogState,
     screen_fx: horizon_client::screen_effects::ScreenEffects,
+    panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
     streaming: Streaming,
     lod: Option<horizon_client::lod::Lod>,
@@ -9110,7 +9111,7 @@ impl Game<'_> {
         };
         horizon_client::environment::apply_weather(&mut sky, rain, thunder);
         self.end_flash_sky(&mut sky, alpha);
-        if self.flash > 0 {
+        if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // Lightning flash brightens the sky (LevelRenderer skyFlashTime).
             sky.sky_color = [0.9, 0.9, 1.0];
             sky.sky_light_factor = 1.0;
@@ -9181,7 +9182,13 @@ impl Game<'_> {
             (view_yaw, view_pitch)
         } else if title {
             // PanoramaRenderer: the title cube spins at 0.1 degrees per tick, pitched 10 degrees.
-            (-(self.started.elapsed().as_secs_f32() * 2.0) % 360.0, 10.0)
+            (
+                self.panorama_rotation.update(
+                    self.started.elapsed().as_secs_f32(),
+                    self.settings.file.double("panoramaScrollSpeed") as f32,
+                ),
+                10.0,
+            )
         } else {
             (view_yaw, view_pitch)
         };
@@ -10852,6 +10859,7 @@ impl<'a> Game<'a> {
             gui,
             fog: Default::default(),
             screen_fx: Default::default(),
+            panorama_rotation: Default::default(),
             world,
             streaming,
             lod: None,
@@ -11999,6 +12007,7 @@ struct Loading {
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
+    panorama_rotation: horizon_client::gfx::panorama::Rotation,
     progress: Progress,
     receiver: Receiver<LoaderMsg>,
     loaded: Option<std::result::Result<Loaded, String>>,
@@ -12125,7 +12134,11 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
-        let frame = loading_frame(&batch);
+        let mut frame = loading_frame(&batch);
+        frame.yaw = self.panorama_rotation.update(
+            self.started.elapsed().as_secs_f32(),
+            self.settings.file.double("panoramaScrollSpeed") as f32,
+        );
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&frame) {
                 Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
@@ -12203,6 +12216,7 @@ impl Loading {
         game.renderer = Some(renderer);
         game.world_renderer_ready = true;
         game.fullscreen = self.fullscreen;
+        game.panorama_rotation = self.panorama_rotation;
         self.menu.handoff(&mut game);
         game.apply_settings();
         game.previous = Instant::now();
@@ -12316,6 +12330,7 @@ fn run_loading(
         vanilla_root,
         pack_error,
         started,
+        panorama_rotation: Default::default(),
         progress,
         receiver,
         loaded: None,
