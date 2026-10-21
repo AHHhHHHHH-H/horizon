@@ -19,9 +19,16 @@ use super::{
     nether_portal::PLAYER_DELAY,
 };
 use horizon_client::{
-    command::args::GameMode, companion::CompanionCommand, hud::HudBatch, lan::playerdata,
+    collisions::{SceneCollisions, no_collision_empty},
+    command::args::GameMode,
+    companion::CompanionCommand,
+    hud::HudBatch,
+    lan::playerdata,
 };
-use horizon_core::{geometry::Vec3, position::BlockPos};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+};
 use serde_json::{Value, json};
 
 /// The camera behind the body and above its feet.
@@ -34,6 +41,16 @@ const SNAP: f64 = 16.0;
 /// A player's box: Player's standing dimensions.
 const WIDTH: f64 = 0.6;
 const HEIGHT: f64 = 1.8;
+/// The camera is kept clear of blocks like a third-person camera: a box this far around it (a
+/// little more than the near plane) may touch none, and the ray from the body's head is tested
+/// every `CLEAR_STEP` blocks (less than the box, so no wall slips between two tests).
+const CAMERA_HALF: f64 = 0.25;
+const CLEAR_STEP: f64 = 0.2;
+/// How much of the gap the camera backs out each tick once the way is clear again (it comes in at
+/// once), so a branch edge sliding past the ray does not make it breathe in and out.
+const REACH_OUT: f64 = 0.08;
+/// Where the body's head is, above its feet.
+const HEAD: f64 = 1.62;
 
 /// The owner watching a companion.
 pub(super) struct Watch {
@@ -51,6 +68,9 @@ pub(super) struct Watch {
     /// watched body follows, comes to and looks at this, not the camera
     /// behind it (which would turn it round to face the camera).
     at: [f64; 3],
+    /// How far out along the view ray the camera may stand now, in blocks, eased: the ray
+    /// stops at blocks that collide, leaves and tall plants (`watch_clear`).
+    reach: f64,
 }
 
 /// Where the body goes through: what its portal process decided.
@@ -141,6 +161,7 @@ impl Game<'_> {
             step: String::new(),
             perception,
             at,
+            reach: f64::INFINITY,
         });
         self.set_mode(GameMode::Spectator);
         self.watch_camera(true);
@@ -197,6 +218,8 @@ impl Game<'_> {
             "timer_ticks": w.ticks,
             "hud": self.watch_lines(w),
             "camera": self.player.as_ref().map(|p| [p.position.x, p.position.y, p.position.z]),
+            // How far behind the head the blocks let it stand (infinite until the first tick).
+            "reach": w.reach.is_finite().then_some(w.reach),
         })
     }
 
@@ -383,6 +406,33 @@ impl Game<'_> {
             at[1] + ABOVE,
             at[2] - r.cos() * BEHIND,
         );
+        // Along the ray from the body's head to where the camera would stand, as far as the
+        // blocks let it: at once closer, smoothly farther.
+        let head = Vec3::new(at[0], at[1] + HEAD, at[2]);
+        let full = Vec3::new(want.x, want.y + eye, want.z);
+        let clear = self.watch_clear(head, full);
+        let reach = match self.companions.watch.as_mut() {
+            Some(w) => {
+                w.reach = if snap || !w.reach.is_finite() || clear < w.reach {
+                    clear
+                } else {
+                    w.reach + (clear - w.reach) * REACH_OUT
+                };
+                w.reach
+            }
+            None => clear,
+        };
+        let length = distance(head, full);
+        let along = if length > 1e-6 {
+            reach.min(length) / length
+        } else {
+            0.0
+        };
+        let want = Vec3::new(
+            head.x + (full.x - head.x) * along,
+            head.y + (full.y - head.y) * along - eye,
+            head.z + (full.z - head.z) * along,
+        );
         let Some(p) = self.player.as_mut() else {
             return;
         };
@@ -400,6 +450,22 @@ impl Game<'_> {
                 p.position.z + d[2] * EASE,
             )
         };
+        // Easing from one side of a branch to the other can cut its corner: whatever the camera
+        // is, it stays on the clear part of the ray from the head.
+        let cam = Vec3::new(p.position.x, p.position.y + eye, p.position.z);
+        let seen = distance(head, cam);
+        let clear = self.watch_clear(head, cam);
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        if clear + 1e-3 < seen {
+            let k = clear / seen;
+            p.position = Vec3::new(
+                head.x + (cam.x - head.x) * k,
+                head.y + (cam.y - head.y) * k - eye,
+                head.z + (cam.z - head.z) * k,
+            );
+        }
         p.velocity = Vec3::ZERO;
         p.fall_distance = 0.0;
         let (dx, dy, dz) = (
@@ -417,6 +483,70 @@ impl Game<'_> {
         if snap {
             self.previous_position = p.position;
         }
+    }
+
+    /// How far from `from` (the body's head) along the ray to `to` the camera may stand, in blocks
+    /// (at most the ray's length): short of the first block that collides (leaves and the ground
+    /// included), then short of any tall plant it would stand in. Like a third-person camera.
+    fn watch_clear(&self, from: Vec3, to: Vec3) -> f64 {
+        let length = distance(from, to);
+        if length < 1e-6 {
+            return 0.0;
+        }
+        let at = |t: f64| {
+            let k = t / length;
+            Vec3::new(
+                from.x + (to.x - from.x) * k,
+                from.y + (to.y - from.y) * k,
+                from.z + (to.z - from.z) * k,
+            )
+        };
+        let around = |c: Vec3| {
+            Aabb::new(
+                Vec3::new(c.x - CAMERA_HALF, c.y - CAMERA_HALF, c.z - CAMERA_HALF),
+                Vec3::new(c.x + CAMERA_HALF, c.y + CAMERA_HALF, c.z + CAMERA_HALF),
+            )
+        };
+        let mut scene = SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let mut free = 0.0;
+        let mut t = CLEAR_STEP;
+        loop {
+            if t >= length {
+                free = length;
+                break;
+            }
+            if !no_collision_empty(&mut scene, around(at(t))) {
+                break;
+            }
+            free = t;
+            t += CLEAR_STEP;
+        }
+        // Leaves collide and are in that test; grass and ferns do not, but a camera inside one
+        // sees only its texture.
+        while free > 0.0 && self.watch_in_plant(at(free)) {
+            free = (free - CLEAR_STEP).max(0.0);
+        }
+        free
+    }
+
+    /// Whether the camera's box, centred on `c`, touches leaves or a plant that fills the view
+    /// without colliding.
+    fn watch_in_plant(&self, c: Vec3) -> bool {
+        let block = |v: f64, d: f64| (v + d).floor() as i32;
+        for x in block(c.x, -CAMERA_HALF)..=block(c.x, CAMERA_HALF) {
+            for y in block(c.y, -CAMERA_HALF)..=block(c.y, CAMERA_HALF) {
+                for z in block(c.z, -CAMERA_HALF)..=block(c.z, CAMERA_HALF) {
+                    if blocks_view(&self.block_name([x, y, z])) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn watch_lines(&self, w: &Watch) -> Vec<String> {
@@ -483,5 +613,77 @@ impl Game<'_> {
         host.companions.insert(bi, b);
         self.lan = Some(host);
         Ok(json!({ "ok": true, "name": name, "message": format!("{name} struck {id}") }))
+    }
+}
+
+fn distance(a: Vec3, b: Vec3) -> f64 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt()
+}
+
+/// Leaves and the plants that fill a block's view without colliding (grass, ferns, bushes, vines,
+/// the tall flowers).
+fn blocks_view(name: &str) -> bool {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    name.ends_with("_leaves")
+        || name.ends_with("_vines")
+        || name.ends_with("_vines_plant")
+        || matches!(
+            name,
+            "short_grass"
+                | "tall_grass"
+                | "fern"
+                | "large_fern"
+                | "dead_bush"
+                | "bush"
+                | "sweet_berry_bush"
+                | "vine"
+                | "sunflower"
+                | "lilac"
+                | "rose_bush"
+                | "peony"
+                | "short_dry_grass"
+                | "tall_dry_grass"
+                | "firefly_bush"
+                | "seagrass"
+                | "tall_seagrass"
+                | "kelp"
+                | "kelp_plant"
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaves_and_tall_plants_fill_the_camera_but_stone_and_flowers_do_not() {
+        for name in [
+            "minecraft:oak_leaves",
+            "minecraft:cherry_leaves",
+            "minecraft:pale_oak_leaves",
+            "minecraft:tall_grass",
+            "minecraft:large_fern",
+            "minecraft:short_grass",
+            "minecraft:sweet_berry_bush",
+            "minecraft:weeping_vines_plant",
+            "minecraft:vine",
+        ] {
+            assert!(blocks_view(name), "{name}");
+        }
+        for name in [
+            "minecraft:air",
+            "minecraft:stone",
+            "minecraft:poppy",
+            "minecraft:oak_log",
+            "minecraft:glass",
+        ] {
+            assert!(!blocks_view(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn distance_is_euclidean() {
+        let d = distance(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 4.0, 12.0));
+        assert!((d - 13.0).abs() < 1e-9);
     }
 }

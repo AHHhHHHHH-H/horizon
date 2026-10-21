@@ -3,6 +3,7 @@
 
 In a fixed-seed world, through the control socket:
 
+- camera: Watch's camera is pulled in along its ray when leaves are in the way and comes back out smoothly.
 - respawn: a companion that dies with its owner far away comes back where a player would, at the world
   spawn in the Overworld (its owner elsewhere keeps their place); one that dies in the Nether away from its
   owner comes back in the Overworld, parked there until its owner returns.
@@ -286,7 +287,69 @@ def watch(endpoint):
     command(endpoint, 'companion dismiss Bea')
 
 
-SCENARIOS = {'respawn': respawn, 'watch': watch}
+def camera(endpoint):
+    """Watch's camera is kept out of blocks like a third-person camera: pulled in along the ray from the
+    body's head when leaves (or the ground) would be in the way, and back out smoothly once they are gone."""
+    spawn = player(endpoint)['world_spawn']
+    # In survival a Watch before this one (spectator, then creative again) cannot leave the owner flying.
+    command(endpoint, 'command gamemode survival')
+    command(endpoint, f'command tp @s {spawn[0] + 0.5} {spawn[1] + 2} {spawn[2] + 0.5}')
+    settle(endpoint, 'owner at the spawn')
+    command(endpoint, 'companion spawn Cam')
+    command(endpoint, 'companion do Cam stay')
+    time.sleep(1)
+    c = companion_at(endpoint, 'Cam')
+    x, y, z = (int(v // 1) for v in c['position'])
+    # An open platform around the body, then a ball of leaves with a one-block shaft for it.
+    command(endpoint, f'command fill {x - 8} {y} {z - 8} {x + 8} {y + 9} {z + 8} air')
+    command(endpoint, f'command fill {x - 8} {y - 1} {z - 8} {x + 8} {y - 1} {z + 8} stone')
+    time.sleep(1)
+    c = companion_at(endpoint, 'Cam')
+    head = [c['position'][0], c['position'][1] + 1.62, c['position'][2]]
+
+    def eye():
+        feet = command(endpoint, 'companion watch status')['camera']
+        return [feet[0], feet[1] + 1.62, feet[2]]
+
+    def settled():
+        time.sleep(2.5)
+        status = command(endpoint, 'companion watch status')
+        return status['reach'], distance(head, eye()), block_text(endpoint, *(int(v // 1) for v in eye()))
+
+    command(endpoint, 'companion watch Cam')
+    reach, gap, inside = settled()
+    assert gap > 4.0 and reach > 4.0, ('the open view is not 4 blocks out', reach, gap)
+    print(f'camera: in the open it stands {gap:.2f} blocks from the head')
+
+    command(endpoint, f'command fill {x - 4} {y} {z - 4} {x + 4} {y + 6} {z + 4} oak_leaves[persistent=true]')
+    command(endpoint, f'command fill {x} {y} {z} {x} {y + 3} {z} air')
+    reach, gap, inside = settled()
+    assert gap < 1.0 and 'leaves' not in inside, ('the camera is in the leaves', reach, gap, inside)
+    for _ in range(10):
+        # No frame of it inside a block: it only moves within the shaft.
+        e = eye()
+        name = block_text(endpoint, *(int(v // 1) for v in e))
+        assert 'leaves' not in name and 'stone' not in name, ('inside a block', e, name)
+        time.sleep(0.1)
+    print(f'camera: in a ball of leaves it comes in to {gap:.2f} blocks, in {inside}')
+
+    command(endpoint, f'command fill {x - 4} {y} {z - 4} {x + 4} {y + 6} {z + 4} air')
+    # Back out smoothly, not at once: a step of the camera is never more than the ease allows.
+    last, biggest = eye(), 0.0
+    for _ in range(40):
+        time.sleep(0.05)
+        now = eye()
+        biggest = max(biggest, distance(last, now))
+        last = now
+    reach, gap, inside = settled()
+    assert gap > 4.0, ('the camera did not come back out', reach, gap)
+    assert biggest < 1.0, ('the camera jumped back out', biggest)
+    print(f'camera: the leaves gone, it is back at {gap:.2f} blocks (largest step {biggest:.2f})')
+    command(endpoint, 'companion watch off')
+    command(endpoint, 'companion dismiss Cam')
+
+
+SCENARIOS = {'respawn': respawn, 'watch': watch, 'camera': camera}
 
 
 def main():
