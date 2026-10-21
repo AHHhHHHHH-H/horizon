@@ -193,8 +193,13 @@ impl GameTerrain<'_, '_> {
 impl Terrain for GameTerrain<'_, '_> {
     fn cell(&self, p: [i32; 3]) -> Cell {
         let world = &self.game.world;
-        if p[1] < self.min_y || !world.loaded(p[0], p[2]) || self.bad.contains(&p) {
+        if p[1] < self.min_y || !world.loaded(p[0], p[2]) {
             return Cell::Solid { dig: 0, falls: false };
+        }
+        // A cell it failed to get into: not through it, and not on it either
+        // (as a wall it would read as a floor over air).
+        if self.bad.contains(&p) {
+            return Cell::Hazard;
         }
         let state = world.block(p[0], p[1], p[2]);
         let facts = self.game.res.facts();
@@ -296,10 +301,34 @@ impl Game<'_> {
         route
     }
 
+    /// The cell its feet stand in, as the planner counts: on a block lower
+    /// than a full one (soul sand, mud, farmland, a path), the cell above
+    /// it, not the block itself; at an edge (sneaking keeps it there), the
+    /// cell beside it whose floor holds it up.
+    pub(super) fn stand_cell(&self, pos: [f64; 3]) -> [i32; 3] {
+        let at = |x: f64, z: f64| {
+            let mut f = feet([x, pos[1], z]);
+            if pos[1] - f64::from(f[1]) > 0.5 && !self.passable(f) {
+                f[1] += 1;
+            }
+            f
+        };
+        let held = |c: [i32; 3]| self.passable(c) && !self.passable([c[0], c[1] - 1, c[2]]);
+        let f = at(pos[0], pos[2]);
+        if held(f) {
+            return f;
+        }
+        [(-0.2999, -0.2999), (0.2999, -0.2999), (-0.2999, 0.2999), (0.2999, 0.2999)]
+            .into_iter()
+            .map(|(dx, dz)| at(pos[0] + dx, pos[2] + dz))
+            .find(|&c| held(c))
+            .unwrap_or(f)
+    }
+
     /// Go to `goal` with Movement 2.0: Arrived, Moving, or Stuck once
     /// several plans in a row got nowhere.
     pub(super) fn companion_travel(&mut self, host: &mut LanHost, b: &mut Body, goal: Goal, pos: [f64; 3]) -> Steer {
-        let f = feet(pos);
+        let f = self.stand_cell(pos);
         if goal.reached(f) && self.companion_settled(host, b) {
             self.companion_stop_dig(host, b);
             b.walk.reset();
@@ -374,7 +403,7 @@ impl Game<'_> {
             return Steer::Moving;
         };
         let next = route.steps.get(b.walk.step + 1).cloned();
-        let f = feet(pos);
+        let f = self.stand_cell(pos);
         let Some(g) = host.hub.guest(b.conn) else {
             return Steer::Stuck;
         };
@@ -521,7 +550,8 @@ impl Game<'_> {
         // Edges it isn't meant to go off: sneaking keeps it on.
         if matches!(step.how, Move::Walk) && !in_water {
             let below = [step.to[0], step.to[1] - 1, step.to[2]];
-            b.keys.shift |= !self.floor(below);
+            let low = self.res.facts().get(self.world.block(below[0], below[1], below[2])).name.clone();
+            b.keys.shift |= !self.floor(below) && !super::companion_cruise::low_floor(&low);
         }
         Steer::Moving
     }
