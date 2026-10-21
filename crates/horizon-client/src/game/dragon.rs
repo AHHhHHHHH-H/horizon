@@ -2771,6 +2771,12 @@ impl Game<'_> {
             .collect()
     }
     /// The dragon's fireballs in flight: where, and their motion a tick.
+    /// The crystal healing the dragon (the end of its beam), where it is.
+    pub(super) fn dragon_healer_view(&self) -> Option<[f64; 3]> {
+        let d = self.dragon.as_ref()?;
+        let c = d.nearest_crystal.and_then(|i| self.crystals.get(i))?;
+        Some([c.position.x, c.position.y, c.position.z])
+    }
     pub(super) fn dragon_fireball_view(&self) -> Vec<([f64; 3], [f64; 3])> {
         self.dragon_fireballs
             .iter()
