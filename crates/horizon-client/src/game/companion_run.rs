@@ -1209,6 +1209,34 @@ impl Game<'_> {
                 return;
             }
         }
+        // Through walls (Sharp senses, All-knowing): lava and water it
+        // can't see yet are known too, as far as its senses reach.
+        if b.senses.level.xray_radius(48).is_some() {
+            let here = feet(pos);
+            let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
+            let stale = cast
+                .scanned
+                .is_none_or(|s| (0..3).map(|k| (s[k] - here[k]).abs()).max().unwrap_or(0) > 24);
+            if stale {
+                let fluids = self.states_where(|n| n == "minecraft:lava" || n == "minecraft:water");
+                let mut search = cast.search.take();
+                match self.companion_known(b, &fluids, here, 48, &mut search, 6 * 4096) {
+                    None => {
+                        cast.search = search;
+                        return;
+                    }
+                    Some(found) => {
+                        for p in found {
+                            let s = self.world.block(p[0], p[1], p[2]).0;
+                            if self.is_source(s, Fluid::Lava) || self.is_source(s, Fluid::Water) {
+                                b.senses.memory_mut().remember(p, s, Keep::Notable);
+                            }
+                        }
+                        cast.scanned = Some(here);
+                    }
+                }
+            }
+        }
         let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
         // A full bucket: the clock for getting it stops.
         if have("minecraft:water_bucket") > 0 {
@@ -1252,34 +1280,6 @@ impl Game<'_> {
             }
             self.companion_fill_bucket(host, b, w, pos);
             return;
-        }
-        // Through walls (Sharp senses, All-knowing): lava it can't see yet
-        // is known too, as far as its senses reach.
-        if b.senses.level.xray_radius(48).is_some() {
-            let here = feet(pos);
-            let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
-            let stale = cast
-                .scanned
-                .is_none_or(|s| (0..3).map(|k| (s[k] - here[k]).abs()).max().unwrap_or(0) > 24);
-            if stale {
-                let lava = self.states_where(|n| n == "minecraft:lava");
-                let mut search = cast.search.take();
-                match self.companion_known(b, &lava, here, 48, &mut search, 6 * 4096) {
-                    None => {
-                        cast.search = search;
-                        return;
-                    }
-                    Some(found) => {
-                        for p in found {
-                            let s = self.world.block(p[0], p[1], p[2]).0;
-                            if self.is_source(s, Fluid::Lava) {
-                                b.senses.memory_mut().remember(p, s, Keep::Notable);
-                            }
-                        }
-                        cast.scanned = Some(here);
-                    }
-                }
-            }
         }
         // A lava pool.
         let pools = b.senses.memory().pools(|s| self.is_source(s, Fluid::Lava), feet(pos), 160);
@@ -1350,10 +1350,10 @@ impl Game<'_> {
     }
 
     /// A water source in the frame's plane or just before it.
-    fn frame_water(&self, site: &Site) -> Option<[i32; 3]> {
+    fn frame_water(&self, site: &Site, skip: &[[i32; 3]]) -> Option<[i32; 3]> {
         (0..=3)
             .flat_map(|x| (0..=5).flat_map(move |y| [site.at([x, y]), site.front_cell(x, y)]))
-            .find(|q| self.is_source(self.world.block(q[0], q[1], q[2]).0, Fluid::Water))
+            .find(|q| !skip.contains(q) && self.is_source(self.world.block(q[0], q[1], q[2]).0, Fluid::Water))
     }
 
     fn is_source(&self, s: u32, fluid: Fluid) -> bool {
@@ -1568,8 +1568,7 @@ impl Game<'_> {
             });
             if let Some(w) = source {
                 run.note = "draining the portal".into();
-                let rc = [(w[0] - site.base[0]).clamp(0, 3), (w[1] - site.base[1]).clamp(0, 4)];
-                if !self.companion_at_stand(host, b, site.stand_for(rc), pos) {
+                if !self.companion_at_stand(host, b, site.stand_at(w[0] - site.base[0], 0), pos) {
                     return;
                 }
                 let inv = self.companion_inventory(host, b);
@@ -1625,17 +1624,22 @@ impl Game<'_> {
                 if count(&inv, "minecraft:water_bucket") == 0 {
                     // Water left in or before the frame from the last block:
                     // taken back from here first.
-                    if let Some(w) = self.frame_water(&site)
+                    if let Some(w) = self.frame_water(&site, &cast.bad)
                         && count(&inv, "minecraft:bucket") > 0
                     {
                         run.note = "taking the water back".into();
                         if Cast::stuck_at(&mut cast.trying_water, w, self.world.game_time.max(0) as u64) {
-                            // Out of its reach from here: a block on it.
-                            let _ = self.companion_place_block(host, b, w, pos);
+                            // Out of its reach: left there (lava poured next
+                            // to it sets; a block on it would be the last
+                            // water there is, maybe).
+                            log::info!("[companion] {} run: water at {w:?} left in the frame", b.file.name);
+                            cast.bad.push(w);
                             return;
                         }
-                        let rc = [(w[0] - site.base[0]).clamp(0, 3), (w[1] - site.base[1]).clamp(0, 4)];
-                        if self.companion_at_stand(host, b, site.stand_for(rc), pos)
+                        // From the ground before it: its eyes see the
+                        // source past the front (a raised stand stands in
+                        // what flows out).
+                        if self.companion_at_stand(host, b, site.stand_at(w[0] - site.base[0], 0), pos)
                             && self.companion_hold(host, b, "minecraft:bucket")
                         {
                             self.companion_use_toward(host, b, site.near_point(w), pos);
@@ -1672,10 +1676,16 @@ impl Game<'_> {
                 }
                 if count(&inv, "minecraft:lava_bucket") == 0 {
                     run.note = format!("lava for frame block {}", cast.slot + 1);
-                    let sources: Vec<[i32; 3]> = b
+                    let mut sources: Vec<[i32; 3]> = b
                         .senses
                         .memory()
                         .recall(|s| self.is_source(s, Fluid::Lava), pool, 12);
+                    // The nearest first: the pool's edge, in reach from its
+                    // bank (the middle is for later, from closer).
+                    let e = eye(pos);
+                    sources.sort_by(|x, y| {
+                        super::companion_work::to_block(e, *x).total_cmp(&super::companion_work::to_block(e, *y))
+                    });
                     let Some(src) = sources.iter().copied().find(|s| site.away_from(*s) && !cast.bad.contains(s)) else {
                         // None left it can use there: another pool.
                         cast.bad.push(pool);
@@ -1900,13 +1910,41 @@ impl Game<'_> {
     fn companion_at_stand(&mut self, host: &mut LanHost, b: &mut Body, stand: [i32; 3], pos: [f64; 3]) -> bool {
         let f = feet(pos);
         let at = [f64::from(stand[0]) + 0.5, f64::from(stand[1]), f64::from(stand[2]) + 0.5];
-        if f == stand && c::horizontal(pos, at) < 0.35 {
+        // (In water the flow pushes it about: in the cell will do.)
+        let wet = self.res.facts().get(self.world.block(f[0], f[1], f[2])).fluid != Fluid::None;
+        if f == stand && (c::horizontal(pos, at) < 0.35 || wet && c::horizontal(pos, at) < 0.6) {
             return true;
         }
         if f == stand {
             b.yaw = c::yaw_toward(pos, at) as f32;
             b.keys.forward = true;
             b.keys.shift = true;
+            return false;
+        }
+        let head = [stand[0], stand[1] + 1, stand[2]];
+        b.walk.forgive(&[stand, head]);
+        // Something in the stand (a block it put there to stop a flow, what
+        // set from the cast): dug out from here when in reach.
+        if let Some(q) = [head, stand].into_iter().find(|q| !self.passable(*q) && !b.walk.keep.contains(q))
+            && super::companion_work::to_block(eye(pos), q) < 4.4
+            && (f[1] <= q[1] + 1)
+        {
+            b.walk.reset();
+            let d = [f[0] - q[0], f[1] - q[1], f[2] - q[2]];
+            let face = if d[0] > 0 {
+                5
+            } else if d[0] < 0 {
+                4
+            } else if d[2] > 0 {
+                3
+            } else if d[2] < 0 {
+                2
+            } else if d[1] > 0 {
+                1
+            } else {
+                0
+            };
+            let _ = self.companion_dig_step(host, b, q, face);
             return false;
         }
         // A raised stand with nothing under it yet, right beside it: the

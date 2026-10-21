@@ -12,6 +12,8 @@ portal. Under /tick sprint.
 """
 import argparse
 import json
+import math
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -47,14 +49,42 @@ def scenario(endpoint, level, budget):
     say(endpoint, f'tp @s {X + 0.5} {Y + 1} {Z + 0.5}')
     wait_for(endpoint, 'status', lambda v: v['player'] and v['pending_chunks'] == 0, timeout=60,
              what='owner at the platform')
-    build(endpoint)
+    # Under load the fill may land before its chunks are ready: again
+    # until the platform, the pool and the water are there.
+    def built(v):
+        return all(command(endpoint, f'block {x} {y} {z}')['block'].startswith(b)
+                   for x, y, z, b in ((X, Y, Z, 'minecraft:stone'), (X + 6, Y, Z, 'minecraft:lava'),
+                                      (X - 6, Y, Z, 'minecraft:water'), (X - 13, Y - 6, Z + 13, 'minecraft:stone')))
+    for _ in range(10):
+        build(endpoint)
+        if built(None):
+            break
+        time.sleep(1)
+    assert built(None), 'the platform was not built'
+    # The owner may have dropped through before the platform was there.
+    say(endpoint, f'tp @s {X + 0.5} {Y + 1} {Z + 0.5}')
     name = command(endpoint, 'companion spawn Runner')['name']
     wait_for(endpoint, 'companion list', lambda v: v['companions'] and not v['companions'][0]['dead'],
              what='runner')
+    # Staying put: following, it would be teleported back to the owner.
+    command(endpoint, f'companion do {name} stay')
     say(endpoint, f'clear {name}')
     for item in ('bucket 2', 'flint_and_steel', 'cobblestone 64', 'iron_pickaxe', 'cooked_beef 8'):
         say(endpoint, f'give {name} {item}')
-    say(endpoint, f'tp {name} {X + 0.5} {Y + 1} {Z + 0.5}')
+    # Standing on the platform (not hung in a chunk still loading, nor
+    # fallen through one): put there again until it is.
+    def on_platform(v):
+        c = v['companions'] and v['companions'][0]
+        return c and c.get('on_ground') and abs(c['position'][1] - (Y + 1)) < 0.1 \
+            and math.dist(c['position'][::2], (X + 0.5, Z + 0.5)) < 1.5
+    for attempt in range(6):
+        say(endpoint, f'tp {name} {X + 0.5} {Y + 1} {Z + 0.5}')
+        try:
+            wait_for(endpoint, 'companion list', on_platform, timeout=10, what='runner on the platform')
+            break
+        except AssertionError:
+            if attempt == 5:
+                raise
     # A moment to look around (the water, the pool) before it starts: the
     # platform floats high, and a search off its edge is a fall.
     command(endpoint, f'companion do {name} stay')
@@ -64,6 +94,7 @@ def scenario(endpoint, level, budget):
     command(endpoint, f'companion watch {name}')
     command(endpoint, f'companion do {name} run {level} from portal')
     done, lit = 0, None
+    same, last = 0, None
     while done < budget:
         command(endpoint, 'command tick sprint 200')
         while command(endpoint, 'status').get('sprinting'):
@@ -73,17 +104,31 @@ def scenario(endpoint, level, budget):
         run = c.get('run') or {}
         splits = {s['name']: s['ticks'] for s in run.get('splits', [])}
         print(done, run.get('stage'), '|', run.get('note'), '|', c.get('inventory'), '|', [round(v, 2) for v in c['position']], (c.get('walk') or {}).get('next'), (c.get('walk') or {}).get('goal'))
+        # The same thing for 1200 ticks: what the mould looks like.
+        same = same + 1 if run.get('note') == last else 0
+        last = run.get('note')
+        if same == 6:
+            print('stuck: walk', c.get('walk'))
+            dump(endpoint, run.get('cast') or {})
         if 'portal_lit' in splits:
             lit = splits['portal_lit']
             break
     cast = (companion(endpoint).get('run') or {}).get('cast') or {}
     print('cast', cast)
+    dump(endpoint, cast)
+    command(endpoint, 'companion watch off')
+    command(endpoint, 'quit')
+    return lit
+
+
+def dump(endpoint, cast):
+    """The mould's three planes (back wall, frame, front), top down."""
     if cast.get('base'):
         bx, by, bz = cast['base']
         front = cast['front']
         short = {'obsidian': 'O', 'cobblestone': 'c', 'air': '.', 'water': 'w', 'lava': 'L', 'stone': 's',
                  'nether_portal': 'P', 'fire': 'f'}
-        for dz, label in ((-front, 'back'), (0, 'frame'), (front, 'front')):
+        for dz, label in ((-front, 'back'), (0, 'frame'), (front, 'front'), (2 * front, 'front 2')):
             print(label)
             for y in range(by + 5, by - 2, -1):
                 row = ''
@@ -91,9 +136,6 @@ def scenario(endpoint, level, budget):
                     n = command(endpoint, f'block {x} {y} {bz + dz}')['block'].split(':')[1].split('[')[0]
                     row += short.get(n, '?')
                 print(f'  {y}: {row}')
-    command(endpoint, 'companion watch off')
-    command(endpoint, 'quit')
-    return lit
 
 
 def main():
@@ -116,8 +158,12 @@ def main():
             finally:
                 stop(process)
                 log.seek(0)
-                lines = [l for l in log.read().splitlines() if '[companion]' in l and "o'clock" not in l and 'equipped' not in l]
-                print('\n'.join(lines[-40:]))
+                text = log.read()
+                if os.environ.get('HORIZON_PORTAL_LOG'):
+                    Path(os.environ['HORIZON_PORTAL_LOG']).write_text(text)
+                lines = [l for l in text.splitlines()
+                         if '[companion]' in l and "o'clock" not in l and 'equipped' not in l and '] slow ' not in l]
+                print('\n'.join(lines[-80:]))
     assert lit is not None, 'the portal was not lit'
     print(json.dumps({'portal_lit_ticks': lit}))
     print('Companion portal passed: water, mould, ten cast obsidian, lit')

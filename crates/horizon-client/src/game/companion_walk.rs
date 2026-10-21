@@ -35,6 +35,9 @@ const WAYPOINT: f64 = 40.0;
 /// Nodes a plan opens at most.
 const BUDGET: u32 = 5000;
 /// The share of a tick a walk plan may take (the rest waits for the next).
+/// How long a block it failed at stays a wall to the planner.
+const BAD_FOR: u64 = 1200;
+
 const PLAN_SLICE: std::time::Duration = std::time::Duration::from_micros(1500);
 
 /// A walk plan under way and what it read of the world so far.
@@ -143,8 +146,9 @@ pub(super) struct Walk {
     step: usize,
     since: u64,
     replans: u32,
-    /// Blocks it failed to break or stand on: planned as walls.
-    bad: Vec<[i32; 3]>,
+    /// Blocks it failed to break or stand on, and when: planned as walls
+    /// for a minute (the place changes: a floor built, lava gone).
+    bad: Vec<([i32; 3], u64)>,
     /// Blocks it builds with (a portal's mould): never dug on the way.
     pub keep: Vec<[i32; 3]>,
     /// A pillar step's jump started.
@@ -166,6 +170,17 @@ pub(super) struct Walk {
 }
 
 impl Walk {
+    /// Cells it means to stand in: never walls to the planner.
+    pub fn forgive(&mut self, cells: &[[i32; 3]]) {
+        self.bad.retain(|(q, _)| !cells.contains(q));
+    }
+    fn mark_bad(&mut self, p: [i32; 3], now: u64) {
+        self.bad.retain(|(q, t)| *q != p && now.saturating_sub(*t) < BAD_FOR);
+        self.bad.push((p, now));
+        if self.bad.len() > 64 {
+            self.bad.remove(0);
+        }
+    }
     pub fn reset(&mut self) {
         self.search = None;
         self.route = None;
@@ -384,6 +399,13 @@ impl Game<'_> {
         }
         let mut p = b.walk.search.take()?;
         let started = std::time::Instant::now();
+        let bad: Vec<[i32; 3]> = b
+            .walk
+            .bad
+            .iter()
+            .filter(|(_, t)| b.ticks.saturating_sub(*t) < BAD_FOR)
+            .map(|(q, _)| *q)
+            .collect();
         let route = {
             let t = GameTerrain {
                 game: self,
@@ -391,7 +413,7 @@ impl Game<'_> {
                 level: b.senses.level,
                 memory: b.senses.memory(),
                 near: p.search.from,
-                bad: &b.walk.bad,
+                bad: &bad,
                 keep: &b.walk.keep,
                 digs: RefCell::new(std::mem::take(&mut p.digs)),
                 states: RefCell::new(std::mem::take(&mut p.states)),
@@ -399,6 +421,32 @@ impl Game<'_> {
                 min_y: self.dim.min_y(),
             };
             let route = p.search.run(&t, started + PLAN_SLICE);
+            if let Some(r) = &route
+                && r.steps.is_empty()
+                && !r.reached
+            {
+                use horizon_client::companion::moves::Terrain as _;
+                let o = p.search.from;
+                let mut dump = String::new();
+                for dy in (-3..=2).rev() {
+                    dump.push_str(&format!(" y{}:", o[1] + dy));
+                    for dz in -2..=2 {
+                        dump.push(' ');
+                        for dx in -2..=2 {
+                            dump.push(match t.cell([o[0] + dx, o[1] + dy, o[2] + dz]) {
+                                moves::Cell::Open => '.',
+                                moves::Cell::Water => 'w',
+                                moves::Cell::Lava => 'L',
+                                moves::Cell::Hazard => 'h',
+                                moves::Cell::Solid { dig: 0, .. } => '#',
+                                moves::Cell::Solid { .. } => 's',
+                                moves::Cell::Unknown => '?',
+                            });
+                        }
+                    }
+                }
+                log::debug!("[companion] no way from {o:?} to {:?} nodes {}:{dump}", p.search.goal.at, r.nodes);
+            }
             p.digs = t.digs.into_inner();
             p.states = t.states.into_inner();
             p.cells = t.cells.into_inner();
@@ -552,7 +600,11 @@ impl Game<'_> {
         }
         // Off its route (a fall went further, a mob pushed it): plan again
         // from where it is.
-        let off = (0..3).map(|k| (f[k] - step.to[k]).abs()).max().unwrap_or(0) > 1
+        // (Above a fall's landing is on the way: falls go down 3 or more.)
+        let falling_to = matches!(step.how, Move::Fall) && f[1] > step.to[1] && f[1] - step.to[1] <= 16;
+        let far = (f[0] - step.to[0]).abs().max((f[2] - step.to[2]).abs()) > 1
+            || (f[1] - step.to[1]).abs() > 1 && !falling_to;
+        let off = far
             && route
                 .steps
                 .get(b.walk.step.wrapping_sub(1))
@@ -566,10 +618,7 @@ impl Game<'_> {
         if b.ticks - b.walk.since > patience {
             log::debug!("[companion] {} step {:?} took too long at {f:?}", b.file.name, step);
             self.companion_stop_dig(host, b);
-            b.walk.bad.push(step.to);
-            if b.walk.bad.len() > 64 {
-                b.walk.bad.remove(0);
-            }
+            b.walk.mark_bad(step.to, b.ticks);
             b.walk.route = None;
             return Steer::Moving;
         }
@@ -596,7 +645,7 @@ impl Game<'_> {
                 None => {
                     // Can't dig it (lava beside it, too hard): a wall now.
                     self.companion_stop_dig(host, b);
-                    b.walk.bad.push(d);
+                    b.walk.mark_bad(d, b.ticks);
                     b.walk.route = None;
                 }
             }
@@ -644,7 +693,7 @@ impl Game<'_> {
                 .chain(neighbours.iter().map(|d| [q[0] + d[0], q[1] + d[1], q[2] + d[2]]))
                 .find(|n| self.floor(*n) && super::companion_work::to_block(eye(pos), *n) < 4.4);
             let Some(n) = against else {
-                b.walk.bad.push(q);
+                b.walk.mark_bad(q, b.ticks);
                 b.walk.route = None;
                 return Steer::Moving;
             };
@@ -710,6 +759,16 @@ impl Game<'_> {
         if matches!(step.how, Move::Walk) && !in_water {
             let below = [step.to[0], step.to[1] - 1, step.to[2]];
             b.keys.shift |= !self.floor(below);
+            // The way ends (or turns) at a cliff: no run-up over it.
+            let beyond = [step.to[0] + sx, step.to[1], step.to[2] + sz];
+            let cliff = (sx != 0 || sz != 0)
+                && !straight
+                && self.passable(beyond)
+                && (1..=4).all(|d| !self.floor([beyond[0], beyond[1] - d, beyond[2]]));
+            if cliff {
+                b.keys.shift = true;
+                b.keys.sprint = false;
+            }
         }
         Steer::Moving
     }

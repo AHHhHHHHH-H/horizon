@@ -442,6 +442,29 @@ impl Game<'_> {
                     && to_block(eye(pos), floor) < BLOCK_REACH - 0.2
             })
             .collect();
+        if spots.is_empty() {
+            // In a tunnel: room dug beside it first (a natural block at its
+            // feet, on a floor, with no fluid next to it).
+            let room = [([1, 0], 4u8), ([-1, 0], 5), ([0, 1], 2), ([0, -1], 3)]
+                .into_iter()
+                .map(|(d, face)| ([f[0] + d[0], f[1], f[2] + d[1]], face))
+                .find(|(p, _)| {
+                    !self.passable(*p)
+                        && self.natural(*p)
+                        && self.floor([p[0], p[1] - 1, p[2]])
+                        && [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]].iter().all(|d| {
+                            let q = [p[0] + d[0], p[1] + d[1], p[2] + d[2]];
+                            self.res.facts().get(self.world.block(q[0], q[1], q[2])).fluid
+                                == horizon_client::blocks::Fluid::None
+                        })
+                });
+            if let Some((p, face)) = room
+                && self.companion_dig_step(host, b, p, face).is_ok()
+            {
+                *tries -= 1;
+                return Place::Busy;
+            }
+        }
         let Some(&p) = spots.get((*tries as usize - 1) % spots.len().max(1)) else {
             return Place::Failed("no room to place it".into());
         };
