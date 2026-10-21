@@ -29,6 +29,9 @@ Scenarios (--scenario):
             time are summoned over the lava beside it, ahead, and a ghast floats over the lake. Done when it
             stands within 6 blocks of the spawner.
 - walk:     the same bridge, no mobs: the walker alone (fire and lava on its path).
+- fireres:  vanilla's fire resistance on a LAN guest: the companion (Fire Resistance on, holding still,
+            no shield) stands by a blaze for --ticks ticks, then in fire, then in lava. Every hurt of a
+            #minecraft:is_fire type it takes must be refused (no health lost, nothing taken).
 
     python3 tools/test_companion_lab.py --client target/fast/horizon-client --offscreen \\
         --subject companion --scenario spawner --runs 10 [--parallel 3]
@@ -219,12 +222,16 @@ def one_run(endpoint, args, n):
         command(endpoint, f'command summon minecraft:ghast {x + 12.5} {y + 10} {z + 0.5}')
     elif scenario == 'passive':
         command(endpoint, f'command summon minecraft:blaze {x + 8.5} {y} {z + 0.5}')
+    elif scenario == 'fireres':
+        command(endpoint, f'command effect give {NAME} minecraft:fire_resistance 600 0')
+        command(endpoint, f'command item replace entity {NAME} weapon.offhand with minecraft:air')
+        command(endpoint, f'command summon minecraft:blaze {x + 8.5} {y} {z + 0.5}')
     elif scenario == 'bridge':
         command(endpoint, f'command summon minecraft:ghast {x + BRIDGE // 2 + 0.5} {y + 8} {z + 6.5}')
     goal = (x + BRIDGE + 3, y, z)
     result['goal'] = list(goal)
     if args.subject == 'companion':
-        if scenario == 'passive':
+        if scenario in ('passive', 'fireres'):
             command(endpoint, f'companion do {NAME} stay')
             command(endpoint, f'companion do {NAME} hold')
         else:
@@ -237,7 +244,8 @@ def one_run(endpoint, args, n):
     started = time.monotonic()
     done = 0
     summoned = 0
-    budget = args.ticks if scenario == 'passive' else BUDGET[scenario]
+    budget = args.ticks if scenario in ('passive', 'fireres') else BUDGET[scenario]
+    lit = 0
     first_beef = None
     death = None
     while done < budget and time.monotonic() - started < args.wall:
@@ -268,6 +276,13 @@ def one_run(endpoint, args, n):
                 yaw = math.degrees(math.atan2(-dx, dz))
                 pitch = -math.degrees(math.atan2(dy, math.hypot(dx, dz)))
                 command(endpoint, f'look {yaw:.1f} {pitch:.1f}')
+        if scenario == 'fireres' and done >= budget // 3 and lit == 0:
+            # In fire, then (a third later) in lava.
+            command(endpoint, f'command setblock {x} {y} {z} minecraft:fire')
+            lit = 1
+        if scenario == 'fireres' and done >= 2 * budget // 3 and lit == 1:
+            command(endpoint, f'command setblock {x} {y} {z} minecraft:lava')
+            lit = 2
         sprint(endpoint, args.slice)
         done += args.slice
         strays(endpoint, at, scenario)
@@ -290,7 +305,9 @@ def one_run(endpoint, args, n):
         if dead or (hurts and hurts[-1]['health'] <= 0):
             death = hurts[-1]['source'] if hurts else 'unknown'
             break
-        if scenario in OPEN:
+        if scenario == 'fireres':
+            pass
+        elif scenario in OPEN:
             if pos and math.hypot(pos[0] - goal[0] - 0.5, pos[2] - goal[2] - 0.5) < 6:
                 result['reached'] = done
                 break
@@ -367,8 +384,20 @@ def mean(v):
 
 
 def summary(args, results):
-    ok = [r for r in results if r.get('survived') and (
-        r.get('reached') is not None if args.scenario in OPEN else args.scenario == 'passive' or r['kills'] >= args.kills)]
+    fire = ('minecraft:fireball', 'minecraft:on_fire', 'minecraft:in_fire', 'minecraft:lava')
+    if args.scenario == 'fireres':
+        for r in results:
+            r['fire_taken'] = round(sum(h['taken'] for h in r['hurts'] if h['source'] in fire), 2)
+            r['fire_hurts'] = sum(1 for h in r['hurts'] if h['source'] in fire)
+            r['fire_refused'] = sum(1 for h in r['hurts'] if h['source'] in fire and not h['hurt'])
+    ok = [r for r in results if r.get('survived') and (r.get('fire_taken', 0) == 0) and (
+        r.get('reached') is not None if args.scenario in OPEN
+        else args.scenario in ('passive', 'fireres') or r['kills'] >= args.kills)]
+    if args.scenario == 'fireres':
+        lines_extra = [f'Run {r["run"]}: fire-type hurts {r["fire_hurts"]}, refused {r["fire_refused"]}, '
+                       f'health taken {r["fire_taken"]}, min health {r.get("min_health")}' for r in results]
+    else:
+        lines_extra = []
     lines = [f'### {args.subject}, {args.scenario}{", no shield" if not args.shield else ""} '
              f'({len(results)} runs, seed {args.seed})', '',
              '| Survived and done | Deaths | Kills (mean) | Time (ticks, median of successes) | Min health (mean) '
@@ -377,7 +406,7 @@ def summary(args, results):
              f'{mean([r["kills"] for r in results])} | '
              f'{statistics.median([r["ticks"] for r in ok]) if ok else "-"} | '
              f'{mean([r["min_health"] for r in results if r.get("min_health") is not None])} | '
-             f'{mean([r["beef_eaten"] for r in results if r.get("beef_eaten") is not None])} |', '']
+             f'{mean([r["beef_eaten"] for r in results if r.get("beef_eaten") is not None])} |', ''] + lines_extra
     deaths = {}
     for r in results:
         if r.get('death'):
@@ -448,7 +477,7 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--subject', choices=['companion', 'host'], default='companion')
-    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive', 'bridge', 'walk'], default='spawner')
+    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive', 'bridge', 'walk', 'fireres'], default='spawner')
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--seed', type=int, default=SEED)
     parser.add_argument('--parallel', type=int, default=1)
