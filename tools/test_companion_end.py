@@ -140,6 +140,14 @@ def one_run(args, seed, level):
                 command(endpoint, f'companion watch {NAME}')
                 command(endpoint, 'render-distance 10')
                 command(endpoint, 'command tick sprint 1000000')
+                # Still in the room before the order (see above): where it
+                # starts goes in the results.
+                c = body(endpoint)
+                if c and abs(c.get('position', [0, 0, 0])[1] - ROOM_Y) >= 1.5:
+                    command(endpoint, f'command tp {NAME} 0.5 {ROOM_Y} 0.5 0 0')
+                    time.sleep(0.5)
+                    c = body(endpoint)
+                out['start'] = [round(v, 1) for v in (c or {}).get('position', [0, 0, 0])]
                 order = f'companion do {NAME} end {level}' + (' beds' if args.beds else '')
                 command(endpoint, order)
                 out['eyes_missing'] = missing
