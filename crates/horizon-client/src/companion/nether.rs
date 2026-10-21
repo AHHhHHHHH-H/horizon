@@ -489,6 +489,10 @@ pub const REACH: f64 = 3.0;
 /// between volleys (a blaze keeps its distance while it sees you).
 /// `low`: the health under which it backs off to heal (higher away from
 /// the spawner, where blazes come from every side and no box waits).
+/// How near a blaze comes to strike (BlazeAttackGoal: within 2 blocks),
+/// with a margin.
+pub const BLAZE_MELEE: f64 = 2.5;
+
 pub fn blaze_stance(health: f32, low: f32, charged: bool, foes: &[Foe], arrows: bool) -> Stance {
     if foes.is_empty() {
         return Stance::Wait;
@@ -498,12 +502,14 @@ pub fn blaze_stance(health: f32, low: f32, charged: bool, foes: &[Foe], arrows: 
     // shield up a volley does nothing, and blazes never come closer while
     // they see it (BlazeAttackGoal), so backing off from a crowd at a
     // spawner only leaves it hurt and none of them dead.
-    if health < low {
-        return Stance::Retreat;
-    }
     let nearest = (0..foes.len())
         .min_by(|a, b| foes[*a].reach.total_cmp(&foes[*b].reach))
         .unwrap_or(0);
+    // One on it (a blaze strikes from 2 blocks, BlazeAttackGoal) follows it
+    // into cover and hits its back: faced and fought however low it is.
+    if health < low && foes[nearest].reach > BLAZE_MELEE {
+        return Stance::Retreat;
+    }
     if foes[nearest].reach <= REACH && charged {
         return Stance::Strike(nearest);
     }
@@ -877,15 +883,26 @@ mod tests {
             sees: true,
             charging: false,
         };
+        let off = Foe {
+            reach: 4.0,
+            sees: true,
+            charging: false,
+        };
         assert_eq!(blaze_stance(20.0, 8.0, true, &[], false), Stance::Wait);
-        assert_eq!(
-            blaze_stance(6.0, 8.0, true, &[near], false),
-            Stance::Retreat
-        );
+        assert_eq!(blaze_stance(6.0, 8.0, true, &[off], false), Stance::Retreat);
         // Away from the spawner it backs off sooner.
         assert_eq!(
-            blaze_stance(11.0, 12.0, true, &[near], false),
+            blaze_stance(11.0, 12.0, true, &[off], false),
             Stance::Retreat
+        );
+        // One on it is fought however low it is (it would hit its back).
+        assert_eq!(
+            blaze_stance(6.0, 8.0, true, &[near], false),
+            Stance::Strike(0)
+        );
+        assert_eq!(
+            blaze_stance(6.0, 8.0, false, &[near], false),
+            Stance::Block(0)
         );
         // Two at it, half its health gone: it stays, the shield up to the
         // one shooting.
