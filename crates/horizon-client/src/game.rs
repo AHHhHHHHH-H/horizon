@@ -30,6 +30,7 @@ mod companion_craft;
 mod companion_run;
 mod companion_senses;
 mod companion_walk;
+mod companion_end;
 mod companion_watch;
 mod companion_work;
 mod composter;

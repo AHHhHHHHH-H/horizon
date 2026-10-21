@@ -93,6 +93,8 @@ pub(super) struct Body {
     pub walk: super::companion_walk::Walk,
     /// The Speedrunner's route under way (game/companion_run.rs).
     pub run: Option<Box<super::companion_run::Run>>,
+    /// The End route under way (game/companion_end.rs).
+    pub end: Option<Box<super::companion_end::EndRun>>,
 }
 
 /// What the hub costs per tick while companions are in it: its whole tick
@@ -239,6 +241,7 @@ impl Body {
             ),
             walk: Default::default(),
             run: None,
+            end: None,
         }
     }
     /// Put what it is doing in its file: a fight or a retreat resumes what
@@ -311,6 +314,9 @@ pub(super) struct Companions {
     pub mined: Option<std::sync::Arc<std::collections::HashMap<String, Vec<horizon_client::companion::techtree::Mined>>>>,
     /// Item → what smelts into it (the tech planner asks at every step).
     pub smelted: Option<std::sync::Arc<std::collections::HashMap<String, Vec<String>>>>,
+    /// The End runs that finished, by companion name: their last status
+    /// (a body that died and came back is a new body).
+    pub end_runs: Vec<(String, Value)>,
 }
 
 impl Companions {
@@ -1102,6 +1108,7 @@ impl Game<'_> {
                     "digging": b.work.dig.map(|d| d.0),
                     "mining": host.play.get(&b.conn).and_then(|p| p.mining()),
                     "on_ground": g.on_ground,
+                    "end": self.companion_end_status(b),
                 }))
             })
             .collect();

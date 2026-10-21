@@ -263,46 +263,28 @@ impl Game<'_> {
         };
         let player_hurtable = teams_allow(self, self.player_team());
         // Player.
-        if let Some(p) = self.player.as_ref() {
-            let feet = [p.position.x, p.position.y, p.position.z];
-            let dist = distance(feet) / diameter;
-            if dist <= 1.0 && !p.health.dead_or_dying() {
-                let w = f64::from(p.dimensions.width) / 2.0;
-                let h = f64::from(p.dimensions.height);
-                let eye = [
-                    feet[0],
-                    feet[1] + f64::from(p.dimensions.eye_height),
-                    feet[2],
-                ];
-                let exposure = self.seen_percent(
-                    center,
-                    [feet[0] - w, feet[1], feet[2] - w],
-                    [feet[0] + w, feet[1] + h, feet[2] + w],
-                );
-                let amount = damage(dist, exposure);
-                let dir = direction(eye);
-                let power = (1.0 - dist) * f64::from(exposure);
-                let mut hurt = false;
-                let creative = self.creative;
-                if let Some(p) = self.player.as_mut()
-                    && let Some(id) = self.motion.health.damage.id(damage_type)
-                {
-                    // Creative players are invulnerable to explosions.
-                    if !creative && player_hurtable {
-                        hurt = p
-                            .hurt(&self.motion.health, self.world.health_rules, id, amount)
-                            .unwrap_or(false);
-                    }
-                    p.velocity = Vec3::new(
-                        p.velocity.x + dir[0] * power,
-                        p.velocity.y + dir[1] * power,
-                        p.velocity.z + dir[2] * power,
-                    );
-                }
-                if hurt && !self.creative {
-                    self.hurt_armor(amount);
-                }
+        self.explosion_hurt_player(center, radius, damage_type, player_hurtable);
+        // The other players in the level: LAN guests, companions
+        // (ServerExplosion.hurtEntities hits every player it reaches),
+        // each as themselves, their knockback sent to their client.
+        if let Some(mut host) = self.lan.take() {
+            let reach = |p: [f64; 3]| distance(p) <= diameter;
+            let acting = self.lan_acting;
+            let guests: Vec<u32> = host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| host.hub.here(g) && g.loaded && !g.dead)
+                .filter(|g| !g.spectator() && !g.creative() && Some(g.conn) != acting)
+                .filter(|g| reach(g.position))
+                .map(|g| g.conn)
+                .collect();
+            for conn in guests {
+                self.guest_hit_by(&mut host, conn, |g| {
+                    g.explosion_hurt_player(center, radius, damage_type, true);
+                });
             }
+            self.lan = Some(host);
         }
         // Mobs.
         let mut mobs = std::mem::take(&mut self.mobs);
@@ -387,6 +369,70 @@ impl Game<'_> {
             );
         }
         self.tnts = tnts;
+    }
+    /// The explosion's damage and knockback on the player in place (the
+    /// window's own, or a guest during their turn).
+    fn explosion_hurt_player(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        damage_type: &str,
+        hurtable: bool,
+    ) {
+        let diameter = f64::from(radius * 2.0);
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let feet = [p.position.x, p.position.y, p.position.z];
+        let dist = ((feet[0] - center[0]).powi(2)
+            + (feet[1] - center[1]).powi(2)
+            + (feet[2] - center[2]).powi(2))
+        .sqrt()
+            / diameter;
+        if dist > 1.0 || p.health.dead_or_dying() {
+            return;
+        }
+        let w = f64::from(p.dimensions.width) / 2.0;
+        let h = f64::from(p.dimensions.height);
+        let eye = [
+            feet[0],
+            feet[1] + f64::from(p.dimensions.eye_height),
+            feet[2],
+        ];
+        let exposure = self.seen_percent(
+            center,
+            [feet[0] - w, feet[1], feet[2] - w],
+            [feet[0] + w, feet[1] + h, feet[2] + w],
+        );
+        let pow = (1.0 - dist) * f64::from(exposure);
+        let amount = ((pow * pow + pow) / 2.0 * 7.0 * diameter + 1.0) as f32;
+        let d = [eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let dir = if l < 1.0e-4 {
+            [0.0; 3]
+        } else {
+            [d[0] / l, d[1] / l, d[2] / l]
+        };
+        let mut hurt = false;
+        let creative = self.creative;
+        if let Some(p) = self.player.as_mut()
+            && let Some(id) = self.motion.health.damage.id(damage_type)
+        {
+            // Creative players are invulnerable to explosions.
+            if !creative && hurtable {
+                hurt = p
+                    .hurt(&self.motion.health, self.world.health_rules, id, amount)
+                    .unwrap_or(false);
+            }
+            p.velocity = Vec3::new(
+                p.velocity.x + dir[0] * pow,
+                p.velocity.y + dir[1] * pow,
+                p.velocity.z + dir[2] * pow,
+            );
+        }
+        if hurt && !self.creative {
+            self.hurt_armor(amount);
+        }
     }
     /// `Level.explode` on the server: positions, entities, blocks, fire; then
     /// the client's explosion sound.

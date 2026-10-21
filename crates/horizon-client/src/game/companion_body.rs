@@ -217,7 +217,9 @@ impl Game<'_> {
         let hungry = food < c::EAT_BELOW
             || b.retreating && food < 20 && !danger_close
             || b.run.is_some() && health < 18.0 && food < 18 && !danger_close;
-        if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
+        // (The End route eats when it is out of the dragon's way.)
+        let ending = b.end.as_ref().is_some_and(|e| e.active());
+        if b.eating.is_none() && hungry && !ending && (b.target.is_none() || !danger_close) {
             self.companion_start_eating(host, b);
         }
         self.companion_work_reflexes(host, b);
@@ -252,6 +254,27 @@ impl Game<'_> {
         owner: [f64; 3],
     ) {
         let pos = host.hub.guest(b.conn).map_or(owner, |g| g.position);
+        // The Watch's Stay as the body goes through the End portal leaves
+        // the End route on; any other order for where it goes ends it.
+        if b.end.as_ref().is_some_and(|e| e.arriving()) && matches!(command, CompanionCommand::Stay)
+        {
+            return;
+        }
+        // (A finished run's record stays for its status.)
+        if b.end.as_ref().is_some_and(|e| e.active())
+            && matches!(
+                command,
+                CompanionCommand::Follow
+                    | CompanionCommand::Stay
+                    | CompanionCommand::Come
+                    | CompanionCommand::GoTo(_)
+                    | CompanionCommand::Stop
+                    | CompanionCommand::Defend
+                    | CompanionCommand::End { .. }
+            )
+        {
+            b.end = None;
+        }
         // A new order for where it goes ends the work it had on.
         if !b.work.tasks.is_empty()
             && matches!(
@@ -396,6 +419,9 @@ impl Game<'_> {
                 }
             }
             CompanionCommand::Perception(level) => b.senses.level = level,
+            CompanionCommand::End { perception, beds } => {
+                self.companion_start_end(b, perception, beds);
+            }
             CompanionCommand::Eat => {
                 if !self.companion_start_eating(host, b) {
                     self.companion_report(
@@ -543,6 +569,10 @@ impl Game<'_> {
                 .find(|m| m.id == id && m.alive())
                 .is_some_and(|m| {
                     let at = mob_at(m);
+                    // A calmed enderman is left alone (a blow angers it again).
+                    if !b.ordered && calm_enderman(m) {
+                        return false;
+                    }
                     if b.ordered {
                         c::distance(at, pos) <= 48.0
                     } else {
@@ -622,7 +652,9 @@ impl Game<'_> {
                     .map(|m| m.id);
             }
         }
-        if let Some(id) = pick {
+        if let Some(id) = pick
+            && !alive(id).is_some_and(calm_enderman)
+        {
             b.target = Some(id);
             b.ordered = false;
             b.nav.reset();
@@ -631,6 +663,9 @@ impl Game<'_> {
 
     /// Where it goes this tick, and the blow it strikes.
     fn companion_move(&mut self, host: &mut LanHost, b: &mut Body, pos: [f64; 3], owner: [f64; 3]) {
+        if b.end.as_ref().is_some_and(|e| e.active()) && self.companion_end_tick(host, b, pos) {
+            return;
+        }
         let eye = [pos[0], pos[1] + 1.62, pos[2]];
         // A run watches over whatever its work does.
         if b.run.is_some() && self.companion_run_watch(host, b, pos) {
@@ -698,6 +733,7 @@ impl Game<'_> {
         }
         match b.skill {
             Skill::Idle | Skill::Attack => self.companion_look_at_owner(b, pos, owner),
+            Skill::End => {}
             Skill::Collect | Skill::Give | Skill::Craft | Skill::Smelt | Skill::Sleep => {
                 self.companion_work(host, b, pos, owner);
             }
@@ -1070,11 +1106,17 @@ impl Game<'_> {
         if self.look_at_entity(host, gi, entity).is_none() {
             return;
         }
+        let ordered = b.ordered;
         // The host's own "last hurt mob" is its owner's (wolves follow it).
         let owner_hurt = self.combat.last_hurt_mob;
         let hit = self
             .as_guest(host, b.conn, |g| {
-                g.attack_strength_scale() >= 0.95 && g.attack()
+                // A calm enderman takes no blow it wasn't ordered to (one in
+                // the way of the target would, and then hunt it).
+                let stray = g.mob_hit().is_some_and(|(i, _)| {
+                    calm_enderman(&g.mobs[i]) && !(ordered && g.mobs[i].id == id)
+                });
+                !stray && g.attack_strength_scale() >= 0.95 && g.attack()
             })
             .unwrap_or(false);
         self.combat.last_hurt_mob = owner_hurt;
@@ -1091,7 +1133,7 @@ impl Game<'_> {
     /// Its best armour on and its best weapon in hand.
     pub(super) fn companion_gear(&mut self, host: &mut LanHost, b: &mut Body) {
         let _slow = super::companion::SlowLog::new("gear");
-        if b.eating.is_some() || b.work.busy_hands() {
+        if b.eating.is_some() || b.work.busy_hands() || super::companion_end::holds(b) {
             return;
         }
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
@@ -1101,6 +1143,9 @@ impl Game<'_> {
         let g = &mut host.hub.guests[gi];
         let mut armor: Vec<(usize, Option<ItemStack>, Option<ItemStack>)> = Vec::new();
         for slot in 0..4 {
+            if slot == 0 && super::companion_end::keeps_pumpkin(b, g.armor[0].as_ref()) {
+                continue;
+            }
             let worn = g.armor[slot]
                 .as_ref()
                 .and_then(|s| gear::armor_score(items, s))
@@ -1150,7 +1195,7 @@ impl Game<'_> {
 
     /// Start eating its best food: into the hotbar, then used as a client's
     /// use-item packet would. False when it carries nothing worth eating.
-    fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
+    pub(super) fn companion_start_eating(&mut self, host: &mut LanHost, b: &mut Body) -> bool {
         if b.eating.is_some() {
             return true;
         }
@@ -1237,7 +1282,16 @@ impl Game<'_> {
             stacks.extend(g.offhand.take());
             stacks.extend(g.carried.take());
         }
+        // What last hurt it (the damage type), for the End's record.
+        let source = host
+            .hub
+            .guest(conn)
+            .and_then(|g| g.motion.as_ref())
+            .and_then(|m| m.health.hurt.last_source)
+            .and_then(|id| self.motion.health.damage.definition(id))
+            .map(|d| d.name.clone());
         let mut b = host.companions.remove(bi);
+        self.companion_end_died(&mut b, at, source.as_deref());
         for stack in stacks {
             // Player.drop(stack, true): thrown in a random direction.
             let f = b.next_float() * 0.5;
@@ -1534,4 +1588,9 @@ pub(super) fn carried(inventory: &[Option<ItemStack>], item: &str) -> u32 {
         .filter(|s| &*s.item == item)
         .map(|s| s.count)
         .sum()
+}
+
+/// An enderman after nobody: looking at it or hitting it is what angers it.
+fn calm_enderman(m: &Mob) -> bool {
+    &*m.kind.id == "minecraft:enderman" && m.ai.target.is_none()
 }
