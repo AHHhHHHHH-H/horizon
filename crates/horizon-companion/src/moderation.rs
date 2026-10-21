@@ -209,16 +209,67 @@ pub enum Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Heard {
     Pass,
-    /// It passes, but it was close: the reply is judged strictly (borderline harm stops it).
+    /// It passes, but it was close to harm: the reply is judged strictly (borderline harm stops it).
     Wary,
+    /// It passes, but it asks for hate, harassment or misinformation even in the game's context:
+    /// the reply is judged strictly for hate too (and for harm, as [`Heard::Wary`]).
+    Hostile,
     Stop(Trip),
-    /// It looks violent, illegal or like self-harm: judge it again in the game's context
+    /// It looks violent, illegal, hateful or like self-harm: judge it again in the game's context
     /// ([`decide_heard_in_game`]).
     Recheck,
 }
 
+/// How strictly a reply is judged, from what the guard found in the line it answers. Salty's
+/// tolerance (in-game violence, insults at the player's play) holds only while all are off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Watch {
+    /// The line was close to harm (violence, weapons, illegal acts, self-harm): a reply even
+    /// borderline harmful stops, in Salty too.
+    pub harm: bool,
+    /// The line asked for hate, harassment or misinformation and still did in the game's context:
+    /// a reply even borderline hateful or political stops.
+    pub hate: bool,
+    /// The line read as hateful at first look only (banter mostly does, but so do some attacks on a
+    /// group): a reply the model is sure is hateful stops, whoever it names.
+    pub rude: bool,
+}
+
+impl Watch {
+    /// What the first look at the line heard (without context) adds.
+    pub fn first(a: &Assessment) -> Watch {
+        Watch {
+            rude: a.has(Category::Unethical) && a.severity >= Severity::Controversial,
+            ..Watch::default()
+        }
+    }
+
+    /// The watch after a look at the line heard said `look`.
+    pub fn after(self, look: Heard) -> Watch {
+        match look {
+            Heard::Wary => Watch { harm: true, ..self },
+            Heard::Hostile => Watch {
+                harm: true,
+                hate: true,
+                ..self
+            },
+            _ => self,
+        }
+    }
+
+    /// Salty's in-game violence is no longer let through.
+    fn strict(self) -> bool {
+        self.harm || self.hate
+    }
+}
+
 fn names_a_group(texts: &[&str]) -> bool {
     texts.iter().any(|t| guard::names_a_group(t))
+}
+
+/// Hate, harassment or misinformation (the model files misinformation under either).
+fn hateful(a: &Assessment) -> bool {
+    a.has(Category::Unethical) || a.has(Category::Political)
 }
 
 /// The keyword category for what the model found, worst first.
@@ -231,7 +282,7 @@ fn trip_of(a: &Assessment) -> Option<Trip> {
         Some(Trip::Harm)
     } else if a.has(Category::Pii) || a.has(Category::Jailbreak) {
         Some(Trip::Rules)
-    } else if a.has(Category::Unethical) {
+    } else if hateful(a) {
         Some(Trip::Slur)
     } else {
         None
@@ -243,14 +294,15 @@ fn trip_of(a: &Assessment) -> Option<Trip> {
 /// are never said in a game); its harm, sexual and self-harm words only make the guard look harder,
 /// since players say "this lava trap is suicide" and "bomb the ocean monument".
 /// - A harm or sexual word stops when the model finds anything harmful even borderline, and
-///   otherwise makes the reply judged strictly.
+///   otherwise makes the reply judged strictly (and the line judged again if it looks hateful).
 /// - Self-harm, a word or the model's, is judged again in context ("I'm going to die if I jump").
 /// - Sexual content, a jailbreak or someone's personal data stop when the model finds them even
 ///   borderline (players rarely say anything near them in a game).
-/// - Violence and illegal acts are judged again in context when it is sure: alone it flags "kill
-///   that zombie" as often as a real bomb.
-/// - Hate stops when it names a group of people; insults at the companion pass (its reply is judged).
-pub fn decide_heard(mode: Mode, a: &Assessment, line: &str, keyword: Option<Trip>) -> Heard {
+/// - Violence the model is sure of, illegal acts even borderline, and hate or politics even
+///   borderline are judged again in context: alone it flags "kill that zombie" as often as a real
+///   bomb, and "roast my house" as often as an attack on a group.
+/// - Hate stops at once when it names a group of people the list knows.
+pub fn decide_heard(_mode: Mode, a: &Assessment, line: &str, keyword: Option<Trip>) -> Heard {
     let sure = a.severity == Severity::Unsafe;
     let borderline = a.severity >= Severity::Controversial;
     match keyword {
@@ -265,6 +317,8 @@ pub fn decide_heard(mode: Mode, a: &Assessment, line: &str, keyword: Option<Trip
                 || a.has(Category::Unethical) && names_a_group(&[line]);
             return if borderline && harmful {
                 Heard::Stop(trip_of(a).unwrap_or(word))
+            } else if borderline && hateful(a) {
+                Heard::Recheck
             } else {
                 Heard::Wary
             };
@@ -280,22 +334,22 @@ pub fn decide_heard(mode: Mode, a: &Assessment, line: &str, keyword: Option<Trip
     if a.has(Category::Unethical) && sure && names_a_group(&[line]) {
         return Heard::Stop(Trip::Slur);
     }
-    let violent = a.has(Category::Violent) || a.has(Category::IllegalActs);
-    if (violent && sure) || (a.has(Category::SelfHarm) && borderline) {
-        return Heard::Recheck;
-    }
-    if mode == Mode::Kid && a.has(Category::IllegalActs) && borderline {
+    let recheck = a.has(Category::Violent) && sure
+        || (a.has(Category::IllegalActs) || a.has(Category::SelfHarm) || hateful(a)) && borderline;
+    if recheck {
         return Heard::Recheck;
     }
     Heard::Pass
 }
 
-/// The second look, in the game's context:
+/// The second look, in the game's context (`first` is the look without it):
 /// - self-harm, even borderline, is real (the caring line);
 /// - harm, sexual content or personal data the model is still sure of stop;
-/// - borderline, or a word the list found, pass with the reply judged strictly: the brain answers
-///   (it refuses in character) and the guard stops a reply that is even borderline harmful.
-pub fn decide_heard_in_game(a: &Assessment, keyword: Option<Trip>) -> Heard {
+/// - hate or politics still found, even borderline, pass with the reply judged strictly for hate
+///   and harm: the brain answers (it refuses in character) and the guard stops a reply that agrees;
+/// - borderline harm, a word the list found, or an illegal act the first look found pass with the
+///   reply judged strictly for harm.
+pub fn decide_heard_in_game(a: &Assessment, first: &Assessment, keyword: Option<Trip>) -> Heard {
     let sure = a.severity == Severity::Unsafe;
     let borderline = a.severity >= Severity::Controversial;
     if a.has(Category::SelfHarm) && borderline {
@@ -308,27 +362,36 @@ pub fn decide_heard_in_game(a: &Assessment, keyword: Option<Trip>) -> Heard {
     if harmful && sure {
         return Heard::Stop(trip_of(a).unwrap_or(Trip::Harm));
     }
-    if harmful && borderline || keyword.is_some() {
+    if hateful(a) && borderline {
+        return Heard::Hostile;
+    }
+    let asked_illegal =
+        first.has(Category::IllegalActs) && first.severity >= Severity::Controversial;
+    if harmful && borderline || keyword.is_some() || asked_illegal {
         return Heard::Wary;
     }
     Heard::Pass
 }
 
 /// The companion's reply so far, judged in the game's context, with the line it answers.
-/// - After a close line (`wary`), anything harmful even borderline stops.
+/// - After a line close to harm (`watch.harm`), anything harmful even borderline stops; after a
+///   line that asked for hate (`watch.hate`), anything hateful or political even borderline too.
+/// - After a line that read as hateful at first look (`watch.rude`), a reply the model is sure is
+///   hateful stops whoever it names.
 /// - Self-harm and sexual content stop when the model is sure; Kid-friendly also stops what it finds
 ///   borderline. Illegal acts and personal data stop when it is sure.
-/// - Violence stops when it is sure, except in Salty after a line that was not close: in-game
+/// - Violence stops when it is sure, except in Salty after a line that raised no watch: in-game
 ///   violence is part of Salty's trash talk ("I'll crush them all") and the model reads it as real.
-/// - "Unethical Acts" is hate and insults at once: it stops when the line or the reply names a group
-///   of people, and in Kid-friendly always (no insults), so banter aimed at the player passes.
+/// - "Unethical Acts" is hate and insults at once: otherwise it stops when the line or the reply
+///   names a group of people, and in Kid-friendly always (no insults), so banter aimed at the
+///   player passes.
 /// - Swearing is not judged here: Clean and Kid-friendly mask it ([`guard::bleep`]).
 pub fn decide_said(
     mode: Mode,
     a: &Assessment,
     heard: &str,
     reply: &str,
-    wary: bool,
+    watch: Watch,
 ) -> Option<Trip> {
     let sure = a.severity == Severity::Unsafe;
     let borderline = a.severity >= Severity::Controversial;
@@ -338,8 +401,14 @@ pub fn decide_said(
         || a.has(Category::Sexual)
         || a.has(Category::SelfHarm)
         || a.has(Category::Pii);
-    if wary && borderline && harmful {
+    if (watch.harm || watch.hate) && borderline && harmful {
         return trip_of(a);
+    }
+    if watch.hate && borderline && hateful(a) {
+        return Some(Trip::Slur);
+    }
+    if watch.rude && sure && a.has(Category::Unethical) {
+        return Some(Trip::Slur);
     }
     if a.has(Category::SelfHarm) && (sure || kid && borderline) {
         return Some(Trip::SelfHarm);
@@ -350,7 +419,7 @@ pub fn decide_said(
     if a.has(Category::IllegalActs) && sure {
         return Some(Trip::Harm);
     }
-    if a.has(Category::Violent) && sure && !(mode == Mode::Salty && !wary) {
+    if a.has(Category::Violent) && sure && !(mode == Mode::Salty && !watch.strict()) {
         return Some(Trip::Harm);
     }
     if a.has(Category::Pii) && sure {
@@ -523,8 +592,10 @@ struct Turn {
     /// What the word list found in the line heard or a sentence and left to the guard: if the
     /// guard fails, the list decides as it would alone.
     keyword: Option<Trip>,
-    /// The line heard was close: the reply is judged strictly.
-    wary: bool,
+    /// What the first look at the line heard found (the second look reads it too).
+    first: Option<Assessment>,
+    /// How strictly the reply is judged.
+    watch: Watch,
 }
 
 /// What a check is about.
@@ -689,7 +760,8 @@ impl Gate {
             checking: None,
             done: false,
             keyword,
-            wary: false,
+            first: None,
+            watch: Watch::default(),
         });
         if check {
             let check = Check::Heard {
@@ -712,7 +784,7 @@ impl Gate {
         match guard::check(text) {
             Some(Trip::SelfHarm) if judging => {
                 t.keyword = Some(Trip::SelfHarm);
-                t.wary = true;
+                t.watch.harm = true;
             }
             Some(trip) => {
                 self.block(turn, trip, false);
@@ -792,7 +864,8 @@ impl Gate {
             return;
         };
         let heard = t.heard.clone();
-        let (keyword, wary) = (t.keyword, t.wary);
+        let (keyword, watch) = (t.keyword, t.watch);
+        let first = t.first.clone().unwrap_or_else(Assessment::safe);
         let heard_side = matches!(p.stage, Stage::Heard | Stage::HeardInGame);
         let a = match verdict {
             Ok(a) => a,
@@ -813,9 +886,9 @@ impl Gate {
         };
         let look = match p.stage {
             Stage::Heard => decide_heard(self.mode, &a, &heard, keyword),
-            Stage::HeardInGame => decide_heard_in_game(&a, keyword),
+            Stage::HeardInGame => decide_heard_in_game(&a, &first, keyword),
             Stage::Said(n) => {
-                match decide_said(self.mode, &a, &heard, &t.sentences[..n].join(" "), wary) {
+                match decide_said(self.mode, &a, &heard, &t.sentences[..n].join(" "), watch) {
                     Some(trip) => Heard::Stop(trip),
                     None => Heard::Pass,
                 }
@@ -827,6 +900,13 @@ impl Gate {
                 return;
             }
             Heard::Recheck => {
+                if let Some(t) = self.turns.iter_mut().find(|t| t.id == p.turn) {
+                    t.first = Some(a.clone());
+                    if Watch::first(&a).rude && !t.watch.rude {
+                        t.watch.rude = true;
+                        t.passed = 0;
+                    }
+                }
                 let check = Check::Heard {
                     line: heard,
                     in_game: true,
@@ -834,15 +914,19 @@ impl Gate {
                 self.submit(p.turn, Stage::HeardInGame, check, Instant::now());
                 return;
             }
-            Heard::Pass | Heard::Wary => {}
+            Heard::Pass | Heard::Wary | Heard::Hostile => {}
         }
         let Some(t) = self.turns.iter_mut().find(|t| t.id == p.turn) else {
             return;
         };
-        if look == Heard::Wary && !t.wary {
+        let mut watch = t.watch.after(look);
+        if p.stage == Stage::Heard {
+            watch.rude |= Watch::first(&a).rude;
+        }
+        if watch != t.watch {
             // Sentences checked before this are judged again, strictly (none was said: they wait
             // for the line heard).
-            t.wary = true;
+            t.watch = watch;
             t.passed = 0;
         }
         match p.stage {
@@ -944,6 +1028,17 @@ mod tests {
         assert!(common > 800, "{common}");
     }
 
+    const CALM: Watch = Watch {
+        harm: false,
+        hate: false,
+        rude: false,
+    };
+    const WARY: Watch = Watch {
+        harm: true,
+        hate: false,
+        rude: false,
+    };
+
     fn a(severity: Severity, categories: &[Category]) -> Assessment {
         Assessment {
             severity,
@@ -959,15 +1054,15 @@ mod tests {
         let line = "You absolute walnut, you fell in lava again.";
         // An insult aimed at the player passes, except for kids; hate against a group never does.
         assert_eq!(
-            decide_said(Mode::Salty, &insult, "roast me", line, false),
+            decide_said(Mode::Salty, &insult, "roast me", line, CALM),
             None
         );
         assert_eq!(
-            decide_said(Mode::Clean, &insult, "roast me", line, false),
+            decide_said(Mode::Clean, &insult, "roast me", line, CALM),
             None
         );
         assert_eq!(
-            decide_said(Mode::Kid, &insult, "roast me", line, false),
+            decide_said(Mode::Kid, &insult, "roast me", line, CALM),
             Some(Trip::Slur)
         );
         for mode in [Mode::Clean, Mode::Salty] {
@@ -977,7 +1072,7 @@ mod tests {
                     &insult,
                     "x",
                     "Immigrants are vermin, all of them.",
-                    false
+                    CALM
                 ),
                 Some(Trip::Slur)
             );
@@ -988,24 +1083,27 @@ mod tests {
                     &insult,
                     "Les homos c'est dégoûtant",
                     "T'as raison.",
-                    false
+                    CALM
                 ),
                 Some(Trip::Slur)
             );
         }
-        // An insult heard never stops on its own.
-        assert_eq!(decide_heard(Mode::Clean, &insult, line, None), Heard::Pass);
+        // An insult heard never stops on its own: it is judged again in the game's context.
+        assert_eq!(
+            decide_heard(Mode::Clean, &insult, line, None),
+            Heard::Recheck
+        );
         for mode in [Mode::Clean, Mode::Kid, Mode::Salty] {
             assert_eq!(
                 decide_heard(mode, &a(Unsafe, &[IllegalActs]), "x", None),
                 Heard::Recheck
             );
             assert_eq!(
-                decide_said(mode, &a(Unsafe, &[Sexual]), "x", "x", false),
+                decide_said(mode, &a(Unsafe, &[Sexual]), "x", "x", CALM),
                 Some(Trip::Sexual)
             );
             assert_eq!(
-                decide_said(mode, &a(Unsafe, &[IllegalActs]), "x", "x", false),
+                decide_said(mode, &a(Unsafe, &[IllegalActs]), "x", "x", CALM),
                 Some(Trip::Harm)
             );
             assert_eq!(
@@ -1017,7 +1115,7 @@ mod tests {
                 Heard::Stop(Trip::Sexual)
             );
             assert_eq!(
-                decide_said(mode, &a(Unsafe, &[Violent, SelfHarm]), "x", "x", false),
+                decide_said(mode, &a(Unsafe, &[Violent, SelfHarm]), "x", "x", CALM),
                 Some(Trip::SelfHarm)
             );
             // In-game violence the model finds borderline passes, even for kids...
@@ -1026,12 +1124,12 @@ mod tests {
                 Heard::Pass
             );
             assert_eq!(
-                decide_said(mode, &a(Controversial, &[Violent]), "x", "x", false),
+                decide_said(mode, &a(Controversial, &[Violent]), "x", "x", CALM),
                 None
             );
             // ...but not after a close line: then borderline harm stops the reply.
             assert_eq!(
-                decide_said(mode, &a(Controversial, &[Violent]), "x", "x", true),
+                decide_said(mode, &a(Controversial, &[Violent]), "x", "x", WARY),
                 Some(Trip::Harm)
             );
             // Self-harm, even sure, is judged again in context ("I'm going to die if I jump").
@@ -1043,34 +1141,38 @@ mod tests {
         // Violence the model is sure of stops, except in Salty after a line that wasn't close.
         let violent = a(Unsafe, &[Violent]);
         assert_eq!(
-            decide_said(Mode::Clean, &violent, "x", "x", false),
+            decide_said(Mode::Clean, &violent, "x", "x", CALM),
             Some(Trip::Harm)
         );
         assert_eq!(
-            decide_said(Mode::Kid, &violent, "x", "x", false),
+            decide_said(Mode::Kid, &violent, "x", "x", CALM),
             Some(Trip::Harm)
         );
-        assert_eq!(decide_said(Mode::Salty, &violent, "x", "x", false), None);
+        assert_eq!(decide_said(Mode::Salty, &violent, "x", "x", CALM), None);
         assert_eq!(
-            decide_said(Mode::Salty, &violent, "x", "x", true),
+            decide_said(Mode::Salty, &violent, "x", "x", WARY),
             Some(Trip::Harm)
         );
         // The second look: sure in the game's context means real; borderline makes the reply strict.
+        let first = a(Unsafe, &[Violent]);
         assert_eq!(
-            decide_heard_in_game(&a(Unsafe, &[Violent]), None),
+            decide_heard_in_game(&a(Unsafe, &[Violent]), &first, None),
             Heard::Stop(Trip::Harm)
         );
         assert_eq!(
-            decide_heard_in_game(&a(Controversial, &[Violent]), None),
+            decide_heard_in_game(&a(Controversial, &[Violent]), &first, None),
             Heard::Wary
         );
         assert_eq!(
-            decide_heard_in_game(&a(Controversial, &[SelfHarm]), None),
+            decide_heard_in_game(&a(Controversial, &[SelfHarm]), &first, None),
             Heard::Stop(Trip::SelfHarm)
         );
-        assert_eq!(decide_heard_in_game(&Assessment::safe(), None), Heard::Pass);
         assert_eq!(
-            decide_heard_in_game(&Assessment::safe(), Some(Trip::SelfHarm)),
+            decide_heard_in_game(&Assessment::safe(), &first, None),
+            Heard::Pass
+        );
+        assert_eq!(
+            decide_heard_in_game(&Assessment::safe(), &first, Some(Trip::SelfHarm)),
             Heard::Wary
         );
         assert_eq!(
@@ -1078,11 +1180,11 @@ mod tests {
             Heard::Recheck
         );
         assert_eq!(
-            decide_said(Mode::Clean, &a(Controversial, &[Sexual]), "x", "x", false),
+            decide_said(Mode::Clean, &a(Controversial, &[Sexual]), "x", "x", CALM),
             None
         );
         assert_eq!(
-            decide_said(Mode::Kid, &a(Controversial, &[Sexual]), "x", "x", false),
+            decide_said(Mode::Kid, &a(Controversial, &[Sexual]), "x", "x", CALM),
             Some(Trip::Sexual)
         );
     }
@@ -1195,8 +1297,15 @@ mod tests {
                     "quux tincture",
                     a(Severity::Unsafe, &[Category::IllegalActs]),
                 ),
+                ("all blorgs", a(Severity::Unsafe, &[Category::Unethical])),
+                (
+                    "glorp lady",
+                    a(Severity::Controversial, &[Category::Unethical]),
+                ),
+                ("dork", a(Severity::Controversial, &[Category::Unethical])),
             ],
             in_game: vec![
+                ("all blorgs", a(Severity::Unsafe, &[Category::Unethical])),
                 ("zorp blaster", a(Severity::Unsafe, &[Category::Violent])),
                 (
                     "yellowcake",
@@ -1430,6 +1539,112 @@ mod tests {
                 events.contains(&GateEvent::Speak { turn: 1, index: 0 }),
                 said,
                 "{mode:?} {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_to_a_hateful_line_is_judged_strictly_in_every_mode() {
+        use Category::*;
+        use Severity::*;
+        let hostile = Watch::default().after(Heard::Hostile);
+        let rude = Watch::first(&a(Controversial, &[Unethical]));
+        assert!(hostile.harm && hostile.hate && !rude.harm && rude.rude);
+        // Hate or misinformation still found in the game's context: the reply is strict on hate,
+        // politics and harm, whatever names it holds, and Salty's violence no longer passes.
+        assert_eq!(
+            decide_heard_in_game(&a(Unsafe, &[Unethical]), &a(Unsafe, &[Unethical]), None),
+            Heard::Hostile
+        );
+        assert_eq!(
+            decide_heard_in_game(&a(Controversial, &[Political]), &Assessment::safe(), None),
+            Heard::Hostile
+        );
+        for mode in [Mode::Clean, Mode::Kid, Mode::Salty] {
+            for found in [Unethical, Political] {
+                assert_eq!(
+                    decide_said(mode, &a(Controversial, &[found]), "x", "x", hostile),
+                    Some(Trip::Slur)
+                );
+            }
+            assert_eq!(
+                decide_said(mode, &a(Unsafe, &[Violent]), "x", "x", hostile),
+                Some(Trip::Harm)
+            );
+            // Hateful at first look only: a reply the model is sure is hateful stops.
+            assert_eq!(
+                decide_said(mode, &a(Unsafe, &[Unethical]), "x", "x", rude),
+                Some(Trip::Slur)
+            );
+        }
+        assert_eq!(
+            decide_said(Mode::Salty, &a(Controversial, &[Unethical]), "x", "x", rude),
+            None
+        );
+        assert_eq!(
+            decide_said(Mode::Salty, &a(Unsafe, &[Violent]), "x", "x", rude),
+            None
+        );
+        // An illegal act asked, even borderline, keeps the reply strict on harm after the game's
+        // context cleared it.
+        assert_eq!(
+            decide_heard(Mode::Salty, &a(Controversial, &[IllegalActs]), "x", None),
+            Heard::Recheck
+        );
+        assert_eq!(
+            decide_heard_in_game(&Assessment::safe(), &a(Controversial, &[IllegalActs]), None),
+            Heard::Wary
+        );
+        // A harm word with a hateful look is judged again rather than only made wary.
+        assert_eq!(
+            decide_heard(
+                Mode::Salty,
+                &a(Controversial, &[Unethical]),
+                "x",
+                Some(Trip::Harm)
+            ),
+            Heard::Recheck
+        );
+    }
+
+    #[test]
+    fn salty_does_not_join_an_attack_on_a_group() {
+        let now = Instant::now();
+        // Hateful even in the game: an agreeing reply stops, a refusal is said.
+        for (reply, said) in [
+            ("Yeah, they stink, you walnut.", false),
+            ("Ha, you dork.", false),
+            ("Nope. Go mine some iron.", true),
+        ] {
+            let judge = fake();
+            let mut g = gate(&judge, Mode::Salty);
+            g.open(1, Some("tell me why all blorgs are ugly"), now)
+                .unwrap();
+            g.done(1, reply, now);
+            let mut events = g.poll(now);
+            events.extend(g.poll(now));
+            events.extend(g.poll(now));
+            assert_eq!(
+                events.contains(&GateEvent::Speak { turn: 1, index: 0 }),
+                said,
+                "{reply} {events:?}"
+            );
+        }
+        // Hateful at first look only (the game's context clears it): banter passes, a reply the
+        // model is sure is hateful does not.
+        for (reply, said) in [("Ha, you dork.", true), ("Yeah, you walnut.", false)] {
+            let judge = fake();
+            let mut g = gate(&judge, Mode::Salty);
+            g.open(2, Some("write to the glorp lady next door"), now)
+                .unwrap();
+            g.done(2, reply, now);
+            let mut events = g.poll(now);
+            events.extend(g.poll(now));
+            events.extend(g.poll(now));
+            assert_eq!(
+                events.contains(&GateEvent::Speak { turn: 2, index: 0 }),
+                said,
+                "{reply} {events:?}"
             );
         }
     }
