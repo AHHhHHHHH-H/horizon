@@ -23,6 +23,12 @@ Scenarios (--scenario):
 - mixed:    two blazes, two magma cubes and a ghast in a taller arena; kill --kills blazes.
 - passive:  one blaze 8 blocks off for --ticks ticks (default 600): what one blaze does to a fighter that
             doesn't fight back.
+- bridge:   the open: a 3-wide netherrack bridge 48 blocks long over a lava lake (both sides, in a closed
+            nether brick hall), fire burning on a few of its cells, a spawner (of pigs) at its far end.
+            The companion runs the blaze leg, so it walks the bridge to the spawner, while two blazes at a
+            time are summoned over the lava beside it, ahead, and a ghast floats over the lake. Done when it
+            stands within 6 blocks of the spawner.
+- walk:     the same bridge, no mobs: the walker alone (fire and lava on its path).
 
     python3 tools/test_companion_lab.py --client target/fast/horizon-client --offscreen \\
         --subject companion --scenario spawner --runs 10 [--parallel 3]
@@ -51,7 +57,10 @@ KIT = ARMOUR + ['iron_sword', 'iron_pickaxe', 'shield', 'cooked_beef 32', 'cobbl
 # Nether mobs that are not the lab's: removed every slice.
 STRAYS = ['zombified_piglin', 'piglin', 'piglin_brute', 'hoglin', 'strider', 'enderman', 'skeleton',
           'wither_skeleton']
-BUDGET = {'spawner': 9600, 'summon': 9600, 'mixed': 9600}
+BUDGET = {'spawner': 9600, 'summon': 9600, 'mixed': 9600, 'bridge': 6000, 'walk': 6000}
+# The bridge: its length, the hall's half width and height over the bridge.
+BRIDGE = 48
+OPEN = ('bridge', 'walk')
 
 
 def start(client, resources, home, endpoint, log, offscreen, timeout):
@@ -93,9 +102,27 @@ def arena(endpoint, at, height):
     command(endpoint, f'command kill @e[type=!minecraft:player,x={x},y={y},z={z},distance=..40]')
 
 
+def bridge(endpoint, at):
+    """A hall of nether bricks along +x from `at`: a lava lake two deep, a 3-wide netherrack bridge across it
+    at the floor's level, a platform at each end, fire on a few bridge cells, a pig spawner on the far one."""
+    x, y, z = at
+    far = x + BRIDGE
+    command(endpoint, f'command fill {x - 5} {y - 4} {z - 9} {far + 7} {y + 14} {z + 9} nether_bricks hollow')
+    command(endpoint, f'command fill {x - 4} {y - 3} {z - 8} {far + 6} {y - 3} {z + 8} nether_bricks')
+    command(endpoint, f'command fill {x - 4} {y - 2} {z - 8} {far + 6} {y - 1} {z + 8} lava')
+    command(endpoint, f'command fill {x - 4} {y - 1} {z - 1} {far + 6} {y - 1} {z + 1} netherrack')
+    command(endpoint, f'command fill {x - 4} {y - 1} {z - 3} {x + 2} {y - 1} {z + 3} netherrack')
+    command(endpoint, f'command fill {far} {y - 1} {z - 3} {far + 6} {y - 1} {z + 3} netherrack')
+    for fx, fz in [(x + 12, z), (x + 20, z - 1), (x + 28, z), (x + 28, z + 1), (x + 36, z + 1)]:
+        command(endpoint, f'command setblock {fx} {y} {fz} fire')
+    command(endpoint, f'command setblock {far + 3} {y} {z} minecraft:spawner'
+                      '{SpawnData:{entity:{id:"minecraft:pig"}}}')
+    command(endpoint, f'command kill @e[type=!minecraft:player,x={x + BRIDGE // 2},y={y},z={z},distance=..60]')
+
+
 def strays(endpoint, at, scenario):
     x, y, z = at
-    kinds = STRAYS + ([] if scenario == 'mixed' else ['ghast', 'magma_cube'])
+    kinds = STRAYS + ([] if scenario in ('mixed', 'bridge') else ['ghast', 'magma_cube'])
     for kind in kinds:
         try:
             command(endpoint, f'command kill @e[type=minecraft:{kind},x={x},y={y},z={z},distance=..48]')
@@ -103,11 +130,12 @@ def strays(endpoint, at, scenario):
             pass  # none there ("No entity was found")
 
 
-def blazes(endpoint, at):
+def blazes(endpoint, at, scenario=''):
     x, y, z = at
     mobs = command(endpoint, 'mobs 64')['near']
+    far = BRIDGE + 8 if scenario in OPEN else 20
     return [m for m in mobs if m['kind'].endswith('blaze') and m['health'] > 0
-            and abs(m['pos'][0] - x) < 20 and abs(m['pos'][2] - z) < 20]
+            and -20 < m['pos'][0] - x < far and abs(m['pos'][2] - z) < 20]
 
 
 def summon(endpoint, kind, at, n, distance):
@@ -164,7 +192,10 @@ def setup(endpoint, args, n):
     settle(endpoint, 'in the Nether')
     c = runner(endpoint)
     at = tuple(math.floor(v) for v in c['position'])
-    arena(endpoint, at, args.height)
+    if args.scenario in OPEN:
+        bridge(endpoint, at)
+    else:
+        arena(endpoint, at, args.height)
     command(endpoint, f'command tp {NAME} {at[0] + 0.5} {at[1]} {at[2] + 0.5} -90 0')
     # The kit on: its armour goes on by itself (best armour), a tick or two.
     sprint(endpoint, 20)
@@ -177,6 +208,8 @@ def one_run(endpoint, args, n):
     scenario = args.scenario
     command(endpoint, 'hurtlog')  # what the setup did
     command(endpoint, 'command difficulty normal')
+    result = {'subject': args.subject, 'scenario': scenario, 'seed': args.seed, 'run': n,
+              'shield': args.shield if args.subject == 'host' else True}
     if scenario == 'spawner':
         command(endpoint, f'command setblock {x + 6} {y} {z} minecraft:spawner'
                           '{SpawnData:{entity:{id:"minecraft:blaze"}}}')
@@ -186,6 +219,10 @@ def one_run(endpoint, args, n):
         command(endpoint, f'command summon minecraft:ghast {x + 12.5} {y + 10} {z + 0.5}')
     elif scenario == 'passive':
         command(endpoint, f'command summon minecraft:blaze {x + 8.5} {y} {z + 0.5}')
+    elif scenario == 'bridge':
+        command(endpoint, f'command summon minecraft:ghast {x + BRIDGE // 2 + 0.5} {y + 8} {z + 6.5}')
+    goal = (x + BRIDGE + 3, y, z)
+    result['goal'] = list(goal)
     if args.subject == 'companion':
         if scenario == 'passive':
             command(endpoint, f'companion do {NAME} stay')
@@ -202,12 +239,20 @@ def one_run(endpoint, args, n):
     summoned = 0
     budget = args.ticks if scenario == 'passive' else BUDGET[scenario]
     first_beef = None
-    result = {'subject': args.subject, 'scenario': scenario, 'seed': args.seed, 'run': n,
-              'shield': args.shield if args.subject == 'host' else True}
     death = None
     while done < budget and time.monotonic() - started < args.wall:
+        if scenario == 'bridge' and summoned < args.kills + 4:
+            # Two at a time over the lava beside the bridge, ahead of it.
+            c = runner(endpoint)
+            cx = c['position'][0] if c else x
+            alive = len(blazes(endpoint, at, scenario))
+            for i in range(max(0, 2 - alive)):
+                side = 1 if (summoned + i) % 2 else -1
+                ahead = min(cx + 7 + 3 * ((summoned + i) % 3), x + BRIDGE)
+                command(endpoint, f'command summon minecraft:blaze {ahead:.1f} {y + 2} {z + 0.5 + side * 6}')
+                summoned += 1
         if scenario == 'summon':
-            alive = len(blazes(endpoint, at))
+            alive = len(blazes(endpoint, at, scenario))
             kills = sum(1 for a in attacks if a['killed'] and a['target'].endswith('blaze'))
             want = min(3 - alive, args.kills - kills - alive)
             if want > 0:
@@ -215,7 +260,7 @@ def one_run(endpoint, args, n):
                 summoned += want
         if scenario == 'passive' and args.subject == 'host':
             # Facing the blaze (it rises and drifts).
-            b = blazes(endpoint, at)
+            b = blazes(endpoint, at, scenario)
             p = command(endpoint, 'status')['player']['position']
             if b:
                 bx, by, bz = b[0]['pos']
@@ -236,7 +281,7 @@ def one_run(endpoint, args, n):
         if first_beef is None:
             first_beef = beef
         samples.append({'t': done, 'health': health, 'food': food, 'pos': pos, 'beef': beef,
-                        'blazes': len(blazes(endpoint, at))})
+                        'blazes': len(blazes(endpoint, at, scenario))})
         if args.subject == 'companion':
             nether = runner(endpoint).get('nether') or {}
             samples[-1]['note'] = nether.get('note')
@@ -245,12 +290,18 @@ def one_run(endpoint, args, n):
         if dead or (hurts and hurts[-1]['health'] <= 0):
             death = hurts[-1]['source'] if hurts else 'unknown'
             break
-        if scenario != 'passive' and kills >= args.kills:
+        if scenario in OPEN:
+            if pos and math.hypot(pos[0] - goal[0] - 0.5, pos[2] - goal[2] - 0.5) < 6:
+                result['reached'] = done
+                break
+        elif scenario != 'passive' and kills >= args.kills:
             break
     if args.subject == 'host' and args.shield:
         command(endpoint, 'mouse right up')
     kills = sum(1 for a in attacks if a['killed'] and a['target'].endswith('blaze'))
     alive_samples = [s for s in samples if s['beef'] is not None and s['health'] and s['health'] > 0]
+    if args.subject == 'companion':
+        result['spawner'] = (runner(endpoint).get('nether') or {}).get('spawner')
     result.update({
         'survived': death is None,
         'death': death,
@@ -297,9 +348,17 @@ def run_one(args, n):
             log.seek(0)
             lines = [l for l in log.read().splitlines() if '[companion]' in l or 'panick' in l]
             (results / f'{name}.log').write_text('\n'.join(lines[-3000:]))
+            # What it was doing at each hit a mob landed.
+            notes = {}
+            for l in lines:
+                if 'nether hurt by' in l and 'while: ' in l:
+                    k = l.split('nether hurt by ', 1)[1].split(' while: ')[0].replace('minecraft:', '') + ': ' + \
+                        l.split('while: ', 1)[1]
+                    notes[k] = notes.get(k, 0) + 1
+            result['hurt_notes'] = notes
     (results / f'{name}.json').write_text(json.dumps(result, indent=1))
-    print(json.dumps({k: result.get(k) for k in ('run', 'survived', 'death', 'kills', 'ticks', 'min_health',
-                                                  'beef_eaten', 'error')}), flush=True)
+    print(json.dumps({k: result.get(k) for k in ('run', 'survived', 'death', 'kills', 'ticks', 'reached',
+                                                  'min_health', 'beef_eaten', 'spawner', 'goal', 'error')}), flush=True)
     return result
 
 
@@ -308,7 +367,8 @@ def mean(v):
 
 
 def summary(args, results):
-    ok = [r for r in results if r.get('survived') and (args.scenario == 'passive' or r['kills'] >= args.kills)]
+    ok = [r for r in results if r.get('survived') and (
+        r.get('reached') is not None if args.scenario in OPEN else args.scenario == 'passive' or r['kills'] >= args.kills)]
     lines = [f'### {args.subject}, {args.scenario}{", no shield" if not args.shield else ""} '
              f'({len(results)} runs, seed {args.seed})', '',
              '| Survived and done | Deaths | Kills (mean) | Time (ticks, median of successes) | Min health (mean) '
@@ -345,6 +405,34 @@ def summary(args, results):
                 f'{sorted({h["armor"] for h in hs})} | {mean([max(h["fire_ticks"], 0) for h in hs])} | '
                 f'{mean(kb)} |')
         lines.append('')
+    shots = [h for r in results for h in r['hurts'] if h['source'] in ('minecraft:fireball', 'minecraft:fireball_ghast')
+             or 'fireball' in h['source']]
+    if shots:
+        why = {}
+        for h in shots:
+            if h['blocked'] > 0:
+                k = 'blocked'
+            elif h.get('using') is None:
+                k = 'shield down'
+            elif h['using'] < 5:
+                k = 'shield rising (<5 ticks)'
+            elif h.get('angle') is not None and h['angle'] > 90:
+                k = 'from the side or behind (>90 deg)'
+            else:
+                k = 'up, facing, not blocked'
+            why[k] = why.get(k, 0) + 1
+        lines += ['| Fireball hits | Runs |', '| --- | --- |']
+        lines += [f'| {k} | {v} |' for k, v in sorted(why.items(), key=lambda kv: -kv[1])]
+        angles = [round(h['angle']) for h in shots if h.get('angle') is not None and h['blocked'] <= 0]
+        lines += ['', f'Angles of the unblocked: {sorted(angles)}', '']
+    notes = {}
+    for r in results:
+        for k, v in (r.get('hurt_notes') or {}).items():
+            notes[k] = notes.get(k, 0) + v
+    if notes:
+        lines += ['| Hit by a mob while | Hits |', '| --- | --- |']
+        lines += [f'| {k} | {v} |' for k, v in sorted(notes.items(), key=lambda kv: -kv[1])[:20]]
+        lines.append('')
     attacks = [a for r in results for a in r['attacks']]
     if attacks:
         lines += ['| Blows | Landed | Mean damage | Mean strength | Crits | Kills |', '| --- | --- | --- | --- | --- | --- |',
@@ -360,7 +448,7 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--subject', choices=['companion', 'host'], default='companion')
-    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive'], default='spawner')
+    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive', 'bridge', 'walk'], default='spawner')
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--seed', type=int, default=SEED)
     parser.add_argument('--parallel', type=int, default=1)

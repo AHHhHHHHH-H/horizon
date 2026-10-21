@@ -233,6 +233,12 @@ pub(super) struct NetherRun {
     /// The blaze it is after (id, since, its health then): one it can't
     /// hurt for a while (out of reach, no way there) is left alone.
     blaze_engaged: Option<(u32, u64, f32)>,
+    /// Blazes winding up a volley (their charged flag), and since when: the
+    /// first fireball comes 60 ticks after (BlazeAttackGoal).
+    charging: Vec<(u32, u64)>,
+    /// The body's target (id, since, nearest it got): one it gets no nearer
+    /// to is left alone.
+    target_watch: Option<(u32, u64, f64)>,
 }
 
 impl NetherRun {
@@ -290,11 +296,21 @@ impl NetherRun {
             bunker: None,
             sealed: false,
             blaze_engaged: None,
+            charging: Vec::new(),
+            target_watch: None,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
     /// counted.
     pub fn heard(&mut self, report: &CompanionReport) {
+        if let CompanionReport::Hurt { by: Some(by), .. } = report {
+            // What it was doing when hit (the lab tallies these).
+            log::info!(
+                "[companion] nether hurt by {by} while: {} (shield {})",
+                self.note,
+                if self.shield { "up" } else { "down" }
+            );
+        }
         if let CompanionReport::Died { cause } = report {
             self.deaths.push(format!("{} ({})", cause, self.leg.id()));
             if self.outcome.is_none() {
@@ -470,6 +486,35 @@ impl Game<'_> {
         } else {
             self.companion_nether_fights(host, b, &mut run, pos)
         };
+        // A mob the body went after (one that hurt it, one after it) that it
+        // gets no nearer to in 200 ticks (behind a wall, over lava, below
+        // a ledge): left alone for a minute, the leg goes on.
+        if !took && let Some(id) = b.target {
+            let now = b.ticks;
+            let d = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map_or(f64::MAX, |m| c::distance(mob_at(m), pos));
+            match run.target_watch {
+                Some((t, since, best)) if t == id => {
+                    if d < best - 1.0 {
+                        run.target_watch = Some((id, now, d));
+                    } else if now.saturating_sub(since) > 200 {
+                        log::info!(
+                            "[companion] {} nether: no nearer to its target {id} in 200 ticks: left alone",
+                            b.file.name
+                        );
+                        run.ignored.push((id, now + 1200));
+                        run.target_watch = None;
+                    }
+                }
+                _ => run.target_watch = Some((id, now, d)),
+            }
+            if run.ignored.iter().any(|&(i, until)| i == id && now < until) {
+                b.target = None;
+            }
+        }
         b.nether = Some(run);
         took
     }
@@ -547,6 +592,26 @@ impl Game<'_> {
                 .any(|m| m.id == id && &*m.kind.id == "minecraft:ghast")
         {
             b.target = None;
+        }
+        // Blazes winding up: since when (their first shot 60 ticks after).
+        run.charging.retain(|(id, _)| {
+            self.mobs
+                .iter()
+                .any(|m| m.id == *id && m.alive() && m.extra.flag)
+        });
+        for m in self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && m.extra.flag && &*m.kind.id == "minecraft:blaze")
+        {
+            if !run.charging.iter().any(|(id, _)| *id == m.id) {
+                run.charging.push((m.id, now));
+            }
+        }
+        // A ghast's fireball about to reach it: struck back (it flies where
+        // it looks: at the ghast), no blast at its feet.
+        if self.companion_punch_fireball(host, b, run, pos) {
+            return true;
         }
         // In lava (knocked in, a flow over the path): out by the nearest
         // dry spot, jumping, before anything else.
@@ -627,9 +692,11 @@ impl Game<'_> {
             self.companion_shield(host, b, run, None, pos);
             b.keys.jump = true;
             run.note = "out of the lava".into();
-            // A dry spot it can step up to: there. Else a pillar out: a
-            // block into the lava under it at the top of each jump.
-            let reachable = out.filter(|o| o[1] <= here[1] + 1);
+            // A dry spot it can step up to (swimming up, a ledge two over
+            // its feet: pushing into it at the top, it climbs out): there.
+            // Else a pillar out: a block into the lava under it at the top
+            // of each jump.
+            let reachable = out.filter(|o| o[1] <= here[1] + 2);
             if let Some(o) = reachable {
                 b.yaw = c::yaw_toward(pos, at_block(o)) as f32;
                 b.pitch = 0.0;
@@ -754,13 +821,13 @@ impl Game<'_> {
             .filter_map(|(at, v)| {
                 let d = c::distance(at, from);
                 let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                // Toward it: its line passes within a block of its eyes or
+                // its middle (blazes aim at the middle, with a spread).
                 let toward = d < 24.0
                     && speed > 1e-4
-                    && ((from[0] - at[0]) * v[0]
-                        + (from[1] - at[1]) * v[1]
-                        + (from[2] - at[2]) * v[2])
-                        / (d.max(1e-6) * speed)
-                        > 0.9;
+                    && [from, [from[0], from[1] - 0.7, from[2]]]
+                        .iter()
+                        .any(|t| passes_within(at, v, *t) < 1.1);
                 // Ticks until it is on it (they speed up: a little sooner).
                 toward.then(|| (at, d / speed.max(0.5)))
             })
@@ -849,15 +916,16 @@ impl Game<'_> {
             self.companion_shield(host, b, run, None, pos);
             self.companion_start_eating(host, b);
         }
-        // A fight coming (something hostile near) at an edge (a drop or
-        // lava beside it, a bridge): onto solid ground first, where a
-        // knock back doesn't throw it off.
-        // (A ghast's blast throws it too, from much further.)
+        // A fight coming (something hostile near that hits hard up close)
+        // at an edge (a drop or lava beside it, a bridge): onto solid
+        // ground first, where a knock back doesn't throw it off. Not for
+        // blazes (their fireballs land on the shield, no knock back) or
+        // ghasts (their fireballs are struck back): the way goes on.
         let danger = self.mobs.iter().any(|m| {
             m.alive()
                 && threat(m)
-                && (c::distance(mob_at(m), pos) < 16.0
-                    || &*m.kind.id == "minecraft:ghast" && c::distance(mob_at(m), pos) < 64.0)
+                && !matches!(&*m.kind.id, "minecraft:blaze" | "minecraft:ghast")
+                && c::distance(mob_at(m), pos) < 16.0
         });
         if danger
             && self.on_edge(feet(pos))
@@ -982,33 +1050,38 @@ impl Game<'_> {
             return true;
         }
         // Blazes.
-        let foes: Vec<(u32, [f64; 3], Foe)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive() && &*m.kind.id == "minecraft:blaze")
-            .filter_map(|m| {
-                let centre = [m.position.x, m.position.y + 0.9, m.position.z];
-                let reach = box_distance(from, m.bounds());
-                (reach < BLAZE_RANGE).then(|| {
-                    let sees = self.in_sight(from, centre);
-                    (
-                        m.id,
-                        centre,
-                        Foe {
-                            reach,
-                            sees,
-                            charging: m.extra.flag,
-                        },
-                    )
+        let foes: Vec<(u32, [f64; 3], Foe)> =
+            self.mobs
+                .iter()
+                .filter(|m| m.alive() && &*m.kind.id == "minecraft:blaze")
+                .filter_map(|m| {
+                    let centre = [m.position.x, m.position.y + 0.9, m.position.z];
+                    let reach = box_distance(from, m.bounds());
+                    (reach < BLAZE_RANGE).then(|| {
+                        let sees = self.in_sight(from, centre);
+                        (
+                            m.id,
+                            centre,
+                            Foe {
+                                reach,
+                                sees,
+                                // About to shoot: wound up 45 ticks (the
+                                // shield up 15 before the first fireball),
+                                // or shooting.
+                                charging: run.charging.iter().any(|&(id, since)| {
+                                    id == m.id && now.saturating_sub(since) >= 45
+                                }),
+                            },
+                        )
+                    })
                 })
-            })
-            .filter(|(_, _, f)| f.sees || f.reach < 6.0)
-            .filter(|(id, _, _)| {
-                !run.ignored
-                    .iter()
-                    .any(|&(i, until)| i == *id && now < until)
-            })
-            .collect();
+                .filter(|(_, _, f)| f.sees || f.reach < 6.0)
+                .filter(|(id, _, _)| {
+                    !run.ignored
+                        .iter()
+                        .any(|&(i, until)| i == *id && now < until)
+                })
+                .collect();
         if foes.is_empty() {
             self.companion_shield(host, b, run, None, pos);
             // Hidden from blazes still about: it stays until it has healed
@@ -1104,6 +1177,10 @@ impl Game<'_> {
             count(&g.inventory, "minecraft:bow") > 0 && count(&g.inventory, "minecraft:arrow") > 0
         });
         let charged = now.saturating_sub(run.last_swing) >= SWING;
+        let travelling = run.leg != Leg::Blazes
+            || run
+                .spawner
+                .is_none_or(|s| c::horizontal(pos, at_block(s)) > 16.0);
         let list: Vec<Foe> = foes.iter().map(|f| f.2).collect();
         let stance = n::blaze_stance(health, charged, &list, arrows);
         if let Stance::Strike(i) | Stance::Block(i) | Stance::Close(i) | Stance::Shoot(i) = stance {
@@ -1138,11 +1215,24 @@ impl Game<'_> {
             Stance::Block(i) => {
                 let (_, at, f) = foes[i];
                 self.companion_shield(host, b, run, Some(at), pos);
-                // Close in on one near enough and not too high to reach.
-                if f.reach < 7.0 && at[1] - pos[1] < 3.0 {
+                // Close in on one near enough and not too high to reach,
+                // where the way is safe (no lava, no drop) and it isn't
+                // passing by.
+                if f.reach < 7.0
+                    && at[1] - pos[1] < 3.0
+                    && !travelling
+                    && self.cruise_safe(pos, c::yaw_toward(pos, at) as f32)
+                {
                     b.keys.forward = f.reach > 2.2;
                 }
                 run.note = "shield up: blazes".into();
+            }
+            Stance::Close(_) if travelling => {
+                // On the way (to the fortress, to the spawner): not after
+                // a blaze off the path (over lava, up high); the shield when
+                // one is about to shoot, else the walk goes on.
+                self.companion_shield(host, b, run, None, pos);
+                return false;
             }
             Stance::Close(i) => {
                 let (_, at, _) = foes[i];
@@ -1301,6 +1391,81 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    /// A ghast's fireball within reach on its way to it: struck back
+    /// (game/deflect.rs), aimed at the ghast that shot it when the fireball
+    /// is on that line, else at the fireball. True when it struck.
+    fn companion_punch_fireball(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        run: &mut NetherRun,
+        pos: [f64; 3],
+    ) -> bool {
+        use horizon_client::projectiles::ProjectileKind as K;
+        let from = eye(pos);
+        let Some((at, owner)) = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| !p.stuck && matches!(p.kind, K::LargeFireball { .. }))
+            .filter(|p| matches!(p.owner, Some(Who::Mob(_))))
+            .map(|p| {
+                (
+                    [p.position.x, p.position.y + 0.5, p.position.z],
+                    [p.velocity.x, p.velocity.y, p.velocity.z],
+                    p.owner,
+                )
+            })
+            .filter(|(at, v, _)| {
+                c::distance(*at, from) < 4.5
+                    && passes_within(*at, *v, [from[0], from[1] - 0.7, from[2]]) < 2.5
+            })
+            .min_by(|x, y| c::distance(x.0, from).total_cmp(&c::distance(y.0, from)))
+            .map(|(at, _, o)| (at, o))
+        else {
+            return false;
+        };
+        let ghast = self
+            .mobs
+            .iter()
+            .find(|m| Some(Who::Mob(m.id)) == owner && m.alive())
+            .map(|m| [m.position.x, m.position.y + 2.0, m.position.z]);
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == b.conn) else {
+            return false;
+        };
+        for aim in ghast.into_iter().chain([at]) {
+            let (yaw, pitch) = (c::yaw_toward(pos, aim) as f32, look_pitch(from, aim));
+            let g = &mut host.hub.guests[gi];
+            let old = (g.yaw, g.pitch);
+            (g.yaw, g.pitch) = (yaw, pitch);
+            let on_line = self
+                .as_guest(host, b.conn, |g| g.redirectable_hit().is_some())
+                .unwrap_or(false);
+            if !on_line {
+                let g = &mut host.hub.guests[gi];
+                (g.yaw, g.pitch) = old;
+                continue;
+            }
+            // Hands free for the blow.
+            self.companion_shield(host, b, run, None, pos);
+            let struck = self.as_guest(host, b.conn, |g| g.attack()).unwrap_or(false);
+            if let Some(g) = host.hub.guest(b.conn) {
+                (b.yaw, b.pitch) = (g.yaw, g.pitch);
+            }
+            if struck {
+                b.target = None;
+                run.shield_until = 0;
+                run.note = "a ghast's fireball struck back".into();
+                log::info!(
+                    "[companion] {} nether: struck a ghast's fireball back",
+                    b.file.name
+                );
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether a ray from `from` reaches `to` through no block.
@@ -2155,6 +2320,21 @@ impl Game<'_> {
             return self.back_to_nether(host, b, run, pos);
         }
         let here = feet(pos);
+        // Closed in its box to heal (no blaze in sight then: the fights pass
+        // it by): healed there, then opened. A box it walled itself into
+        // away from the spawner is left behind once open (the walker digs
+        // out of it).
+        if let Some(bx) = run.bunker {
+            if run.sealed && bx.built && here == bx.feet {
+                let health = host.hub.guest(b.conn).map_or(20.0, |g| g.health);
+                if self.companion_box_heal(host, b, run, bx, health, pos) {
+                    return;
+                }
+            }
+            if bx.heal_only && !run.sealed {
+                run.bunker = None;
+            }
+        }
         let fortress = run.fortress.unwrap_or(here);
         if b.ticks.is_multiple_of(40) {
             run.visited.push(here);
@@ -3400,6 +3580,16 @@ fn filled_frames(game: &Game<'_>, run: &NetherRun, at: [f64; 3]) -> u32 {
 }
 
 /// The distance from `eye` to the nearest point of a box.
+/// How near the line from `at` along `v` comes to `t` (ahead of `at`;
+/// behind it, the distance now).
+fn passes_within(at: [f64; 3], v: [f64; 3], t: [f64; 3]) -> f64 {
+    let rel = [t[0] - at[0], t[1] - at[1], t[2] - at[2]];
+    let vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    let k = ((rel[0] * v[0] + rel[1] * v[1] + rel[2] * v[2]) / vv.max(1e-12)).max(0.0);
+    let q = [rel[0] - v[0] * k, rel[1] - v[1] * k, rel[2] - v[2] * k];
+    (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
+}
+
 fn box_distance(eye: [f64; 3], b: horizon_core::geometry::Aabb) -> f64 {
     let (lo, hi) = (b.min_position(), b.max_position());
     let p = [
