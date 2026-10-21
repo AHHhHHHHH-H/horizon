@@ -978,7 +978,7 @@ impl Game<'_> {
         // after a few seconds.
         // One it has fought a long while without hurting it (out of its
         // reach behind something): left alone for a time.
-        let hoglin = hoglin.filter(|(id, _, reach, _)| {
+        let hoglin = hoglin.filter(|(id, _, _, _)| {
             let hp = self
                 .mobs
                 .iter()
@@ -987,8 +987,9 @@ impl Game<'_> {
             match run.engaged {
                 Some((e, since, start)) if e == *id => {
                     if now.saturating_sub(since) > 400 {
-                        // (One at it is fought on.)
-                        if hp >= start && *reach > n::REACH {
+                        // (Even one in reach: 400 ticks and no blow landed,
+                        // something is between them.)
+                        if hp >= start {
                             run.ignored.push((*id, now + 600));
                             run.engaged = None;
                             return false;
