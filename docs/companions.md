@@ -651,6 +651,19 @@ ungated and without an account, then checked against pinned SHA-256:
     each tier's Heretic abliteration, behind the hard guard (see Safety).
   - Models gated behind a Hugging Face login.
 
+**Wording: apostrophes and contractions (2026-10-21).** Gemma 4 12B wrote stiff English ("I am", "do not":
+1 reply in 20 with a contraction) and, on some French lines, dropped the apostrophe of an elision ("Parce
+quils explosent", 6 of 8 tries on the Veteran's creeper joke). It is the model's wording, not the plumbing:
+the schema has no `pattern` and its string allows `'`; there is no sanitizer between the client, the chat
+and the voice that touches quotes; the chat font draws `'` and `’`; and `companion_bench --free` (no grammar)
+words it the same. The prompt now asks for contractions in English and for every apostrophe in French and
+Italian (`prompt::talk_like_people`), which gave 14 of 20 English replies with a contraction on Gemma and
+0 of 8 dropped apostrophes on the joke; `reply::restore_apostrophes` puts back the apostrophe in the
+French words that are only there when one was dropped (`quils`, `cest`, `mappelle`...) for the chat, the
+voice and `Reply::say`. `companion_bench --rounds N --line "text" --free` and its `APOSTROPHES` line
+(counted on what the model wrote) measure it. Qwen3.5 4B already used contractions (13 of 20 replies, before
+and after) and neither it nor the 2B dropped an apostrophe on the joke.
+
 **Measured on 2026-10-20** with `examples/companion_bench.rs`: the real runtime started through the
 supervisor, twenty scripted turns per language (state + a player line or an event → JSON), four
 personalities, the warm-up first, temperature 0.7. "Sensible" means the skills fit the turn (a fixed list

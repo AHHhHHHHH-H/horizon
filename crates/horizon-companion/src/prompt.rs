@@ -279,6 +279,25 @@ impl Default for Persona {
 /// The longest custom description kept, in characters.
 pub const CUSTOM_MAX: usize = 400;
 
+/// How a line is worded where the language elides or contracts: models asked for a line that is also
+/// read aloud write it stiffly ("I am", "do not") and now and then drop the apostrophe of an elision
+/// ("quils" for "qu'ils"), which is neither chat nor speech. The schema and the chat were never at fault
+/// (`companion_bench --free` words the same without the grammar).
+fn talk_like_people(language: &str) -> &'static str {
+    match language.get(..2).map(str::to_ascii_lowercase).as_deref() {
+        Some("en") => {
+            " Talk the way people talk: use contractions (I'm, don't, it's, we'll), not \"I am\" or \"do not\"."
+        }
+        Some("fr") => {
+            " Write the way people talk, with every apostrophe: j'ai, c'est, qu'ils, l'eau, never \"quils\" or \"cest\"."
+        }
+        Some("it") => {
+            " Write the way people talk, with every apostrophe: c'è, l'amico, un'altra, dell'acqua."
+        }
+        _ => "",
+    }
+}
+
 /// The part of the system prompt that never changes during a session.
 pub fn system_prompt(persona: &Persona, owner: &str, language: &str) -> String {
     let name = clean_name(&persona.name, "Kev");
@@ -290,8 +309,8 @@ world: you walk, fight, mine, craft and talk in the chat. You know you are an AI
 
 # How you answer
 Answer with one JSON object and nothing else: {{\"tone\": ..., \"say\": ..., \"actions\": [...], \"remember\": ...}}
-- say: your chat line, in {lang}. One or two short sentences, 25 words at most. It is also read aloud, so no \
-emoji, no lists, no markdown.
+- say: your chat line, in {lang}. One or two short sentences, 25 words at most.{talk} It is also read aloud, so \
+no emoji, no lists, no markdown.
 - tone: how you say it: normal, excited, shout (danger, hurry), whisper, laugh, sarcastic or worried.
 - actions: the skills that do what {owner} asked, in order: usually one, at most 3. [] when you only talk, \
 when the current skill already does it, or when nothing needs doing. Never add a skill nobody asked for.
@@ -320,6 +339,7 @@ If asked, refuse in character and steer back to the game.
 - {owner} is in charge: when they give an order, do it, even while grumbling.
 - {swearing}
 ",
+        talk = talk_like_people(language),
         perception = persona.perception.rule(),
         swearing = if persona.salty_on() {
             format!("Language: salty (the player is an adult and asked for it). Swear freely and with attitude, in any \
@@ -676,6 +696,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_prompt_asks_for_the_apostrophes_of_the_language() {
+        let persona = Persona::default();
+        let en = system_prompt(&persona, "Steve", "en_us");
+        assert!(en.contains("contractions (I'm, don't"), "{en}");
+        let fr = system_prompt(&persona, "Steve", "fr_fr");
+        assert!(
+            fr.contains("qu'ils") && fr.contains("never \"quils\""),
+            "{fr}"
+        );
+        assert!(system_prompt(&persona, "Steve", "fr_ca").contains("qu'ils"));
+        // Languages without elision or contraction to ask for get nothing more to read.
+        for code in ["de_de", "es_es", "ja_jp", "zh_cn"] {
+            let text = system_prompt(&persona, "Steve", code);
+            assert!(
+                !text.contains("apostrophe") && !text.contains("contractions"),
+                "{code}"
+            );
+        }
+        // Said aloud, written without emoji: the line's other rules are still there.
+        assert!(en.contains("It is also read aloud, so no emoji"));
+    }
+
+    #[test]
     fn the_system_prompt_is_stable_and_complete() {
         let persona = Persona::default();
         let a = system_prompt(&persona, "Steve", "fr_fr");
@@ -697,8 +740,9 @@ mod tests {
         ] {
             assert!(a.contains(needle), "{needle} in\n{a}");
         }
-        // About 860 real tokens (llama-server /tokenize, Qwen3.5): bytes / 3 overestimates by a quarter.
-        assert!(estimate_tokens(&a) < 1200, "{} tokens", estimate_tokens(&a));
+        // About 890 real tokens (llama-server /tokenize, Qwen3.5): bytes / 3 overestimates by a quarter.
+        // (The wording hint for contractions and elisions is about 30 of them.)
+        assert!(estimate_tokens(&a) < 1260, "{} tokens", estimate_tokens(&a));
     }
 
     #[test]

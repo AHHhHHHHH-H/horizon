@@ -7,6 +7,7 @@
 //! next, before the actions.
 
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// The skills the brain may ask for; the game's skills check and carry them out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -175,6 +176,86 @@ pub const SCHEMA: &str = r#"{"type":"object","properties":{"tone":{"type":"strin
 /// OpenAI's strict mode: every property required (optional ones nullable), no length or range limits.
 pub const SCHEMA_STRICT: &str = r#"{"type":"object","properties":{"tone":{"type":"string","enum":["normal","excited","shout","whisper","laugh","sarcastic","worried"]},"say":{"type":"string"},"actions":{"type":"array","items":{"type":"object","properties":{"skill":{"type":"string","enum":["follow","stay","come","go_to","stop","attack","defend","hold_fire","fire","jump","crouch","stand_up","collect","give","eat","sleep","craft","smelt"]},"item":{"type":["string","null"]},"count":{"type":["integer","null"]},"target":{"type":["string","null"]}},"required":["skill","item","count","target"],"additionalProperties":false}},"remember":{"type":["string","null"]}},"required":["tone","say","actions","remember"],"additionalProperties":false}"#;
 
+/// French words that exist only because a model dropped the apostrophe of an elision, with what they
+/// stand for. None is a word of another language (`nest`, `jai` or `dune` are left alone: they are).
+const DROPPED_APOSTROPHES: &[(&str, &str)] = &[
+    ("quil", "qu'il"),
+    ("quils", "qu'ils"),
+    ("quon", "qu'on"),
+    ("quun", "qu'un"),
+    ("quune", "qu'une"),
+    ("cest", "c'est"),
+    ("lorsquil", "lorsqu'il"),
+    ("lorsquils", "lorsqu'ils"),
+    ("lorsquon", "lorsqu'on"),
+    ("puisquil", "puisqu'il"),
+    ("puisquils", "puisqu'ils"),
+    ("puisquon", "puisqu'on"),
+    ("jusquau", "jusqu'au"),
+    ("jusquaux", "jusqu'aux"),
+    ("jusquici", "jusqu'ici"),
+    ("mappelle", "m'appelle"),
+    ("tappelle", "t'appelle"),
+    ("sappelle", "s'appelle"),
+];
+
+/// Puts back the apostrophe in `quils`, `cest`, `mappelle`... Models writing French now and then drop it
+/// (a Gemma 4 12B demo line said "Parce quils explosent"); the chat and the voice get the real word.
+/// Anything else, apostrophes included, is returned as it came.
+pub fn restore_apostrophes(text: &str) -> Cow<'_, str> {
+    let lower = text.to_lowercase();
+    if !DROPPED_APOSTROPHES
+        .iter()
+        .any(|(wrong, _)| lower.contains(wrong))
+    {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut word = String::new();
+    let mut changed = false;
+    let mut flush = |word: &mut String, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        let lower = word.to_lowercase();
+        match DROPPED_APOSTROPHES
+            .iter()
+            .find(|(wrong, _)| *wrong == lower)
+        {
+            Some((_, right)) => {
+                changed = true;
+                let mut chars = right.chars();
+                let first = chars.next().unwrap_or_default();
+                let shout = word.chars().count() > 1 && word.chars().all(char::is_uppercase);
+                if shout {
+                    out.push_str(&right.to_uppercase());
+                } else if word.chars().next().is_some_and(char::is_uppercase) {
+                    out.extend(first.to_uppercase());
+                    out.push_str(chars.as_str());
+                } else {
+                    out.push_str(right);
+                }
+            }
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphabetic() || c == '\'' || c == '\u{2019}' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 /// The tone of a reply still being written, once its `"tone"` value is complete (it comes first, so
 /// the voice knows it before the first sentence of `say`).
 pub fn tone_so_far(raw: &str) -> Option<Tone> {
@@ -204,7 +285,7 @@ pub fn parse_reply(text: &str) -> Reply {
             .take(MAX_SAY_CHARS)
             .collect();
         return Reply {
-            say,
+            say: restore_apostrophes(&say).into_owned(),
             ..Reply::default()
         };
     };
@@ -214,14 +295,16 @@ pub fn parse_reply(text: &str) -> Reply {
             .and_then(Value::as_str)
             .and_then(Tone::from_name)
             .unwrap_or_default(),
-        say: map
-            .get("say")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(MAX_SAY_CHARS)
-            .collect(),
+        say: restore_apostrophes(
+            &map.get("say")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(MAX_SAY_CHARS)
+                .collect::<String>(),
+        )
+        .into_owned(),
         remember: map
             .get("remember")
             .and_then(Value::as_str)
@@ -745,5 +828,37 @@ mod tests {
         assert!(parts.len() >= 2);
         assert!(parts.iter().all(|p| p.chars().count() <= Sentences::MAX));
         assert_eq!(parts.concat().replace(' ', ""), long.replace(' ', ""));
+    }
+
+    #[test]
+    fn dropped_apostrophes_come_back_and_real_words_stay() {
+        let fixed = |s: &str| restore_apostrophes(s).into_owned();
+        assert_eq!(
+            fixed("Parce quils explosent toujours."),
+            "Parce qu'ils explosent toujours."
+        );
+        assert_eq!(
+            fixed("Quil vienne. Cest simple."),
+            "Qu'il vienne. C'est simple."
+        );
+        assert_eq!(fixed("QUILS ARRIVENT"), "QU'ILS ARRIVENT");
+        assert_eq!(
+            fixed("Je mappelle Kev, jusquici tout va bien."),
+            "Je m'appelle Kev, jusqu'ici tout va bien."
+        );
+        // Whole words only, and nothing else is touched.
+        for same in [
+            "Je m'appelle Kev, c'est qu'ils arrivent.",
+            "The nest is near; Jai and Jaime wait by the dune.",
+            "Quilt and quiet and quote.",
+            "quil's",
+            "",
+        ] {
+            assert_eq!(fixed(same), same);
+        }
+        // The reply the chat and the voice get is the repaired one.
+        let json = r#"{"tone":"sarcastic","say":"Parce quils explosent.","actions":[]}"#;
+        assert_eq!(parse_reply(json).say, "Parce qu'ils explosent.");
+        assert_eq!(parse_reply("cest bon").say, "c'est bon");
     }
 }

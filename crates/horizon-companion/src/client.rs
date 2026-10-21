@@ -326,7 +326,10 @@ pub fn stream_chat(
     let mut tone = None;
     let mut emit = |text: String, tone: Option<Tone>, stats: &mut Stats| {
         stats.first_sentence.get_or_insert(started.elapsed());
-        sentence(text, tone.unwrap_or_default());
+        sentence(
+            reply::restore_apostrophes(&text).into_owned(),
+            tone.unwrap_or_default(),
+        );
     };
     for line in BufReader::new(response.into_reader()).lines() {
         if cancelled() {

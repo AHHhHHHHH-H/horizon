@@ -4,6 +4,7 @@
 //!
 //! cargo run --release -p horizon-companion --example companion_bench -- \
 //!     --server <llama-server> --model <gguf> --lang en|fr [--cpu --threads N] [--out turns.jsonl]
+//!     [--rounds N] [--free] [--line "text"]
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -212,6 +213,12 @@ struct Args {
     cold: bool,
     /// Extra runtime arguments, to try settings.
     extra: Vec<String>,
+    /// How many times the twenty turns are played (a longer sample of the replies' wording).
+    rounds: usize,
+    /// No JSON schema: the model answers freely (to tell what the grammar changes).
+    free: bool,
+    /// Say this one line (with `--rounds` repeats, each on its own) instead of the twenty turns.
+    line: Option<String>,
 }
 
 fn args() -> Args {
@@ -226,6 +233,9 @@ fn args() -> Args {
         one_persona: false,
         cold: false,
         extra: Vec::new(),
+        rounds: 1,
+        free: false,
+        line: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -240,10 +250,80 @@ fn args() -> Args {
             "--one-persona" => a.one_persona = true,
             "--cold" => a.cold = true,
             "--arg" => a.extra.push(it.next().expect("--arg value")),
+            "--rounds" => a.rounds = it.next().and_then(|n| n.parse().ok()).expect("--rounds N"),
+            "--free" => a.free = true,
+            "--line" => a.line = Some(it.next().expect("--line text")),
             other => panic!("unknown argument {other}"),
         }
     }
     a
+}
+
+/// The words of a reply, trimmed of punctuation.
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}'))
+        .filter(|w| !w.is_empty())
+}
+
+/// English contractions in a reply: `I'm`, `don't`, `it's`, `we'll`...
+fn contractions(text: &str) -> usize {
+    words(text)
+        .filter(|w| {
+            let w = w.replace('\u{2019}', "'").to_lowercase();
+            ["'s", "'t", "'re", "'ll", "'ve", "'d", "'m"]
+                .iter()
+                .any(|e| w.ends_with(e))
+        })
+        .count()
+}
+
+/// French elisions in a reply: `j'ai`, `c'est`, `qu'ils`, `l'eau`...
+fn elisions(text: &str) -> usize {
+    words(text)
+        .filter(|w| {
+            let w = w.replace('\u{2019}', "'").to_lowercase();
+            [
+                "l'", "d'", "j'", "c'", "n'", "m'", "s'", "t'", "qu'", "jusqu'", "lorsqu'",
+                "puisqu'",
+            ]
+            .iter()
+            .any(|e| w.starts_with(e))
+        })
+        .count()
+}
+
+/// French words that are only there when an apostrophe was dropped (`quils` for `qu'ils`).
+fn dropped_apostrophes(text: &str) -> usize {
+    const DROPPED: &[&str] = &[
+        "quil",
+        "quils",
+        "quon",
+        "quun",
+        "quune",
+        "cest",
+        "jai",
+        "jen",
+        "jy",
+        "nest",
+        "nai",
+        "mappelle",
+        "sappelle",
+        "tappelle",
+        "jusquau",
+        "jusqua",
+        "lorsquil",
+        "lorsquon",
+        "puisquil",
+        "puisquon",
+        "jaimerais",
+        "jaime",
+        "jattends",
+        "jarrive",
+        "japprends",
+    ];
+    words(text)
+        .filter(|w| DROPPED.contains(&w.to_lowercase().as_str()))
+        .count()
 }
 
 /// A rough "is this French" test on the reply, by function words.
@@ -348,16 +428,42 @@ fn main() {
     ] {
         names.add_mob(id, if args.lang == "fr" { fr } else { en });
     }
+    // What the model wrote in `say`, before the reply's repairs (`reply::restore_apostrophes`).
+    let mut wrote: Vec<String> = Vec::new();
     let mut by_reflex = 0;
-    for (i, turn) in TURNS.iter().enumerate() {
-        let (personality, role) = personas[if args.one_persona { 0 } else { i / 5 }];
+    let one_line = args.line.as_ref().map(|line| {
+        let line: &'static str = Box::leak(line.clone().into_boxed_str());
+        [Turn {
+            state: "",
+            en: line,
+            fr: line,
+            event: false,
+            fits: &[],
+            needs: None,
+        }]
+    });
+    let turns: &[Turn] = one_line.as_ref().map_or(TURNS, |t| t);
+    for (i, turn) in turns
+        .iter()
+        .cycle()
+        .take(turns.len() * args.rounds)
+        .enumerate()
+    {
+        let (personality, role) = personas[if args.one_persona {
+            0
+        } else {
+            i % turns.len() * 4 / turns.len() % 4
+        }];
         let persona = Persona {
             personality,
             role,
             ..Persona::default()
         };
         let system = prompt::system_prompt(&persona, "Steve", language);
-        if i == 0 || i % 5 == 0 && !args.one_persona {
+        if args.line.is_some() {
+            history.clear();
+        }
+        if i == 0 || i % 5 == 0 && !args.one_persona && args.line.is_none() {
             history.clear();
             if let Some(real) = tokenize(&endpoint, &system) {
                 calibration.push((prompt::estimate_tokens(&system), real));
@@ -423,7 +529,9 @@ fn main() {
             &Budget::default(),
         );
         let asked = Instant::now();
-        let id = brain.ask(ChatRequest::turn(messages.clone()));
+        let mut request = ChatRequest::turn(messages.clone());
+        request.structured = !args.free;
+        let id = brain.ask(request);
         let mut sentences = Vec::new();
         let (reply, raw, stats) = loop {
             match brain.try_recv() {
@@ -455,6 +563,12 @@ fn main() {
         } else {
             !looks_french(&reply.say)
         };
+        wrote.push(
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| v.get("say").and_then(|s| s.as_str()).map(str::to_owned))
+                .unwrap_or_else(|| raw.clone()),
+        );
         history.push(Exchange::new(&messages, raw.clone()));
         let first_sentence = sentences.first().map(|(t, _)| t.as_millis());
         println!(
@@ -487,6 +601,20 @@ fn main() {
         }
         rows.push((i, stats, reply, fits, right_language, turn.event));
     }
+    let says: Vec<&str> = wrote.iter().map(String::as_str).collect();
+    println!(
+        "APOSTROPHES lang {}: {} replies, {} with an apostrophe | English contractions {} (in {} replies) | French elisions {} (in {} replies) | dropped apostrophes {}",
+        args.lang,
+        says.len(),
+        says.iter()
+            .filter(|s| s.contains(['\'', '\u{2019}']))
+            .count(),
+        says.iter().map(|s| contractions(s)).sum::<usize>(),
+        says.iter().filter(|s| contractions(s) > 0).count(),
+        says.iter().map(|s| elisions(s)).sum::<usize>(),
+        says.iter().filter(|s| elisions(s) > 0).count(),
+        says.iter().map(|s| dropped_apostrophes(s)).sum::<usize>(),
+    );
     let n = rows.len() as f64;
     let mut firsts: Vec<u128> = rows
         .iter()
