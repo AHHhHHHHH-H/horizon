@@ -541,14 +541,20 @@ still fails.
   All-knowing. Memory is saved with the companion.
 - **Movement 2.0** (`companion/moves.rs`, `game/companion_walk.rs`): A* over cells (Open, Water,
   Lava, Hazard, Solid with dig ticks and falling, Unknown). Moves are walk, up, fall, down, dig down,
-  bridge, pillar and swim. Each search is capped at 5000 nodes and 12 ms of wall time, and long trips
-  go in 40-block legs. Cells are cached per block state and per position within one search. On Fair,
-  solid blocks it never saw and doesn't touch are Unknown (planned as stone).
+  bridge, pillar and swim. Each search is capped at 5000 nodes, and long trips go in 40-block legs.
+  A search is resumable (`moves::Search`): it runs 1.5 ms per tick and goes on the next tick, so a
+  plan never holds up the game thread. Cells are cached per block state and per position within
+  one search. On Fair, solid blocks it never saw and doesn't touch are Unknown (planned as stone).
 - **Walker**:
   - **Steps**: patience scales with the blocks a step digs. It goes back to the middle of its row
     while still moving forward. When off the route, it replans from where it is. In water, it swims
     up toward the step.
-  - **Bad blocks**: blocks it can't break or stand on become walls for the next plan.
+  - **Bad blocks**: blocks it can't break or stand on become walls for the next plans, for a
+    minute (a floor gets built, lava goes). Cells it means to stand in are never bad, and a stand
+    holding a block is dug out.
+  - **Falls**: a first step that drops two or three blocks counts as on the route.
+  - **Cliffs**: where its way ends or turns at a drop of more than 4, it sneaks and doesn't
+    sprint.
   - **Blocks it keeps**: it never digs the portal mould's blocks on its way.
   - **Planning rate**: one plan every 5 ticks at most (20 after a plan that found nothing).
   - **Cost of water**: being fully under water costs three times as much as swimming at the
@@ -565,23 +571,31 @@ still fails.
     ceiling. It stays up until its air is back, and heads for the nearest air to the side when the
     way up is blocked.
   - **Night**: under open sky it digs a capped pit two blocks deep. It stays in the pit while mobs
-    gather above.
+    gather above. In the portal stage, with 12 health or more, it works on through the night.
   - **Threats**: it backs off from creepers (5 blocks) and pillagers (20 blocks).
-  - **Death recovery**: it goes back for its things for up to 2 minutes.
+  - **Death recovery**: it goes back for its things for up to 2 minutes, unless it died there
+    the last time too.
+  - **Hunger**: hungry (10 or less) with nothing to eat, it hunts first whatever the stage.
+  - **Exploring**: legs run nearly straight. It follows leads from memory first: for wood, the
+    nearest tree it saw (a desert spawn walks to the tree line); for iron on Fair, iron ore it
+    saw however far, then cave and ravine floors seen well below it (not lake beds). Tunnels at
+    y 16 run 40 blocks a leg. Stuck twice at one spot, it digs up and out.
   - **Watchdogs**:
     - work that changes no item for 3000 ticks;
     - the route's own moves going nowhere for 3000 ticks;
     - a smelt is let finish rather than cut off by the stage budget;
     - after a stalled smelt, the meat stays raw.
-- **Portal cast**: lava is found in memory, through walls on Sharp and up, or near ruined portals
-  on Scout and up.
+- **Portal cast**: lava and water are found in memory, through walls on Sharp and up, or (lava)
+  near ruined portals on Scout and up.
   - **Site and mould**: the site is two blocks from a pool. It builds a mould of floors, a back
     wall and three corners, then fills the ten frame blocks one at a time.
   - **Each frame block**: water first, lava poured on the back wall's face, water beside or
     above it, then the water taken back. A pour that misses is scooped back up.
-  - **Finding water and lava**: it digs a line of sight to buried sources. Sources and pools it
-    can't reach are given up after 30 s, and a frame block that won't cast in 5 minutes moves it to
-    another pool.
+  - **Finding water and lava**: it digs a line of sight to buried sources and takes lava from the
+    pool's near edge first. Sources and pools it can't reach are given up after 30 s, and a frame
+    block that won't cast in 5 minutes moves it to another pool. Water left in the frame is taken
+    back from the ground before it; water it can't reach is left there (lava poured beside it
+    sets), never buried under a block.
   - **Lighting**: before the flint and steel, it drains the inside of the frame and the cells in
     front of it.
 

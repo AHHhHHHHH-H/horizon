@@ -421,9 +421,11 @@ impl Game<'_> {
                 min_y: self.dim.min_y(),
             };
             let route = p.search.run(&t, started + PLAN_SLICE);
+            // No way: what the planner saw around it (debug logs).
             if let Some(r) = &route
                 && r.steps.is_empty()
                 && !r.reached
+                && log::log_enabled!(log::Level::Debug)
             {
                 use horizon_client::companion::moves::Terrain as _;
                 let o = p.search.from;

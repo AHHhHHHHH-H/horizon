@@ -104,6 +104,31 @@ struct Explore {
     goal: Option<Goal>,
     legs: u32,
     since: u64,
+    /// What it is after, and the leads it followed (what it saw that may
+    /// lead there: trees far off, a cave below).
+    want: Want,
+    visited: Vec<[i32; 3]>,
+}
+
+/// What an exploration is after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Want {
+    Wood,
+    Ore,
+    Other,
+}
+
+impl Want {
+    fn of(item: &str) -> Want {
+        let n = c::short_id(item);
+        if n.ends_with("_log") || n.ends_with("_planks") || n.ends_with("_wood") || n == "stick" {
+            Want::Wood
+        } else if n.contains("iron") || n.ends_with("_ore") || n == "coal" {
+            Want::Ore
+        } else {
+            Want::Other
+        }
+    }
 }
 
 /// A speedrun under way (`Body::run`).
@@ -154,6 +179,10 @@ pub(super) struct Run {
     night: Option<i64>,
     died_at_night: bool,
     turn: u32,
+    /// Where the watchdog last found it stuck, and how many times running.
+    stuck: ([i32; 3], u32),
+    /// Where it died last.
+    last_death: Option<[f64; 3]>,
 }
 
 impl Run {
@@ -186,6 +215,8 @@ impl Run {
             night: None,
             died_at_night: false,
             turn: 0,
+            stuck: ([0; 3], 0),
+            last_death: None,
         }
     }
     fn split(&mut self, name: &str, ticks: u64) -> bool {
@@ -210,7 +241,11 @@ impl Run {
             CompanionReport::SkillFailed { reason, .. } => self.failure = Some(reason.clone()),
             CompanionReport::Died { .. } => {
                 self.deaths += 1;
-                self.death = Some((self.at, None));
+                // Died where it died last time (going back for its things):
+                // they stay there.
+                let again = self.last_death.is_some_and(|p| c::distance(p, self.at) < 8.0);
+                self.death = (!again).then_some((self.at, None));
+                self.last_death = Some(self.at);
                 self.explore = None;
                 self.cast = None;
                 if self.night.is_some() {
@@ -634,9 +669,20 @@ impl Game<'_> {
                 log::info!("[companion] {} run: stuck at {f:?} ({}), trying elsewhere", b.file.name, run.note);
                 run.moving = (key, now);
                 b.walk.reset();
+                let again = (0..3).all(|k| (run.stuck.0[k] - f[k]).abs() <= 3);
+                run.stuck = (f, if again { run.stuck.1 + 1 } else { 1 });
                 if let Some(ex) = run.explore.as_mut() {
-                    ex.goal = None;
                     ex.heading += 2.1;
+                    // Stuck here again: up and out first (a staircase dug
+                    // up and aside), wherever it was going.
+                    ex.goal = (run.stuck.1 >= 2).then(|| {
+                        let (dx, dz) = (ex.heading.cos(), ex.heading.sin());
+                        Goal {
+                            at: [f[0] + (dx * 8.0) as i32, f[1] + 10, f[2] + (dz * 8.0) as i32],
+                            near: 2.0,
+                            vertical: 2,
+                        }
+                    });
                 }
                 if let Some(cast) = run.cast.as_mut()
                     && cast.slot < SLOTS.len()
@@ -721,7 +767,19 @@ impl Game<'_> {
             self.companion_cast_tick(host, b, run, pos, &inventory);
             return;
         }
-        let goals = self.companion_stage_goals(run.stage, &inventory, pos, !run.no_cook);
+        let mut goals = self.companion_stage_goals(run.stage, &inventory, pos, !run.no_cook);
+        // Hungry with nothing to eat: meat first, whatever the stage (at
+        // a heart with no food it would never heal).
+        let hunger = host.hub.guest(b.conn).map_or(20, |g| g.food);
+        let items = self.res.items();
+        let fed = inventory.iter().flatten().any(|s| gear::food_score(items, s).is_some());
+        if hunger <= 10 && !fed && run.stage != Stage::Food {
+            let meat = self.companion_stage_goals(Stage::Food, &inventory, pos, false);
+            if !meat.is_empty() {
+                run.note = "hungry: hunting".into();
+                goals = meat;
+            }
+        }
         if goals.is_empty() {
             self.companion_run_next(run, now);
             return;
@@ -757,6 +815,8 @@ impl Game<'_> {
                     goal: None,
                     legs: 0,
                     since: now,
+                    want: Want::of(&lack),
+                    visited: Vec::new(),
                 });
             }
         }
@@ -872,40 +932,43 @@ impl Game<'_> {
                                 .map(|d| (d, *meat))
                         })
                         .min_by(|a, b| a.0.total_cmp(&b.0));
+                    // (A goal is what the stock should hold: what it has of
+                    // that meat, and the rest.)
                     if let Some((_, meat)) = nearest {
-                        goals.push((meat.to_string(), FOOD - have));
+                        goals.push((meat.to_string(), count(inv, meat) + FOOD - have));
                     }
                 }
             }
             Stage::Iron => {
                 let have = iron(inv);
                 if have < 10 {
-                    goals.push((m("raw_iron"), 10 - have));
+                    goals.push((m("raw_iron"), count(inv, "minecraft:raw_iron") + 10 - have));
                 }
             }
             Stage::Kit => {
-                if !has_pickaxe(inv, &["iron", "diamond"]) {
-                    goals.push((m("iron_pickaxe"), 1));
-                }
-                let have = buckets(inv);
-                if have < 2 {
-                    goals.push((m("bucket"), 2 - have));
-                }
-                if count(inv, "minecraft:flint_and_steel") == 0 {
-                    goals.push((m("flint_and_steel"), 1));
-                }
-                // The meat it hunted, cooked in the same furnace (raw it
-                // is food too, when cooking went wrong once).
+                // The meat it hunted first, in the first furnace (the iron
+                // smelts after it; raw it is food too, when cooking went
+                // wrong once).
                 for (raw, cooked) in RAW.iter().zip(COOKED).filter(|_| cook) {
                     let n = count(inv, raw);
                     if n > 0 {
                         goals.push((cooked.to_string(), count(inv, cooked) + n));
                     }
                 }
+                if !has_pickaxe(inv, &["iron", "diamond"]) {
+                    goals.push((m("iron_pickaxe"), 1));
+                }
+                let have = buckets(inv);
+                if have < 2 {
+                    goals.push((m("bucket"), count(inv, "minecraft:bucket") + 2 - have));
+                }
+                if count(inv, "minecraft:flint_and_steel") == 0 {
+                    goals.push((m("flint_and_steel"), 1));
+                }
                 // Blocks to bridge, pillar and build the mould with.
                 let blocks = Self::companion_blocks(inv);
                 if blocks < 24 {
-                    goals.push((m("cobblestone"), 32 - blocks));
+                    goals.push((m("cobblestone"), count(inv, "minecraft:cobblestone") + 32 - blocks));
                 }
             }
             Stage::Portal | Stage::Done => {}
@@ -1083,6 +1146,8 @@ impl Game<'_> {
                     goal: None,
                     legs: 0,
                     since: self.world.game_time.max(0) as u64,
+                    want: Want::Other,
+                    visited: Vec::new(),
                 });
             }
             run.last = None;
@@ -1115,10 +1180,19 @@ impl Game<'_> {
 
     /// Walk out looking for what it lacks.
     fn companion_explore(&mut self, host: &mut LanHost, b: &mut Body, run: &mut Run, pos: [f64; 3]) {
+        let f = feet(pos);
+        // What it has seen that may lead there first.
+        if let Some(ex) = run.explore.as_mut()
+            && ex.goal.is_none()
+            && let Some(lead) = self.companion_lead(b, ex.want, f, &ex.visited)
+        {
+            log::info!("[companion] {} run: following a lead to {:?} ({:?})", b.file.name, lead.at, ex.want);
+            ex.visited.push(lead.at);
+            ex.goal = Some(lead);
+        }
         let Some(ex) = run.explore.as_mut() else {
             return;
         };
-        let f = feet(pos);
         let goal = match ex.goal {
             Some(g) => g,
             None => {
@@ -1138,8 +1212,9 @@ impl Game<'_> {
                         near: 3.0,
                         vertical: 2,
                     },
+                    // Long tunnels: more ore seen per block dug.
                     Search::Mine(_) => Goal {
-                        at: [f[0] + (dx * 24.0) as i32, f[1], f[2] + (dz * 24.0) as i32],
+                        at: [f[0] + (dx * 40.0) as i32, f[1], f[2] + (dz * 40.0) as i32],
                         near: 1.0,
                         vertical: 0,
                     },
@@ -1159,7 +1234,8 @@ impl Game<'_> {
                 ex.goal = None;
                 ex.heading += match ex.search {
                     Search::Mine(_) => std::f64::consts::FRAC_PI_2 * if ex.legs % 2 == 0 { 1.0 } else { -1.0 },
-                    _ => 0.4,
+                    // Nearly straight on: new ground each leg, not a circle.
+                    _ => 0.25 * if ex.legs % 2 == 0 { 1.0 } else { -1.0 },
                 };
             }
             Steer::Stuck => {
@@ -1169,6 +1245,54 @@ impl Game<'_> {
             }
         }
         let _ = ex.since;
+    }
+
+    /// A lead for what it explores for, from what it remembers: for wood,
+    /// the nearest tree (leaves or logs) beyond what work searched; for
+    /// ore, without senses through walls, the nearest cave or ravine floor
+    /// it has seen well below it. None past the leads it followed.
+    fn companion_lead(&self, b: &Body, want: Want, f: [i32; 3], visited: &[[i32; 3]]) -> Option<Goal> {
+        let fresh = |p: [i32; 3]| visited.iter().all(|v| (v[0] - p[0]).abs().max((v[2] - p[2]).abs()) > 12);
+        let d2 = |p: [i32; 3]| (0..3).map(|k| i64::from(p[k] - f[k]).pow(2)).sum::<i64>();
+        match want {
+            Want::Wood => {
+                let wood = self.states_where(natural_wood);
+                let p = b
+                    .senses
+                    .memory()
+                    .iter()
+                    .filter(|(p, s)| wood.get(*s as usize).copied().unwrap_or(false) && fresh(*p))
+                    .filter(|(p, _)| (p[0] - f[0]).abs().max((p[2] - f[2]).abs()) > 6)
+                    .min_by_key(|(p, _)| d2(*p))?
+                    .0;
+                Some(Goal::column(p, 3.0))
+            }
+            Want::Ore if b.senses.level.xray_radius(48).is_none() => {
+                // Iron ore it saw, however far (work looks within 48).
+                let iron = self.states_where(|n| n.ends_with("iron_ore"));
+                let memory = b.senses.memory();
+                let ore = memory
+                    .iter()
+                    .filter(|(p, s)| iron.get(*s as usize).copied().unwrap_or(false) && fresh(*p))
+                    .min_by_key(|(p, _)| d2(*p));
+                if let Some((p, _)) = ore {
+                    return Some(Goal::near(p, 3.0));
+                }
+                // Else a floor it saw from above, five or more blocks down,
+                // with the air it was seen through over it (not water: a
+                // lake's bed is no cave): a cave or ravine.
+                let open = |q: [i32; 3]| self.passable(q) && !self.watery(q);
+                let p = memory
+                    .iter()
+                    .filter(|(p, _)| p[1] <= f[1] - 5 && fresh(*p))
+                    .filter(|(p, _)| (p[0] - f[0]).abs().max((p[2] - f[2]).abs()) <= 64)
+                    .filter(|(p, _)| open([p[0], p[1] + 1, p[2]]) && open([p[0], p[1] + 2, p[2]]))
+                    .min_by_key(|(p, _)| d2(*p))?
+                    .0;
+                Some(Goal::near([p[0], p[1] + 1, p[2]], 3.0))
+            }
+            _ => None,
+        }
     }
 
     // ---- the portal, cast from a lava pool ---------------------------------------------
@@ -1344,6 +1468,8 @@ impl Game<'_> {
                 goal: None,
                 legs: 0,
                 since: self.world.game_time.max(0) as u64,
+                want: Want::Other,
+                visited: Vec::new(),
             });
         }
         self.companion_explore(host, b, run, pos);
@@ -1836,6 +1962,15 @@ impl Game<'_> {
             b.target = None;
         }
         if run.no_shelter == Some(day) || (b.target.is_some() && !sheltered) || run.stage == Stage::Done {
+            return false;
+        }
+        // At the portal stage, healthy: the search and the cast go on
+        // through the night (a night in a pit is a quarter of the run),
+        // fighting what comes.
+        let casting = run.stage == Stage::Portal;
+        let health = host.hub.guest(b.conn).map_or(20.0, |g| g.health);
+        if casting && health >= 12.0 && !sheltered {
+            run.shelter = None;
             return false;
         }
         let pit = match run.shelter {
