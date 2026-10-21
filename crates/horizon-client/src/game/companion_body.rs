@@ -506,6 +506,10 @@ impl Game<'_> {
                 .find(|m| m.id == id && m.alive())
                 .is_some_and(|m| {
                     let at = mob_at(m);
+                    // A calmed enderman is left alone (a blow angers it again).
+                    if !b.ordered && calm_enderman(m) {
+                        return false;
+                    }
                     if b.ordered {
                         c::distance(at, pos) <= 48.0
                     } else {
@@ -585,7 +589,9 @@ impl Game<'_> {
                     .map(|m| m.id);
             }
         }
-        if let Some(id) = pick {
+        if let Some(id) = pick
+            && !alive(id).is_some_and(calm_enderman)
+        {
             b.target = Some(id);
             b.ordered = false;
             b.nav.reset();
@@ -1020,11 +1026,17 @@ impl Game<'_> {
         if self.look_at_entity(host, gi, entity).is_none() {
             return;
         }
+        let ordered = b.ordered;
         // The host's own "last hurt mob" is its owner's (wolves follow it).
         let owner_hurt = self.combat.last_hurt_mob;
         let hit = self
             .as_guest(host, b.conn, |g| {
-                g.attack_strength_scale() >= 0.95 && g.attack()
+                // A calm enderman takes no blow it wasn't ordered to (one in
+                // the way of the target would, and then hunt it).
+                let stray = g.mob_hit().is_some_and(|(i, _)| {
+                    calm_enderman(&g.mobs[i]) && !(ordered && g.mobs[i].id == id)
+                });
+                !stray && g.attack_strength_scale() >= 0.95 && g.attack()
             })
             .unwrap_or(false);
         self.combat.last_hurt_mob = owner_hurt;
@@ -1463,4 +1475,9 @@ pub(super) fn carried(inventory: &[Option<ItemStack>], item: &str) -> u32 {
         .filter(|s| &*s.item == item)
         .map(|s| s.count)
         .sum()
+}
+
+/// An enderman after nobody: looking at it or hitting it is what angers it.
+fn calm_enderman(m: &Mob) -> bool {
+    &*m.kind.id == "minecraft:enderman" && m.ai.target.is_none()
 }
