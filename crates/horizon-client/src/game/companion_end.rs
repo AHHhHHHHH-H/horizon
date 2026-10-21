@@ -2320,9 +2320,14 @@ impl Game<'_> {
                     if self.end_stalled(run, pos, now) {
                         run.walk_fails += 1;
                     }
+                    // Stuck a step from it (its own old walls, a hole):
+                    // straight in, digging and bridging.
                     if run.walk_fails > 3 {
-                        run.known[k.crystal].skipped = true;
-                        return;
+                        b.keys = Keys::default();
+                        if self.end_traverse(host, b, run, goal, pos) == Prog::Failed {
+                            run.known[k.crystal].skipped = true;
+                            return;
+                        }
                     }
                     None
                 } else {
@@ -3318,6 +3323,22 @@ impl Game<'_> {
         // Off its step once it takes off.
         if run.perch.take().is_some() {
             self.companion_stop_dig(host, b);
+        }
+        // A crystal left heals it for good: every five minutes in the air,
+        // back for it (a few times).
+        if left > 0 && !d.sitting && run.passes < 5 && now - run.since > 6000 {
+            run.passes += 1;
+            log::info!(
+                "[end] {} goes back for the {left} crystals left",
+                b.file.name
+            );
+            for k in &mut run.known {
+                k.skipped = false;
+            }
+            run.shot = None;
+            run.cage = None;
+            run.set_phase(EndPhase::Crystals, now);
+            return;
         }
         run.note = if left > 0 {
             format!(
