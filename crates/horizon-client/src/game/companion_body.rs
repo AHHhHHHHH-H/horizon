@@ -1062,6 +1062,9 @@ impl Game<'_> {
         let g = &mut host.hub.guests[gi];
         let mut armor: Vec<(usize, Option<ItemStack>, Option<ItemStack>)> = Vec::new();
         for slot in 0..4 {
+            if slot == 0 && super::companion_end::keeps_pumpkin(b, g.armor[0].as_ref()) {
+                continue;
+            }
             let worn = g.armor[slot]
                 .as_ref()
                 .and_then(|s| gear::armor_score(items, s))
