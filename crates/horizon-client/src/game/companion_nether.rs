@@ -223,10 +223,10 @@ pub(super) struct NetherRun {
     ignored: Vec<(u32, u64)>,
     /// An angry enderman it goes after out of the pit.
     chase: Option<u32>,
-    /// The armour modifiers put on its attributes (`nether_wear_armor`).
-    armor_mods: Vec<(String, String)>,
     /// Its box by the blaze spawner.
     bunker: Option<Bunker>,
+    /// Its box closed on the open side while it heals.
+    sealed: bool,
 }
 
 impl NetherRun {
@@ -281,8 +281,8 @@ impl NetherRun {
             engaged: None,
             ignored: Vec::new(),
             chase: None,
-            armor_mods: Vec::new(),
             bunker: None,
+            sealed: false,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -411,21 +411,6 @@ impl Game<'_> {
         })
     }
 
-    /// Its worn armour protects it: the hub never puts a guest's armour
-    /// modifiers on its attributes (`LivingEntity.collectEquipmentChanges`),
-    /// so blazes and piglins hit as through none. The local player's
-    /// `apply_equipment`, for the guest, with its own list. (The same as the
-    /// End route's `end_wear_armor`; one of the two goes when they meet.)
-    fn nether_wear_armor(&mut self, host: &mut LanHost, b: &Body, run: &mut NetherRun) {
-        let mut mods = std::mem::take(&mut run.armor_mods);
-        self.as_guest(host, b.conn, |g| {
-            std::mem::swap(&mut g.applied_modifiers, &mut mods);
-            g.apply_equipment();
-            std::mem::swap(&mut g.applied_modifiers, &mut mods);
-        });
-        run.armor_mods = mods;
-    }
-
     /// The step line the Watch HUD shows.
     pub(super) fn companion_nether_step(&self, host: &LanHost, b: &Body) -> Option<String> {
         let run = b.nether.as_ref()?;
@@ -493,7 +478,6 @@ impl Game<'_> {
             return;
         };
         if !run.finished() {
-            self.nether_wear_armor(host, b, &mut run);
             // Short of air under water: straight up before anything else.
             let air = host
                 .hub
@@ -758,17 +742,53 @@ impl Game<'_> {
                     [p.velocity.x, p.velocity.y, p.velocity.z],
                 )
             })
-            .find(|&(at, v)| {
+            .filter_map(|(at, v)| {
                 let d = c::distance(at, from);
                 let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                d < 24.0
+                let toward = d < 24.0
                     && speed > 1e-4
                     && ((from[0] - at[0]) * v[0]
                         + (from[1] - at[1]) * v[1]
                         + (from[2] - at[2]) * v[2])
                         / (d.max(1e-6) * speed)
-                        > 0.9
-            });
+                        > 0.9;
+                // Ticks until it is on it (they speed up: a little sooner).
+                toward.then(|| (at, d / speed.max(0.5)))
+            })
+            .min_by(|x, y| x.1.total_cmp(&y.1));
+        // A blaze within reach and the attack charged: the blow first,
+        // unless a fireball lands before the shield could be up again (it
+        // blocks 5 ticks after it is raised). Blazes keep their distance
+        // and shoot: one in reach is the chance to kill.
+        let charged = now.saturating_sub(run.last_swing) >= SWING;
+        let in_reach = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && &*m.kind.id == "minecraft:blaze")
+            .map(|m| {
+                (
+                    m.id,
+                    [m.position.x, m.position.y + 0.9, m.position.z],
+                    box_distance(from, m.bounds()),
+                )
+            })
+            .filter(|(_, at, reach)| *reach <= n::REACH && self.in_sight(from, *at))
+            .min_by(|x, y| x.2.total_cmp(&y.2));
+        if !pressed
+            && charged
+            && let Some((id, at, _)) = in_reach
+            && incoming.is_none_or(|(_, eta)| eta > 7.0)
+        {
+            b.target = None;
+            self.companion_shield(host, b, run, None, pos);
+            b.yaw = c::yaw_toward(pos, at) as f32;
+            b.pitch = look_pitch(from, at);
+            self.companion_strike(host, b, id);
+            run.last_swing = now;
+            run.shield_until = 0;
+            run.note = "a blow at a blaze in reach".into();
+            return true;
+        }
         if !pressed && let Some((at, _)) = incoming {
             run.shield_until = now + 4;
             self.companion_shield(host, b, run, Some(at), pos);
@@ -996,42 +1016,24 @@ impl Game<'_> {
             return false;
         }
         b.target = None;
-        // In its box by the spawner: it stays in, the blazes come to the
-        // one opening a block wide (the shield covers it), one at a time.
+        // Its box by the spawner is where it heals: hurt, it goes in, closes
+        // it, eats and heals out of sight, then opens it and fights on in the
+        // open (from inside the blazes keep their distance and none die).
         if let Some(bx) = run.bunker
             && bx.built
-            && feet(pos) == bx.feet
         {
-            b.keys = Default::default();
-            let charged = now.saturating_sub(run.last_swing) >= SWING;
-            let nearest = foes
-                .iter()
-                .min_by(|x, y| x.2.reach.total_cmp(&y.2.reach))
-                .copied();
-            let seen = foes.iter().any(|f| f.2.sees);
-            match nearest {
-                Some((id, at, f)) if f.reach <= n::REACH && charged => {
-                    self.companion_shield(host, b, run, None, pos);
-                    b.yaw = c::yaw_toward(pos, at) as f32;
-                    b.pitch = look_pitch(from, at);
-                    self.companion_strike(host, b, id);
-                    run.last_swing = now;
-                    run.note = "fighting a blaze from the box".into();
+            if feet(pos) == bx.feet {
+                if self.companion_box_heal(host, b, run, bx, health, pos) {
+                    return true;
                 }
-                Some((_, at, f)) if f.sees => {
-                    self.companion_shield(host, b, run, Some(at), pos);
-                    run.note = "shield up in the box".into();
-                }
-                _ => {
-                    self.companion_shield(host, b, run, None, pos);
-                    if !seen && health < 16.0 && host.hub.guest(b.conn).is_some_and(|g| g.food < 20)
-                    {
-                        self.companion_start_eating(host, b);
-                    }
-                    run.note = "waiting in the box".into();
+            } else if health < 12.0 {
+                let shooting = foes.iter().find(|f| f.2.sees && f.2.charging).map(|f| f.1);
+                self.companion_shield(host, b, run, shooting, pos);
+                run.note = "to its box to heal".into();
+                if self.nether_go(host, b, run, Goal::exact(bx.feet), pos) != Steer::Stuck {
+                    return true;
                 }
             }
-            return true;
         }
         let arrows = host.hub.guest(b.conn).is_some_and(|g| {
             count(&g.inventory, "minecraft:bow") > 0 && count(&g.inventory, "minecraft:arrow") > 0
@@ -1388,6 +1390,87 @@ impl Game<'_> {
             self.companion_use_block(host, b, against, face, pos);
         }
         Some(true)
+    }
+
+    /// Hurt in its box: it closes the open side (two blocks), eats and
+    /// heals out of the blazes' sight (health comes back only above 17
+    /// food, and fast on saturation), then opens it again. True while it
+    /// takes the tick.
+    fn companion_box_heal(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        run: &mut NetherRun,
+        bx: Bunker,
+        health: f32,
+        pos: [f64; 3],
+    ) -> bool {
+        let Some(g) = host.hub.guest(b.conn) else {
+            return false;
+        };
+        let food = g.food;
+        let beef = g.inventory.iter().flatten().any(|s| {
+            self.res
+                .items()
+                .get(&s.item)
+                .is_some_and(|i| i.food.is_some())
+        });
+        let blocks = g
+            .inventory
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)));
+        let f = bx.feet;
+        let low = [f[0] + bx.front[0], f[1], f[2] + bx.front[1]];
+        let high = [low[0], f[1] + 1, low[2]];
+        if !run.sealed && health < 12.0 {
+            run.sealed = true;
+        }
+        if run.sealed && health >= 19.0 && (food >= 18 || !beef) {
+            run.sealed = false;
+        }
+        if run.sealed {
+            self.companion_shield(host, b, run, None, pos);
+            // Closed: one block at a time, the lower first (it holds the
+            // upper).
+            if let Some((cell, against)) = [(low, [low[0], low[1] - 1, low[2]]), (high, low)]
+                .into_iter()
+                .find(|(cell, _)| self.passable(*cell))
+            {
+                if self.passable(against) {
+                    return false;
+                }
+                let Some(slot) = blocks else {
+                    run.sealed = false;
+                    return false;
+                };
+                if b.eating.is_none() && b.ticks.is_multiple_of(3) {
+                    self.companion_hold_slot(host, b, slot);
+                    b.yaw = c::yaw_toward(pos, at_block(cell)) as f32;
+                    self.companion_use_block(host, b, against, 1, pos);
+                }
+                run.note = "closing its box to heal".into();
+                return true;
+            }
+            if food < 20 && beef && b.eating.is_none() {
+                self.companion_start_eating(host, b);
+            }
+            run.note = "healing in its closed box".into();
+            return true;
+        }
+        // Healed: the open side open again, the upper block first.
+        let face = match bx.front {
+            [1, 0] => 4,
+            [-1, 0] => 5,
+            [0, 1] => 2,
+            _ => 3,
+        };
+        if let Some(cell) = [high, low].into_iter().find(|c| !self.passable(*c))
+            && self.companion_dig_step(host, b, cell, face).is_ok()
+        {
+            run.note = "opening its box".into();
+            return true;
+        }
+        false
     }
 
     /// Whether a column next to `p` drops more than 3 blocks (or onto

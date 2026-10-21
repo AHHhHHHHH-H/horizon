@@ -457,11 +457,12 @@ pub fn blaze_stance(health: f32, charged: bool, foes: &[Foe], arrows: bool) -> S
     if foes.is_empty() {
         return Stance::Wait;
     }
-    // Low, two shooting at it and not healthy, or three at once: out of
-    // their sight to heal (fire resistance is not to be had); they come
-    // round the cover one at a time.
-    let seeing = foes.iter().filter(|f| f.sees).count();
-    if health < 10.0 || (seeing >= 2 && health < 16.0) || seeing >= 3 {
+    // Low: out of their sight to heal (fire resistance is not to be had);
+    // they come round the cover one at a time. Not before: with the
+    // shield up a volley does nothing, and blazes never come closer while
+    // they see it (BlazeAttackGoal), so backing off from a crowd at a
+    // spawner only leaves it hurt and none of them dead.
+    if health < 8.0 {
         return Stance::Retreat;
     }
     let nearest = (0..foes.len())
@@ -805,10 +806,11 @@ mod tests {
         };
         assert_eq!(blaze_stance(20.0, true, &[], false), Stance::Wait);
         assert_eq!(blaze_stance(6.0, true, &[near], false), Stance::Retreat);
-        // Two shooting at it, half its health gone: away to eat.
+        // Two at it, half its health gone: it stays, the shield up to the
+        // one shooting.
         assert_eq!(
             blaze_stance(12.0, true, &[far_shooting, far], false),
-            Stance::Retreat
+            Stance::Block(0)
         );
         assert_eq!(blaze_stance(12.0, true, &[near], false), Stance::Strike(0));
         assert_eq!(
