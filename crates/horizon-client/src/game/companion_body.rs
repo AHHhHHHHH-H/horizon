@@ -212,7 +212,9 @@ impl Game<'_> {
             .iter()
             .any(|m| threat(m) && c::distance(mob_at(m), pos) < 5.0);
         let hungry = food < c::EAT_BELOW || b.retreating && food < 20 && !danger_close;
-        if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
+        // Behind cover only, in the Nether run (unless starving).
+        let exposed = food >= 6 && self.companion_exposed(host, b, pos);
+        if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) && !exposed {
             self.companion_start_eating(host, b);
         }
         self.companion_work_reflexes(host, b);
@@ -1128,7 +1130,19 @@ impl Game<'_> {
         let items = self.res.items();
         let g = &mut host.hub.guests[gi];
         let mut armor: Vec<(usize, Option<ItemStack>, Option<ItemStack>)> = Vec::new();
+        // In the Nether its one gold piece stays on (piglins leave a player
+        // wearing gold alone, PiglinAi.isWearingSafeArmor): better armour
+        // from a barter (iron boots) doesn't take its place.
+        let safe = items.item_tags.get("minecraft:piglin_safe_armor");
+        let is_safe = |s: &Option<ItemStack>| {
+            s.as_ref()
+                .is_some_and(|s| safe.is_some_and(|t| t.contains(&*s.item)))
+        };
+        let gold_pieces = g.armor.iter().filter(|s| is_safe(s)).count();
         for slot in 0..4 {
+            if b.dim == Dim::Nether && gold_pieces == 1 && is_safe(&g.armor[slot]) {
+                continue;
+            }
             let worn = g.armor[slot]
                 .as_ref()
                 .and_then(|s| gear::armor_score(items, s))

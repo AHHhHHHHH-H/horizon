@@ -186,6 +186,8 @@ def one_run(endpoint, seed, args, segment, out):
         words += f' rods {args.rods}'
     if args.pearls:
         words += f' pearls {args.pearls}'
+    if args.barter:
+        words += ' barter'
     command(endpoint, f'companion do {NAME} {words}')
     started = time.monotonic()
     result = {'seed': seed, 'segment': segment, 'level': level, 'shield': not args.no_shield}
@@ -243,6 +245,7 @@ def one_run(endpoint, seed, args, segment, out):
         'deaths': nether.get('deaths', []),
         'min_health': nether.get('min_health'),
         'rods': nether.get('rods'), 'pearls': nether.get('pearls'), 'eyes': nether.get('eyes'),
+        'barter': nether.get('barter'),
         'filled': nether.get('filled'), 'throws': nether.get('throws'), 'stronghold': nether.get('stronghold'),
         'hud': hud,
         'taken_by_source': {k: round(sum(h['taken'] for h in hurts if h['source'] == k), 1)
@@ -368,6 +371,8 @@ def main():
     parser.add_argument('--tag', default='', help='a suffix for the result files')
     parser.add_argument('--rods', type=int)
     parser.add_argument('--pearls', type=int)
+    parser.add_argument('--barter', action='store_true',
+                        help='trade bastion gold with piglins for fire resistance before the blazes')
     args = parser.parse_args()
     args.client, args.resources = args.client.resolve(), args.resources.resolve()
     seeds = args.seed or SEEDS[:args.runs]

@@ -60,7 +60,7 @@ KIT = ARMOUR + ['iron_sword', 'iron_pickaxe', 'shield', 'cooked_beef 32', 'cobbl
 # Nether mobs that are not the lab's: removed every slice.
 STRAYS = ['zombified_piglin', 'piglin', 'piglin_brute', 'hoglin', 'strider', 'enderman', 'skeleton',
           'wither_skeleton']
-BUDGET = {'spawner': 9600, 'summon': 9600, 'mixed': 9600, 'bridge': 6000, 'walk': 6000}
+BUDGET = {'spawner': 9600, 'summon': 9600, 'mixed': 9600, 'bridge': 6000, 'walk': 6000, 'barter': 9600}
 # The bridge: its length, the hall's half width and height over the bridge.
 BRIDGE = 48
 OPEN = ('bridge', 'walk')
@@ -126,6 +126,8 @@ def bridge(endpoint, at):
 def strays(endpoint, at, scenario):
     x, y, z = at
     kinds = STRAYS + ([] if scenario in ('mixed', 'bridge') else ['ghast', 'magma_cube'])
+    if scenario == 'barter':
+        kinds = [k for k in kinds if k != 'piglin']
     for kind in kinds:
         try:
             command(endpoint, f'command kill @e[type=minecraft:{kind},x={x},y={y},z={z},distance=..48]')
@@ -209,6 +211,9 @@ def one_run(endpoint, args, n):
     at = setup(endpoint, args, n)
     x, y, z = at
     scenario = args.scenario
+    if args.potion and args.subject == 'companion':
+        command(endpoint, f'command give {NAME} minecraft:potion[minecraft:potion_contents='
+                          '{potion:"minecraft:fire_resistance"}]')
     command(endpoint, 'hurtlog')  # what the setup did
     command(endpoint, 'command difficulty normal')
     result = {'subject': args.subject, 'scenario': scenario, 'seed': args.seed, 'run': n,
@@ -228,12 +233,23 @@ def one_run(endpoint, args, n):
         command(endpoint, f'command summon minecraft:blaze {x + 8.5} {y} {z + 0.5}')
     elif scenario == 'bridge':
         command(endpoint, f'command summon minecraft:ghast {x + BRIDGE // 2 + 0.5} {y + 8} {z + 6.5}')
+    elif scenario == 'barter':
+        # Gold boots on (piglins stay calm), gold blocks to craft into ingots, piglins a few blocks off.
+        command(endpoint, f'command clear {NAME} minecraft:iron_boots')
+        command(endpoint, f'command give {NAME} minecraft:golden_boots')
+        command(endpoint, f'command give {NAME} minecraft:gold_block {args.gold}')
+        sprint(endpoint, 40)  # its best boots on: the gold ones
+        for i in range(args.piglins):
+            command(endpoint, f'command summon minecraft:piglin {x + 6.5} {y} {z + 0.5 + 3 * (i - 1)} '
+                              '{IsImmuneToZombification:1b}')
     goal = (x + BRIDGE + 3, y, z)
     result['goal'] = list(goal)
     if args.subject == 'companion':
         if scenario in ('passive', 'fireres'):
             command(endpoint, f'companion do {NAME} stay')
             command(endpoint, f'companion do {NAME} hold')
+        elif scenario == 'barter':
+            command(endpoint, f'companion do {NAME} nether barter until barter all_knowing')
         else:
             command(endpoint, f'companion do {NAME} nether blazes until blazes all_knowing rods 64')
     elif scenario == 'passive':
@@ -307,6 +323,10 @@ def one_run(endpoint, args, n):
             break
         if scenario == 'fireres':
             pass
+        elif scenario == 'barter':
+            nether = runner(endpoint).get('nether') or {}
+            if nether.get('outcome'):
+                break
         elif scenario in OPEN:
             if pos and math.hypot(pos[0] - goal[0] - 0.5, pos[2] - goal[2] - 0.5) < 6:
                 result['reached'] = done
@@ -319,6 +339,8 @@ def one_run(endpoint, args, n):
     alive_samples = [s for s in samples if s['beef'] is not None and s['health'] and s['health'] > 0]
     if args.subject == 'companion':
         result['spawner'] = (runner(endpoint).get('nether') or {}).get('spawner')
+        result['barter'] = (runner(endpoint).get('nether') or {}).get('barter')
+        result['inventory'] = runner(endpoint).get('inventory')
     result.update({
         'survived': death is None,
         'death': death,
@@ -375,7 +397,8 @@ def run_one(args, n):
             result['hurt_notes'] = notes
     (results / f'{name}.json').write_text(json.dumps(result, indent=1))
     print(json.dumps({k: result.get(k) for k in ('run', 'survived', 'death', 'kills', 'ticks', 'reached',
-                                                  'min_health', 'beef_eaten', 'spawner', 'goal', 'error')}), flush=True)
+                                                  'min_health', 'beef_eaten', 'spawner', 'goal', 'barter', 'error')}),
+          flush=True)
     return result
 
 
@@ -392,7 +415,7 @@ def summary(args, results):
             r['fire_refused'] = sum(1 for h in r['hurts'] if h['source'] in fire and not h['hurt'])
     ok = [r for r in results if r.get('survived') and (r.get('fire_taken', 0) == 0) and (
         r.get('reached') is not None if args.scenario in OPEN
-        else args.scenario in ('passive', 'fireres') or r['kills'] >= args.kills)]
+        else args.scenario in ('passive', 'fireres', 'barter') or r['kills'] >= args.kills)]
     if args.scenario == 'fireres':
         lines_extra = [f'Run {r["run"]}: fire-type hurts {r["fire_hurts"]}, refused {r["fire_refused"]}, '
                        f'health taken {r["fire_taken"]}, min health {r.get("min_health")}' for r in results]
@@ -477,11 +500,14 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--offscreen', action='store_true')
     parser.add_argument('--subject', choices=['companion', 'host'], default='companion')
-    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive', 'bridge', 'walk', 'fireres'], default='spawner')
+    parser.add_argument('--scenario', choices=['spawner', 'summon', 'mixed', 'passive', 'bridge', 'walk', 'fireres', 'barter'], default='spawner')
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--seed', type=int, default=SEED)
     parser.add_argument('--parallel', type=int, default=1)
     parser.add_argument('--kills', type=int, default=6)
+    parser.add_argument('--potion', action='store_true', help='give the companion a fire resistance potion')
+    parser.add_argument('--gold', type=int, default=6, help='barter: gold blocks given (9 ingots each)')
+    parser.add_argument('--piglins', type=int, default=3, help='barter: piglins summoned')
     parser.add_argument('--ticks', type=int, default=600, help='passive: how long')
     parser.add_argument('--slice', type=int, default=100)
     parser.add_argument('--wall', type=int, default=600, help='wall seconds a run may take')

@@ -50,10 +50,13 @@ use horizon_protocol::packets::play::{self, Serverbound as S};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod barter;
+
 /// Ticks each leg may take before the run ends on it.
 fn budget(leg: Leg) -> u64 {
     match leg {
         Leg::Enter => 1200,
+        Leg::Barter => 9600,
         Leg::Fortress => 14_400,
         Leg::Blazes => 14_400,
         Leg::Pearls => 24_000,
@@ -242,6 +245,13 @@ pub(super) struct NetherRun {
     /// The next point of the rings it walks round the fortress looking for
     /// a spawner.
     ring: u32,
+    /// The bastion it barters at, and how the bartering went.
+    bastion: Option<[i32; 3]>,
+    barter: barter::Barter,
+    /// The solid ground it makes for before a fight (where, since when, the
+    /// nearest it got), and until when that is off after it got no nearer.
+    solid_try: Option<([i32; 3], u64, f64)>,
+    solid_off_until: u64,
 }
 
 impl NetherRun {
@@ -302,6 +312,10 @@ impl NetherRun {
             charging: Vec::new(),
             target_watch: None,
             ring: 0,
+            bastion: None,
+            barter: barter::Barter::default(),
+            solid_try: None,
+            solid_off_until: 0,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -435,6 +449,31 @@ impl Game<'_> {
             "pit": run.pit.as_ref().map(|p| format!("{:?} at {:?}", p.step, p.pit.top)),
             "waypoint": run.waypoint,
             "cruise": format!("{:?} off until {}", run.cruise, run.cruise_off_until),
+            "barter": run.barter.status(now, have.pearls_worth()),
+        })
+    }
+
+    /// In the Nether run, in sight of a blaze in range (unless fire
+    /// resistance is on) or a ghast: no time to eat (the shield is down
+    /// while it does).
+    pub(super) fn companion_exposed(&self, host: &LanHost, b: &Body, pos: [f64; 3]) -> bool {
+        if b.nether.is_none() {
+            return false;
+        }
+        let immune = host
+            .hub
+            .guest(b.conn)
+            .is_some_and(|g| g.effects.get("fire_resistance").is_some());
+        let from = eye(pos);
+        self.mobs.iter().any(|m| {
+            let range = match &*m.kind.id {
+                "minecraft:blaze" if !immune => BLAZE_RANGE,
+                "minecraft:ghast" => 48.0,
+                _ => return false,
+            };
+            m.alive()
+                && box_distance(from, m.bounds()) < range
+                && self.in_sight(from, [m.position.x, m.position.y + 0.9, m.position.z])
         })
     }
 
@@ -615,6 +654,10 @@ impl Game<'_> {
         // A ghast's fireball about to reach it: struck back (it flies where
         // it looks: at the ghast), no blast at its feet.
         if self.companion_punch_fireball(host, b, run, pos) {
+            return true;
+        }
+        // Fire resistance on before the blazes' fire.
+        if self.companion_fire_res(host, b, run, pos) {
             return true;
         }
         // In lava (knocked in, a flow over the path): out by the nearest
@@ -935,6 +978,7 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .any(|m| threat(m) && c::distance(mob_at(m), pos) < 6.0)
+            && !self.companion_exposed(host, b, pos)
         {
             self.companion_shield(host, b, run, None, pos);
             self.companion_start_eating(host, b);
@@ -950,14 +994,34 @@ impl Game<'_> {
                 && !matches!(&*m.kind.id, "minecraft:blaze" | "minecraft:ghast")
                 && c::distance(mob_at(m), pos) < 16.0
         });
+        // (A spot it gets no nearer to in 100 ticks: left for 30 seconds.)
         if danger
+            && now >= run.solid_off_until
             && self.on_edge(feet(pos))
             && let Some(g) = self.solid_ground_near(feet(pos))
         {
-            self.companion_shield(host, b, run, None, pos);
-            run.note = "onto solid ground before the fight".into();
-            if self.companion_steer(host, b, at_block(g), 0.3, true) != Steer::Stuck {
-                return true;
+            let d = c::distance(at_block(g), pos);
+            match run.solid_try {
+                Some((p, since, best)) if p == g && d >= best - 0.5 => {
+                    if now.saturating_sub(since) > 100 {
+                        log::info!(
+                            "[companion] {} nether: no nearer to solid ground at {g:?} in 100 ticks",
+                            b.file.name
+                        );
+                        run.solid_off_until = now + 600;
+                        run.solid_try = None;
+                    }
+                }
+                _ => run.solid_try = Some((g, now, d)),
+            }
+            if now < run.solid_off_until {
+                b.walk.reset();
+            } else {
+                self.companion_shield(host, b, run, None, pos);
+                run.note = "onto solid ground before the fight".into();
+                if self.companion_steer(host, b, at_block(g), 0.3, true) != Steer::Stuck {
+                    return true;
+                }
             }
         }
         // Hoglins (40 health, a toss in the air each hit) and wither
@@ -1289,14 +1353,21 @@ impl Game<'_> {
             }
             Stance::Close(_) if travelling => {
                 // On the way (to the fortress, to the spawner): not after
-                // a blaze off the path (over lava, up high); the shield when
-                // one is about to shoot, else the walk goes on.
-                self.companion_shield(host, b, run, None, pos);
+                // a blaze off the path (over lava, up high). The walk goes
+                // on, the shield raised toward any about to shoot (a slower
+                // walk, no fireball in the side).
+                let toward = shooters_point(from, &foes);
+                self.companion_shield(host, b, run, toward, pos);
+                if toward.is_some() {
+                    run.note = "shield up on the way: blazes".into();
+                }
                 return false;
             }
             Stance::Close(i) => {
                 let (_, at, _) = foes[i];
-                self.companion_shield(host, b, run, None, pos);
+                // Closing in behind the shield while one is about to shoot.
+                let toward = shooters_point(from, &foes);
+                self.companion_shield(host, b, run, toward, pos);
                 let goal = Goal {
                     at: feet([at[0], at[1] - 0.9, at[2]]),
                     near: 2.0,
@@ -1934,6 +2005,10 @@ impl Game<'_> {
         // Out of time: the run ends on this leg, classified. (Its clock is
         // its own ticks: a dimension's loading under /tick sprint doesn't
         // count.)
+        if run.leg == Leg::Barter && now.saturating_sub(run.leg_start) > budget(run.leg) {
+            // Bartering is a means: out of time, on to the fortress.
+            return self.barter_end(b, run, now, "barter out of time");
+        }
         if now.saturating_sub(run.leg_start) > budget(run.leg)
             && !(run.leg == Leg::Enter && b.dim == Dim::Nether)
         {
@@ -1948,6 +2023,7 @@ impl Game<'_> {
         }
         match run.leg {
             Leg::Enter => self.leg_enter(host, b, run, pos, now),
+            Leg::Barter => self.leg_barter(host, b, run, pos, now),
             Leg::Fortress => self.leg_fortress(host, b, run, pos, now),
             Leg::Blazes => self.leg_blazes(host, b, run, pos, now),
             Leg::Pearls => self.leg_pearls(host, b, run, pos, now),
@@ -1973,6 +2049,7 @@ impl Game<'_> {
         );
         let split = match done {
             Leg::Enter => "nether",
+            Leg::Barter => "bartered",
             Leg::Fortress => "fortress",
             Leg::Blazes => "rods",
             Leg::Pearls => "pearls",
@@ -3657,6 +3734,17 @@ fn filled_frames(game: &Game<'_>, run: &NetherRun, at: [f64; 3]) -> u32 {
 /// The distance from `eye` to the nearest point of a box.
 /// How near the line from `at` along `v` comes to `t` (ahead of `at`;
 /// behind it, the distance now).
+/// Where the shield faces against the blazes in sight about to shoot (one
+/// direction covering them all, else the first), if any are.
+fn shooters_point(from: [f64; 3], foes: &[(u32, [f64; 3], Foe)]) -> Option<[f64; 3]> {
+    let shooters: Vec<[f64; 3]> = foes
+        .iter()
+        .filter(|f| f.2.sees && f.2.charging)
+        .map(|f| f.1)
+        .collect();
+    n::cover_point(from, &shooters).or(shooters.first().copied())
+}
+
 fn passes_within(at: [f64; 3], v: [f64; 3], t: [f64; 3]) -> f64 {
     let rel = [t[0] - at[0], t[1] - at[1], t[2] - at[2]];
     let vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];

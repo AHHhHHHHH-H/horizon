@@ -59,6 +59,10 @@ impl Default for Targets {
 pub enum Leg {
     /// Through the lit portal into the Nether, the portal remembered.
     Enter,
+    /// Gold from a bastion's gold blocks traded with piglins for fire
+    /// resistance (and pearls) before the blazes, when `barter` is on and
+    /// it knows of a bastion near the way.
+    Barter,
     /// A fortress in the memory (seen, or located at Scout and All-knowing).
     Fortress,
     /// Blaze rods at a spawner (or roaming blazes).
@@ -82,8 +86,9 @@ pub enum Leg {
 }
 
 impl Leg {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Enter,
+        Self::Barter,
         Self::Fortress,
         Self::Blazes,
         Self::Pearls,
@@ -98,6 +103,7 @@ impl Leg {
     pub fn id(self) -> &'static str {
         match self {
             Self::Enter => "enter",
+            Self::Barter => "barter",
             Self::Fortress => "fortress",
             Self::Blazes => "blazes",
             Self::Pearls => "pearls",
@@ -117,6 +123,7 @@ impl Leg {
             .find(|l| l.id() == w)
             .or(match w.as_str() {
                 "nether" => Some(Self::Enter),
+                "bastion" | "bartering" => Some(Self::Barter),
                 "rods" | "blaze" => Some(Self::Blazes),
                 "endermen" | "enderman" => Some(Self::Pearls),
                 "portal" | "back" => Some(Self::Home),
@@ -132,7 +139,10 @@ impl Leg {
     }
     /// Whether the leg is played in the Nether (else the Overworld).
     pub fn in_nether(self) -> bool {
-        matches!(self, Self::Fortress | Self::Blazes | Self::Home)
+        matches!(
+            self,
+            Self::Barter | Self::Fortress | Self::Blazes | Self::Home
+        )
     }
 }
 
@@ -161,6 +171,7 @@ impl Carried {
 pub fn step_text(leg: Leg, have: &Carried, t: &Targets) -> String {
     match leg {
         Leg::Enter => "Into the Nether".into(),
+        Leg::Barter => "Bartering with piglins".into(),
         Leg::Fortress => "Searching for a fortress".into(),
         Leg::Blazes => format!("Blaze rods {}/{}", have.rods_worth().min(t.rods), t.rods),
         Leg::Pearls => format!("Pearls {}/{}", have.pearls_worth().min(t.pearls), t.pearls),
@@ -177,6 +188,7 @@ pub fn step_text(leg: Leg, have: &Carried, t: &Targets) -> String {
 /// Whether the targets of `leg` are met, so the route can skip it.
 pub fn leg_met(leg: Leg, have: &Carried, t: &Targets) -> bool {
     match leg {
+        Leg::Barter => !t.barter,
         Leg::Blazes => have.rods_worth() >= t.rods,
         Leg::Pearls => have.pearls_worth() >= t.pearls,
         Leg::Eyes => have.eyes + have.filled >= t.eyes.min(have.pearls_worth()),
