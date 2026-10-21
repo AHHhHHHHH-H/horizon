@@ -65,6 +65,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - projectiles: primed TNT (one falling), an end crystal and an arrow that lands reach the guest where
              the host has them; a falling block lands on both sides.
 - blast:     primed TNT going off beside a guest in survival hurts the guest and pushes it away
+- fireball:  a fire charge a dispenser shoots onto stone lights a fire both sides see, and the fire
+             goes out on its own within a minute (it ticks: FireBlock.tick on a floor that doesn't burn)
 - worn:      iron armour the guest puts on in its inventory protects it: a 10-damage blow takes 6
              (armour 15, LivingEntity.getDamageAfterArmorAbsorb), and none takes the full 10
              (ServerExplosion.hurtEntities takes every player); facing it behind a raised shield, the
@@ -113,7 +115,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
 # The host plays single player on its server thread (--server-thread).
 SERVER_THREAD = False
-CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'crafting', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'hurt', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'commands', 'recipes', 'machines', 'brewing', 'trials', 'clicks', 'sleep', 'push', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'blast', 'worn', 'light', 'time', 'swings', 'plates', 'effects', 'portals', 'distance', 'growth']
+CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'crafting', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'hurt', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'commands', 'recipes', 'machines', 'brewing', 'trials', 'clicks', 'sleep', 'push', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'blast', 'fireball', 'worn', 'light', 'time', 'swings', 'plates', 'effects', 'portals', 'distance', 'growth']
 
 
 class Game:
@@ -1574,6 +1576,37 @@ def check_blast(host, guest, out):
     return detail
 
 
+def check_fireball(host, guest, out):
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    fx, fz = x + 4, z
+    # A stone floor, a dispenser facing down three blocks over it, a fire charge in it, powered.
+    host('command', command=f'fill {fx - 2} {y - 1} {fz - 2} {fx + 2} {y - 1} {fz + 2} minecraft:stone')
+    host('command', command=f'fill {fx - 2} {y} {fz - 2} {fx + 2} {y + 4} {fz + 2} minecraft:air')
+    host('command', command=f'setblock {fx} {y + 3} {fz} minecraft:dispenser[facing=down]')
+    host('command', command=f'item replace block {fx} {y + 3} {fz} container.0 with minecraft:fire_charge')
+    seen, gone = {}, None
+    try:
+        host('command', command=f'setblock {fx} {y + 4} {fz} minecraft:redstone_block')
+        host.wait(10)
+        seen = {'host': host.raw('block', fx, y, fz).get('block'),
+                'guest': guest.raw('block', fx, y, fz).get('block')}
+        # FireBlock.tick every 30-39 ticks ages it by one a third of the time; past age 3 it goes.
+        for waited in range(40, 1240, 40):
+            host.wait(40)
+            if host.raw('block', fx, y, fz).get('block') == 'minecraft:air':
+                gone = waited
+                break
+        guest.wait(5)
+        seen['guest_after'] = guest.raw('block', fx, y, fz).get('block')
+    finally:
+        host('command', command=f'fill {fx - 2} {y} {fz - 2} {fx + 2} {y + 4} {fz + 2} minecraft:air')
+    assert seen.get('host') == 'minecraft:fire' and seen.get('guest') == 'minecraft:fire', \
+        f'no fire where the fire charge landed: {seen}'
+    assert gone is not None, f'the fire on stone never went out (1200 ticks): {seen}'
+    assert seen['guest_after'] == 'minecraft:air', f'the guest still sees the fire: {seen}'
+    return {'out_after_ticks': gone, **seen}
+
+
 def check_worn(host, guest, out):
     pieces = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']
     guest('command', command='gamemode survival')
@@ -1737,7 +1770,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour, 'name
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance, 'clicks': check_clicks,
              'sleep': check_sleep, 'push': check_push, 'eat': check_eat, 'eating': check_eating,
-             'xp': check_xp, 'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'worn': check_worn,
+             'xp': check_xp, 'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'fireball': check_fireball, 'worn': check_worn,
              'light': check_light, 'plates': check_plates,
              'swings': check_swings,
              'time': check_time, 'growth': check_growth}
