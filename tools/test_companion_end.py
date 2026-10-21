@@ -2,12 +2,13 @@
 """The companion's End route, end to end (docs/companion-speedrun.md, "The
 End"): a companion stands in a stronghold-like portal room with some frames
 filled, carrying what a speedrunner brings (iron armour or none, an iron
-sword and pickaxe, a bow and a stack of arrows, blocks, food, the missing
-eyes, beds for the bed variant). Its owner watches (Watch mode, a spectator
-camera), the game runs under `/tick sprint` at difficulty Normal, and the
-companion is told `companion do end <level> [beds]`: it fills the frames,
-jumps in, gets off the arrival platform, finds and destroys the crystals,
-kills the dragon and leaves by the exit portal, alone.
+sword and pickaxe, a bow and a stack of arrows, three stacks of blocks,
+food, the missing eyes, beds for the bed variant). Its owner watches (Watch
+mode, a spectator camera), the game runs under `/tick sprint` at difficulty
+Normal, and the companion is told `companion do end <level> [beds]`: it
+fills the frames, jumps in, gets off the arrival platform, finds and
+destroys the crystals, kills the dragon and leaves by the exit portal,
+alone.
 
 Each run is a fresh world; runs go across seeds and perception levels, a
 few clients at a time. The table at the end gives, per level: successes,
@@ -81,7 +82,8 @@ def portal_room(endpoint, rng):
 
 def gear(endpoint, args, missing, rng):
     items = ['iron_sword', 'iron_pickaxe', 'bow', f'arrow {args.arrows}', 'cobblestone 64',
-             'cobblestone 64', 'cooked_beef 24', 'bread 16', f'ender_eye {missing}']
+             'cobblestone 64', 'cobblestone 64', 'cooked_beef 24', 'bread 16',
+             f'ender_eye {missing}']
     if args.armour == 'iron':
         items += ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']
     if args.beds:

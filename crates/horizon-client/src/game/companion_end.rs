@@ -82,7 +82,7 @@ const HEALED: f32 = 16.0;
 const BUDGET_PORTAL: u64 = 2400;
 const BUDGET_ARRIVE: u64 = 4800;
 const BUDGET_CRYSTALS: u64 = 24_000;
-const BUDGET_DRAGON: u64 = 36_000;
+const BUDGET_DRAGON: u64 = 48_000;
 const ARROWS: [&str; 3] = [
     "minecraft:arrow",
     "minecraft:spectral_arrow",
@@ -1604,6 +1604,9 @@ impl Game<'_> {
             return;
         }
         // The next: open ones first, the nearest; then the caged ones.
+        // (Caged first, while the dragon rarely perches and so rarely
+        // charges at a pillar, did worse: 2/10 against 3/10, the first
+        // pillar going up under the strafes that follow the first crystal.)
         let inv = self.end_inventory(host, b);
         let arrows = count_any(&inv, &ARROWS) > 0 && slot_of(&inv, &["minecraft:bow"]).is_some();
         let pickaxe = inv.iter().flatten().any(|s| s.item.ends_with("_pickaxe"));
@@ -2458,6 +2461,24 @@ impl Game<'_> {
             self.end_put_bow_away(host, b);
             self.companion_stop_dig(host, b);
         }
+        // Its feet a full block over every cloud round it (a fireball's
+        // cloud hangs where it burst, not on the ground): a new one at its
+        // height (a fireball at it, sitting still) sends it higher.
+        if let Some(top) = run.raised.as_mut() {
+            let need = clouds
+                .iter()
+                .filter(|(at, r, _)| {
+                    c::horizontal(pos, *at) <= f64::from(*r) + 1.0 && at[1] < pos[1] + 1.0
+                })
+                .map(|(at, _, _)| at[1].floor() as i32 + 2)
+                .max();
+            if let Some(need) = need
+                && need > *top
+                && count_any(&self.end_inventory(host, b), &BLOCKS) > 0
+            {
+                *top = need;
+            }
+        }
         if let Some(top) = run.raised {
             let under = clouds.iter().any(|(at, r, _)| {
                 c::horizontal(pos, *at) <= f64::from(*r) + 0.5 && (pos[1] - at[1]).abs() < 3.0
@@ -2475,7 +2496,9 @@ impl Game<'_> {
             }
             if !under {
                 run.raised = None;
-            } else if feet(pos)[1] < top {
+            } else if feet(pos)[1] < top || !on_ground {
+                // (Up in its jump it is still building: the block goes in
+                // under it on the way.)
                 run.danger = "dragon breath";
                 match self.end_pillar(host, b, run, top, pos) {
                     Prog::Failed => run.raised = None,
@@ -2703,7 +2726,15 @@ impl Game<'_> {
             if let Some(sword) = slot_of(&self.end_inventory(host, b), &SWORDS) {
                 self.companion_hold_slot(host, b, sword);
             }
-            self.companion_strike(host, b, id);
+            // Critical hits: jump, strike falling, once the sword has charged.
+            let (on_ground, v) = self.end_guest(host, b).unwrap_or((true, [0.0; 3]));
+            let since = b.ticks - run.last_strike;
+            if on_ground && since >= 6 {
+                b.keys.jump = true;
+            } else if !on_ground && v[1] < -0.05 && since >= 13 {
+                self.companion_strike(host, b, id);
+                run.last_strike = b.ticks;
+            }
         }
         true
     }
@@ -2727,6 +2758,7 @@ impl Game<'_> {
             && on_ground
             && count_any(&self.end_inventory(host, b), &BLOCKS) >= 4
             && self.end_hunter(host, b, pos, 12.0).is_some()
+            && self.end_hunter(host, b, pos, 4.0).is_none()
         {
             log::info!("[end] {} towers up away from a mob at {f:?}", b.file.name);
             run.tower = Some((f[1] + 3, f[1], now));
@@ -2748,7 +2780,7 @@ impl Game<'_> {
                 }
             };
         }
-        if f[1] < top {
+        if f[1] < top || !on_ground {
             run.note = "Up out of an enderman's reach".into();
             if self.end_pillar(host, b, run, top, pos) == Prog::Failed {
                 run.tower = None;
@@ -3100,61 +3132,71 @@ impl Game<'_> {
                 || now - p.since > 300 && feet(pos)[1] <= p.step[1]
         }) {
             // The breath lies on the ground ahead of the head (radius 5,
-            // 2.5 forward): a step over the highest ground it may cover.
+            // 2.5 forward, at the ground there): inside its reach it stands
+            // on a step a block or two over its own column's ground, and a
+            // full block over the breath; outside it, on the ground too.
             let ahead = {
                 let (dx, dz) = (head_mid[0] - d.position[0], head_mid[2] - d.position[2]);
                 let len = dx.hypot(dz).max(0.1);
-                [head_mid[0] + dx / len * 2.5, head_mid[2] + dz / len * 2.5]
+                [
+                    head_mid[0] + dx / len * 2.5,
+                    0.0,
+                    head_mid[2] + dz / len * 2.5,
+                ]
             };
-            let ground = (-6..=6)
-                .flat_map(|dx| (-6..=6).map(move |dz| (dx, dz)))
-                .filter(|(dx, dz)| dx * dx + dz * dz <= 36)
-                .filter_map(|(dx, dz)| {
-                    let (x, z) = (ahead[0].floor() as i32 + dx, ahead[1].floor() as i32 + dz);
-                    let y = self.end_ground(x, z, head_mid[1] as i32 + 2)?;
-                    (!self.block_name([x, y - 1, z]).ends_with("bedrock")).then_some(y)
-                })
-                .max()
+            let breath_y = self
+                .end_ground(
+                    ahead[0].floor() as i32,
+                    ahead[2].floor() as i32,
+                    head_mid[1] as i32 + 2,
+                )
                 .unwrap_or(64);
-            let blocks = count_any(&self.end_inventory(host, b), &BLOCKS) > 0;
-            let floors = if blocks {
-                vec![f64::from(ground + 1), f64::from(ground + 2)]
-            } else {
-                vec![f64::from(ground)]
-            };
+            let blocks = count_any(&self.end_inventory(host, b), &BLOCKS);
+            let base = head.0[1].floor() as i32;
+            let floors: Vec<f64> = (base - 4..=base + 3).map(f64::from).collect();
             let clouds = self.breath_view();
             let clouded = |s: &[f64; 3]| {
-                let ground = [s[0], f64::from(ground), s[2]];
                 clouds
                     .iter()
-                    .any(|(at, r, _)| e::in_breath(ground, *at, *r, 0.5))
+                    .any(|(at, r, _)| e::in_breath(*s, *at, *r, 0.5))
             };
-            let mut spots = e::perch_spots(&parts, &floors, pos, 2.9, 0.8);
-            // A step it built before first, then the way in out of the breath.
-            let built = |s: &[f64; 3]| {
-                let f = feet(*s);
-                self.floor([f[0], f[1] - 1, f[2]])
-            };
-            spots.sort_by_key(|s| (!built(s), clouded(s)));
-            let pick = spots.into_iter().find(|s| {
-                let f = feet(*s);
-                let under = [f[0], f[1] - 1, f[2]];
-                // Ground under the step within 3 blocks, room above it.
-                let footing = if blocks {
-                    (0..3).any(|k| {
-                        self.floor([under[0], under[1] - k, under[2]])
-                            && (0..k).all(|j| self.passable([under[0], under[1] - j, under[2]]))
-                    })
-                } else {
-                    self.floor(under)
-                };
-                footing
-                    && self.passable(f)
-                    && self.passable([f[0], f[1] + 1, f[2]])
-                    && !self
-                        .block_name([f[0], f[1] - 2, f[2]])
-                        .ends_with("end_portal")
-            });
+            // (spot, blocks to stack under it)
+            let mut spots: Vec<([f64; 3], i32)> = e::perch_spots(&parts, &floors, pos, 2.9, 0.8)
+                .into_iter()
+                .filter_map(|s| {
+                    let f = feet(s);
+                    if !self.passable(f) || !self.passable([f[0], f[1] + 1, f[2]]) {
+                        return None;
+                    }
+                    let g = self.end_ground(f[0], f[2], f[1] + 1)?;
+                    let stack = f[1] - g;
+                    let in_reach = c::horizontal(s, ahead) <= 5.8;
+                    let ok = (0..=3).contains(&stack)
+                        && stack <= i32::try_from(blocks).unwrap_or(i32::MAX)
+                        && (!in_reach || stack >= 1 && f[1] > breath_y)
+                        && !self.block_name([f[0], g - 1, f[2]]).ends_with("end_portal")
+                        && !self.block_name([f[0], g - 1, f[2]]).ends_with("bedrock")
+                        && !clouded(&s);
+                    ok.then_some((s, stack))
+                })
+                .collect();
+            // A step it built before first (nothing to stack), then fewer
+            // blocks, then nearer (perch_spots' order).
+            spots.sort_by_key(|(_, stack)| *stack);
+            let pick = spots.first().map(|(s, _)| *s);
+            if pick.is_none()
+                && std::env::var_os("HORIZON_END_TRACE").is_some()
+                && b.ticks.is_multiple_of(20)
+            {
+                let all = e::perch_spots(&parts, &floors, pos, 6.0, 0.0).len();
+                let reach = e::perch_spots(&parts, &floors, pos, 2.9, 0.0).len();
+                let clear = e::perch_spots(&parts, &floors, pos, 2.9, 0.8).len();
+                log::info!(
+                    "[end] no perch: floors {floors:?} breath at {breath_y} head {:?}-{:?} spots any {all} in reach {reach} clear {clear}",
+                    head.0.map(|v| (v * 10.0).round() / 10.0),
+                    head.1.map(|v| (v * 10.0).round() / 10.0),
+                );
+            }
             run.perch = pick.map(|spot| Perch {
                 spot,
                 step: [
@@ -3298,12 +3340,33 @@ impl Game<'_> {
             head.0[1],
             (head.0[2] + head.1[2]) / 2.0,
         ];
+        if std::env::var_os("HORIZON_END_TRACE").is_some() && b.ticks.is_multiple_of(10) {
+            log::info!(
+                "[end] beds: phase {} sitting {} has {} plan {:?} pos {:?}",
+                d.phase,
+                d.sitting,
+                self.end_has_beds(host, b),
+                run.bed
+                    .map(|x| (x.hole, x.foot, x.head, x.ground, x.tries, x.placed)),
+                pos.map(|v| (v * 10.0).round() / 10.0),
+            );
+        }
         // The dragon flew, or the beds ran out: out of the hole.
         if !d.sitting || !self.end_has_beds(host, b) {
             if let Some(bed) = run.bed
                 && f[1] < bed.ground
             {
-                let _ = self.end_pillar(host, b, run, bed.ground, pos);
+                // Up its own hole; out of blocks, a staircase dug out of it.
+                if self.end_pillar(host, b, run, bed.ground, pos) == Prog::Failed {
+                    let out = [
+                        f64::from(bed.foot[0]) + 0.5,
+                        f64::from(bed.ground),
+                        f64::from(bed.foot[1]) + 0.5,
+                    ];
+                    if self.end_traverse(host, b, run, out, pos) == Prog::Failed {
+                        run.bed = None;
+                    }
+                }
                 return;
             }
             run.bed = None;
