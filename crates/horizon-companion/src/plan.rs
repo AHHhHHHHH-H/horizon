@@ -1067,9 +1067,28 @@ mod tests {
             fresh.download - again.download,
             fresh.pick(Part::Brain).unwrap().option.download + runtime_key.1
         );
-        // The classifier shares the brain's llama.cpp build: it is not counted twice.
-        let runtimes: u64 = runtime_downloads(&fresh.picks, &[]);
-        assert!(runtimes < 2 * runtime_key.1 + (40 << 20) + 1);
+        // The classifier shares the brain's llama.cpp build: it is not counted twice. The voice
+        // runtime's size depends on the platform (32 MB on macOS, 74 MB on Linux), so the other
+        // runtimes are added up from the picks rather than assumed.
+        let sharing = fresh
+            .picks
+            .iter()
+            .filter(|p| p.option.runtime.as_ref() == Some(&runtime_key))
+            .count();
+        assert!(
+            sharing >= 2,
+            "the classifier should share the brain's runtime"
+        );
+        let mut others: Vec<&(String, u64)> = fresh
+            .picks
+            .iter()
+            .filter_map(|p| p.option.runtime.as_ref())
+            .filter(|r| r.0 != runtime_key.0)
+            .collect();
+        others.sort();
+        others.dedup();
+        let others: u64 = others.iter().map(|r| r.1).sum();
+        assert_eq!(runtime_downloads(&fresh.picks, &[]), runtime_key.1 + others);
     }
 
     #[test]
