@@ -239,6 +239,9 @@ pub(super) struct NetherRun {
     /// The body's target (id, since, nearest it got): one it gets no nearer
     /// to is left alone.
     target_watch: Option<(u32, u64, f64)>,
+    /// The next point of the rings it walks round the fortress looking for
+    /// a spawner.
+    ring: u32,
 }
 
 impl NetherRun {
@@ -298,6 +301,7 @@ impl NetherRun {
             blaze_engaged: None,
             charging: Vec::new(),
             target_watch: None,
+            ring: 0,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -2435,9 +2439,23 @@ impl Game<'_> {
                 let seen = self.recall_cue(b, run, Cue::Fortress, fortress, 160);
                 run.waypoint = n::frontier(&seen, &run.visited, here, 20);
                 if run.waypoint.is_none() {
+                    // Nothing more of it in memory: rings round where it
+                    // found the fortress, 8 points each, 40 blocks apart
+                    // (not the region search: that leads away from it).
                     run.note = "looking round the fortress".into();
                     run.scanned = false;
-                    return self.explore(host, b, run, pos, here[1]);
+                    if run.ring >= 32 {
+                        let why = format!("{}: searched out", run.leg.id());
+                        return self.companion_nether_end(b, run, why);
+                    }
+                    let a = f64::from(run.ring % 8) * std::f64::consts::FRAC_PI_4;
+                    let r = 40.0 * f64::from(1 + run.ring / 8);
+                    run.ring += 1;
+                    run.waypoint = Some([
+                        fortress[0] + (a.cos() * r) as i32,
+                        here[1],
+                        fortress[2] + (a.sin() * r) as i32,
+                    ]);
                 }
             }
             let Some(w) = run.waypoint else { return };
