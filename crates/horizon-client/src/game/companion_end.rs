@@ -2593,6 +2593,39 @@ impl Game<'_> {
             [f[0], f[2]] == k.plan.near && f[1] >= k.ground + 2
                 || [f[0], f[2]] == k.plan.far && f[1] >= k.ground + 2
         });
+        // The dragon landing or taking off: its head and neck sweep where
+        // it stood beside them (a bite through iron armour is 6); away from
+        // them first, a raise or a step given up.
+        if run.bed.is_none()
+            && let Some(d) = self.dragon_view()
+            && d.alive
+            && matches!(d.phase, 3 | 4)
+        {
+            let parts = Self::end_parts(&d);
+            if !parts.clear_of(pos, 2.0) {
+                let hm = [
+                    (parts.head.0[0] + parts.head.1[0]) / 2.0,
+                    pos[1],
+                    (parts.head.0[2] + parts.head.1[2]) / 2.0,
+                ];
+                let (dx, dz) = (pos[0] - hm[0], pos[2] - hm[2]);
+                let len = dx.hypot(dz).max(0.1);
+                let yaw = yaw_to(pos, [pos[0] + dx / len, pos[1], pos[2] + dz / len]);
+                run.raised = None;
+                run.perch = None;
+                run.danger = "the dragon";
+                run.note = "Out of the way of its head as it takes off".into();
+                self.end_put_bow_away(host, b);
+                self.companion_stop_dig(host, b);
+                if self.companion_safe_at(pos, yaw, 1.5) {
+                    b.yaw = yaw;
+                    b.pitch = 0.0;
+                    b.keys.forward = true;
+                    b.keys.sprint = true;
+                }
+                return true;
+            }
+        }
         // In a cloud: out of it, away from its middle.
         let clouds = self.breath_view();
         // Up its pillar in one: up two, out of the cloud's reach (sooner
