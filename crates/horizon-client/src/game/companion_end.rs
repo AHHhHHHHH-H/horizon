@@ -759,7 +759,40 @@ impl Game<'_> {
             EndPhase::Scout | EndPhase::Crystals => BUDGET_CRYSTALS,
             _ => BUDGET_DRAGON,
         };
-        if now - run.since > budget {
+        // The crystals running long (a caged one it can't get at, again and
+        // again): on to the dragon with what is left (it comes back for
+        // them from there), down its pillar first if it is up one.
+        if matches!(run.phase, EndPhase::Scout | EndPhase::Crystals)
+            && now - run.since > budget
+            && now - run.since <= budget * 2
+        {
+            if let Some(k) = run.cage.as_mut()
+                && !matches!(k.step, CageStep::GoNear | CageStep::GoFar)
+            {
+                if !matches!(k.step, CageStep::DownNear | CageStep::DownFar) {
+                    k.step = if k.step >= CageStep::GoFar {
+                        CageStep::DownFar
+                    } else {
+                        CageStep::DownNear
+                    };
+                }
+                run.known[k.crystal].skipped = true;
+            } else {
+                log::info!(
+                    "[end] {} leaves the crystals for the dragon after {} ticks ({} left)",
+                    b.file.name,
+                    now - run.since,
+                    run.crystals_left()
+                );
+                self.companion_stop_dig(host, b);
+                self.end_put_bow_away(host, b);
+                run.cage = None;
+                run.shot = None;
+                run.split("crystals done", now);
+                run.set_phase(EndPhase::Dragon, now);
+                return true;
+            }
+        } else if now - run.since > budget {
             let why = format!("{} took too long", run.phase.name());
             self.end_fail(b, run, &why);
             return true;
