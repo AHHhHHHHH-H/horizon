@@ -2462,8 +2462,15 @@ impl Game<'_> {
             // aimed at it, a charge, a fireball coming): walled in and
             // roofed where it is, crouched, till the pass is over; the
             // climb goes on through the roof.
-            CageStep::PillarNear | CageStep::PillarFar
-                if f[1] >= k.ground + 3 && self.end_pass_at(b, pos) =>
+            // (Coming down too: the walls it built go up with it, and a
+            // charge on the way down threw it off.)
+            CageStep::PillarNear | CageStep::PillarFar | CageStep::DownNear | CageStep::DownFar
+                if f[1] >= k.ground + 3
+                    && self.end_pass_at(b, pos)
+                    && !self
+                        .breath_view()
+                        .iter()
+                        .any(|(at, r, _)| e::in_breath(pos, *at, *r, 0.5)) =>
             {
                 run.note = format!(
                     "Destroying crystals {}/10: walled in up its pillar while the dragon passes",
