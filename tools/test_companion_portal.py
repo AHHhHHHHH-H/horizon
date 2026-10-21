@@ -69,7 +69,7 @@ def scenario(endpoint, level, budget):
     # Staying put: following, it would be teleported back to the owner.
     command(endpoint, f'companion do {name} stay')
     say(endpoint, f'clear {name}')
-    for item in ('bucket 2', 'flint_and_steel', 'cobblestone 64', 'iron_pickaxe', 'cooked_beef 8'):
+    for item in ('bucket 2', 'flint_and_steel', 'cobblestone 64', 'iron_pickaxe', 'stone_sword', 'cooked_beef 8'):
         say(endpoint, f'give {name} {item}')
     # Standing on the platform (not hung in a chunk still loading, nor
     # fallen through one): put there again until it is.

@@ -567,8 +567,13 @@ still fails.
   also use flat guesses for natural blocks. Actions run as work commands (`collect`, `make`,
   `smelt`).
 - **Run supervisor** (`game/companion_run.rs`, every tick):
-  - **Stages**: wood, stone tools, food, iron, kit, portal. Each stage has a time budget, and
-    food is optional.
+  - **Stages**: wood, stone tools, food, iron, kit, portal, armour. Each stage has a time budget;
+    food and armour are optional.
+  - **Armour** (after the portal is lit, before it goes through): an iron helmet, chestplate and
+    leggings and a shield (21 more iron, 3 coal mined by the ore for the smelt), then gold boots
+    for piglins, given 5 minutes after the iron set. The body wears the best armour it carries.
+    It is made once: lost in a death, it isn't made again. Building it before the cast instead
+    cost the cast its time (0/5 lit in two batches).
   - **Splits**: logged when reached, and shown on the Watch HUD (step, timer, perception).
   - **Air**: it goes up for air before 140 ticks under water. Its eyes are low when it swims under a
     ceiling. It stays up until its air is back, and heads for the nearest air to the side when the
@@ -588,8 +593,10 @@ still fails.
     the last time too.
   - **Hunger**: hungry (10 or less) with nothing to eat, it hunts first whatever the stage. A
     runner below 18 health eats to heal when nothing is close. The food stage cooks the meat as soon
-    as it has hunted (furnace, fuel it carries); the iron stage tops its logs up to 4 so the kit's
-    furnace has fuel, and a smelt loads only what its fuel can cook.
+    as it has hunted (furnace, fuel it carries); the iron stage tops its logs up to 4 under open
+    sky so the kit's furnace has fuel. A smelt loads only what its fuel can cook, takes another
+    kind of fuel out of the slot to load what it carries, and may go 6000 ticks without an item
+    changing (21 iron cook for 4200).
   - **Exploring**: legs run nearly straight. It follows leads from memory first: for wood, the
     nearest tree it saw (a desert spawn walks to the tree line); for iron on Fair, iron ore it
     saw however far (not ore under water), then cave and ravine floors seen well below it (the
@@ -602,7 +609,10 @@ still fails.
     - the route's own moves going nowhere for 3000 ticks;
     - a smelt is let finish rather than cut off by the stage budget;
     - after a stalled smelt, the meat stays raw;
-    - a craft that hasn't finished in 1200 ticks fails;
+    - a craft that hasn't finished in 1200 ticks fails, and the table it was stuck at is not
+      used again;
+    - an exploring leg (or lead) not reached in 1500 ticks: another heading (one walked to and
+      fro in a tunnel for 35,000 ticks);
     - stalled twice within 4 blocks, it walks 12 blocks away and 4 up ("getting unstuck");
     - a task that keeps failing waits 30 s before it is planned again.
 - **Portal cast**: lava and water are found in memory, through walls on Sharp and up, or (lava)
@@ -629,59 +639,91 @@ still fails.
 ### Harness results
 
 `tools/test_speedrun.py`: 5 fixed seeds (20261020, 1, 42, 123456, 987654321), Easy, 48,000 game
-ticks (40 game minutes) per run, `/tick sprint`, Watch mode, 5 clients in parallel on the Mac mini.
-Times are game min:s from the start of the run. Success counts the seeds that reached the
-milestone. Final run (round 2, commit of this section):
+ticks (40 game minutes) per run, `/tick sprint`, Watch mode, on the Mac mini (3 or 5 clients in
+parallel, fewer when other work loaded the machine). Times are game min:s from the start of the
+run; success counts the seeds that reached the milestone. The last two batches of round 3: r8b
+is the code of this commit, r7y the same but for the last two fixes (the portal as a wall, the
+water scan only when needed):
 
-| Milestone | All-knowing | median | Fair | median |
+| Milestone | All-knowing r8b | r7y | Fair r8b | r7y |
 | --- | --- | --- | --- | --- |
-| wooden pickaxe | 5/5 | 0:14 | 5/5 | 0:17 |
-| stone tools | 5/5 | 1:02 | 4/5 | 0:54 |
-| food (4 cooked) | 2/5 | 6:23 | 0/5 | - |
-| 10 iron | 4/5 | 7:52 | 0/5 | - |
-| iron pickaxe | 4/5 | 10:31 | 0/5 | - |
-| buckets | 4/5 | 10:31 | 0/5 | - |
-| 10 obsidian | 0/5 | - | 0/5 | - |
-| portal lit | 0/5 | - | 0/5 | - |
-| first night survived | 2/5 | 19:05 | 5/5 | 19:05 |
+| wooden pickaxe | 5/5 0:32 | 5/5 0:17 | 5/5 0:40 | 5/5 0:14 |
+| stone tools | 5/5 1:03 | 5/5 0:47 | 5/5 1:12 | 5/5 0:51 |
+| food (4 cooked) | 4/5 3:15 | 5/5 3:46 | 3/5 2:53 | 2/5 2:53 |
+| 10 iron | 4/5 5:19 | 5/5 5:19 | 5/5 13:38 | 4/5 16:12 |
+| iron pickaxe | 4/5 11:19 | 5/5 9:32 | 3/5 23:14 | 2/5 9:45 |
+| buckets | 4/5 11:35 | 5/5 10:13 | 4/5 24:46 | 3/5 10:53 |
+| 10 obsidian | 2/5 20:31 | 3/5 14:54 | 0/5 | 0/5 |
+| portal lit | 1/5 22:21 | 2/5 12:22 | 0/5 | 0/5 |
+| iron armour + shield | 0/5 | 2/5 24:31 | 0/5 | 0/5 |
+| gold boots | 0/5 | 0/5 | 0/5 | 0/5 |
+| first night survived | 4/5 19:06 | 4/5 19:08 | 4/5 19:06 | 2/5 29:08 |
 
-The run before it (same code but for the stage-goal fix, see below) lit a portal on seed
-987654321 at 12:38 (tick 15,172), on All-knowing: the first lit portal in natural terrain. That run
-had 1/5 obsidian and 1/5 lit, food 2/5, iron 3/5. Runs are not deterministic (mobs, drops, timing),
-so the same seeds give different results from one run to the next; the lit portal did not repeat in
-the final run, where two seeds ran out of time in the portal stage and one in the kit stage.
+(median game min:s of the seeds that reached it.)
+
+Runs are not deterministic (mobs, drops, timing): the same code gives different counts from one
+batch to the next. Portal lit, over the round 3 batches (5 seeds each):
+
+| Batches | change | All-knowing | Fair |
+| --- | --- | --- | --- |
+| r7e-r7h | pools by cost, give-ups | 1/5, 0/5, 2/5 | 0/5, 1/5, 0/5 |
+| r7k-r7m | water, lack choice, night | 2/5, 3/5 | 0/5, 0/5 |
+| r7n-r7r | fuel, sticky frame, drain | 1/5, 2/5, 1/5, 2/5, 0/5 | 0/5 each |
+| r7s | sticky pool | 1/5 | 0/5 |
+| r7t-r7v | armour before the cast | 1/5, 0/5, 0/5 | 0/5 each |
+| r7w-r7y | armour after the portal | 2/5, 2/5, 2/5 | 0/5 each |
+| r8a | water scan only when needed | 2/5 (one lost in the Nether) | 0/5 |
+| r8b | the portal is a wall to the walker | 1/5 | 0/5 |
+
+The 3/5 All-knowing target was reached once (r7m), the 1/5 Fair target once (r7g, seed 1). From r7w
+to r8a All-knowing lit 2/5 in every batch; r8b lit 1/5 (a second seed had 10 obsidian at 20 minutes
+and ran out of time). In r8a one seed lit its portal at 10:13, then walked into it fetching logs for
+the armour and died in the Nether, losing the run: portal blocks are now walls to the walker. Fair
+reaches iron on 3-5 seeds of 5 and buckets on 2-4, and has not cast a frame since r7g.
+
+**Armour's time cost.** The iron set and shield take 21 more iron, 3 coal and four crafts: from 8:01
+to 13:44 after the portal is lit (6 runs: 8:01, 10:33, 12:35, 12:48, 13:42, 13:44; median 12:41).
+Made before the cast (r7t-r7v), it took 10-11 minutes after the buckets, and the cast then ran out
+of time (0/5 lit in two of those three batches): it is made after the portal is lit, before it goes
+through. Gold boots were never made: no gold ore within 48 blocks of where the iron set was
+finished, and the 5 minutes ran out on the way down to y -16. On Fair the iron set was made once
+(r7v, before the cast, 15:36 after the buckets).
 
 On a prepared platform, `tools/test_companion_portal.py` (kit given, a 5x5 lava pool, one water
-source) casts all ten blocks and lights the portal in 9 of 10 runs, in 1,180-2,410 ticks. The one
-failure swam in spilled water by the pool and gave the pool up.
-
-The method kept is the mould (option c), fixed: front stands at heights 1 and 2, lava taken from
-the pool's nearest sources first, water seen through blocks, water that can't be reached left in
-the frame rather than buried, and stands dug out when a block lands in them. The dug frame slot by
-a lava pool (a) and the ruined portal (b) are not built: on the platform the fixed mould reached
-9/10, and every real-seed failure so far is getting to a pool, not the cast itself.
+source) casts all ten blocks and lights the portal (round 2: 9 of 10 runs, 1,180-2,410 ticks; round
+3, with a sword in the kit: 7 of 7 on the final code and the two before it, 1,600-1,800 ticks on
+r8a). A pool list cached for 20 ticks broke it (2 of 3 runs gave the pool up after 6 blocks) and was
+dropped.
 
 ### Hard failures and their causes
 
-- **Portal cast in natural terrain (1 of 10 seed runs on All-knowing)**:
-  - Pools underground or behind cliffs: walks to them fail or take minutes of backing off.
-  - Deaths on the way: falls, lava and drowning in deep water. The "hurt by squid/fish" reports
-    are drowning damage (2 per hit) misattributed. Seeds 42 and 987654321 died 11 and 12 times in
-    the final run.
-  - Time: on two seeds the kit was ready by 10-11 minutes and the cast was still going at 40.
-- **Fair iron (0/5)**: "no raw iron within 48 blocks". It now follows leads (ore it has seen,
-  floors well below it with dry air above) and digs 40-block legs, but no seed reached 10 iron in
-  40 minutes. Following caves from the surface needs a real cave finder, not single floor cells.
-- **Desert spawn (seed 123456)**: it now walks to the nearest remembered tree, but on Fair it saw
-  none and spent the run on wood and stone. Village chests are not used.
-- **Food 2/5**: hunting works when animals are near. Hunger now sends it hunting whatever the
-  stage, but cooked food still comes late, with the kit's furnace.
-- **Stations**: when no spot is free in a tunnel it digs the cell beside it first, which fixed
-  "no room to place it".
-- **Stage goals** were counts of what was missing, read as stock to hold, so the planner thought
-  it was done and sat on "looking for raw iron" with an empty plan. Goals are now stock counts.
+- **Deaths in the portal stage lose the kit.** On the seeds that didn't light, the run died
+  under ground by a pool (drowning, lava, zombies at night), went back for its things too late,
+  and spent the rest of the run making buckets and flint and steel again (flint once took 7,000
+  ticks). Seed 42 died 3-11 times a run.
+- **Getting to lava.** Pools are chosen by path cost and given up after 75 s without coming
+  nearer, but deep pools (y -40 to -56) still take minutes, and a mould is sometimes built
+  twice. The cast itself works once at a pool.
+- **Fair iron and lava.** Fair finds iron by caves it has seen and y 16 tunnels, on 3-5 seeds of
+  5, late (median 16 minutes). Lava without x-ray means going down to y -50 and opening caves;
+  the one Fair portal (r7g) came from a surface pool.
+- **Desert (seed 123456).** Some runs find no tree within reach for many minutes ("no poplar log
+  within 48 blocks"); others walk to the tree line and light the portal (r7s, r7w).
+- **Gold.** "no raw gold within 48 blocks": gold boots need a gold lead (Fair) or a deeper
+  search (x-ray reaches 48 blocks), and more than 5 minutes.
+- **Fixed this round**: drowning reported as "hurt by squid/fish" (the companion's own guess,
+  the nearest mob within 16 blocks; the body's hurt sound now names drowning); the Fair "looking
+  for stripped acacia log" when raw iron was missing (the lack choice); the zombie horde at the
+  spawn that killed a respawned runner up to 10 times a night (it digs in when unarmed); a
+  furnace holding another kind of fuel ("no fuel" with fuel in the pack); a stuck crafting table
+  used again and again; an exploring leg walked to and fro for 35,000 ticks.
 
 ### Tick cost and spikes
+
+Round 3 adds a cost: the portal stage's pool choice scans its memory for lava every tick, 2.2-2.5 ms
+of CPU on some ticks (919 cast sections over 2 ms of CPU in the 10 runs of the r8b batch, 6.5 ms at
+most). Spreading that scan out (cached safely, or resumable like the block searches) is the next
+performance fix. Round 2's measurement:
 
 `companion cost` over whole runs, one client alone (24,000 ticks, seed 1, other agents' work still
 running on the machine). Wall time includes preemption; CPU time is the companion thread's own:
@@ -711,16 +753,18 @@ sight section with 0.4 ms of CPU) are the thread being descheduled, not companio
 
 ### Next, toward the Nether and the End
 
-1. **Reach pools.** Most cast failures are getting to the lava: pick pools the walker can already
-   plan a way to, bridge or dig stairs to the rest, and cast at the pool rather than walking back.
-2. **Fewer deaths.** Swim up before the air runs out in deep water, avoid fall-prone cliffs at
-   night, and stop retrying the spot it died at.
-3. **Fair iron**: a cave finder (follow open air downward from cave mouths and ravines), then
-   long y 16 tunnels.
-4. **Fallbacks for the cast**: a ruined portal's obsidian (known to Scout and All-knowing) and a
-   dug frame slot by a surface pool.
-5. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) when they
-   are ready:
+1. **Keep the kit through deaths**: go back for its things at once (it now waits out the
+   night), and never take a pool route through deep water or past lava edges at night.
+2. **Shorter trips to lava**: cast at surface pools and ruined portals first (Scout and up),
+   and make the mould where the lava is with the cobble it carries.
+3. **Fair**: a cave finder that follows open air down from cave mouths and ravines, then lava
+   by caves below y 0; village chests for iron and food.
+4. **Armour**: smelt in two furnaces at once, and look for gold while tunnelling for iron (it
+   is often in the same caves).
+5. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) when
+   the coordinator says so. The Nether branch's armour fix (`e0549f88`: a LAN guest's worn
+   armour protects it) is not on this branch: the pieces are worn here but absorb no damage
+   until it is merged.
    - **Nether**: lit portal → fortress → rods → pearls (bartering) → eyes.
    - **Stronghold and End**: triangulation → portal room → crystals → dragon.
    - **Harness**: add the Nether and End milestones.

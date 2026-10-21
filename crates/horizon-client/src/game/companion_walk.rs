@@ -101,6 +101,11 @@ fn hazard(name: &str) -> bool {
             | "minecraft:wither_rose"
             | "minecraft:powder_snow"
             | "minecraft:pointed_dripstone"
+            // Not a hurt, but a walk through one ends the run in another
+            // dimension (it lit its portal, then walked into it fetching
+            // logs): going through is a choice, not a way.
+            | "minecraft:nether_portal"
+            | "minecraft:end_portal"
     )
 }
 

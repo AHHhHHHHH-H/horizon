@@ -1666,14 +1666,15 @@ impl Game<'_> {
         if have("minecraft:lava_bucket") > 0 {
             cast.trying = None;
         }
-        let water_known = b
-            .senses
-            .memory()
-            .recall(|s| self.is_source(s, Fluid::Water), feet(pos), 192)
-            .into_iter()
-            .find(|w| !cast.bad.contains(w));
-        // Water in a bucket first.
+        // Water in a bucket first (its memory scanned only then: a scan
+        // costs a millisecond).
         if have("minecraft:water_bucket") == 0 && cast.site.is_none() {
+            let water_known = b
+                .senses
+                .memory()
+                .recall(|s| self.is_source(s, Fluid::Water), feet(pos), 192)
+                .into_iter()
+                .find(|w| !cast.bad.contains(w));
             let Some(w) = water_known else {
                 self.companion_cast_explore(host, b, run, pos, Search::Surface, "looking for water");
                 return;
