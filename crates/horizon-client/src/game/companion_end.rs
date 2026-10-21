@@ -564,6 +564,9 @@ impl Game<'_> {
             "starve" => "hunger",
             "in_wall" => "suffocation",
             "fly_into_wall" => "a wall",
+            "lava" => "lava",
+            "in_fire" | "on_fire" => "fire",
+            "drown" => "drowning",
             _ => "other damage",
         });
         let cause = if let Some(cause) = by_source {
