@@ -237,6 +237,10 @@ pub(super) struct EndRun {
     /// Lifted a block out of a cloud that came down on it: the height it
     /// climbs to, then holds while the cloud lies under it.
     raised: Option<i32>,
+    /// Ticks the raise has made no headway (on the ground under its top),
+    /// and till when no new raise starts after one gave up.
+    raise_stuck: u32,
+    no_raise_until: u64,
     /// Hurt, with something after it on the ground: three blocks up where
     /// an enderman can't reach or stand (top, ground, since).
     tower: Option<(i32, i32, u64)>,
@@ -289,6 +293,8 @@ impl EndRun {
             passes: 0,
             fleeing: false,
             raised: None,
+            raise_stuck: 0,
+            no_raise_until: 0,
             tower: None,
             hunted_by: Vec::new(),
         }
@@ -2620,6 +2626,7 @@ impl Game<'_> {
         if !up_high
             && run.raised.is_none()
             && run.bed.is_none()
+            && now_of(self) >= run.no_raise_until
             && on_ground
             && count_any(&self.end_inventory(host, b), &BLOCKS) > 0
             && clouds.iter().any(|(at, r, _)| {
@@ -2668,11 +2675,20 @@ impl Game<'_> {
                 run.raised = None;
             } else if feet(pos)[1] < top || !on_ground {
                 // (Up in its jump it is still building: the block goes in
-                // under it on the way.)
+                // under it on the way.) Stuck on the ground a second: it
+                // runs instead.
                 run.danger = "dragon breath";
-                match self.end_pillar(host, b, run, top, pos) {
-                    Prog::Failed => run.raised = None,
-                    _ => return true,
+                run.raise_stuck = if on_ground { run.raise_stuck + 1 } else { 0 };
+                if run.raise_stuck > 20 {
+                    log::info!("[end] {} can't raise at {:?}: runs", b.file.name, feet(pos));
+                    run.raised = None;
+                    run.raise_stuck = 0;
+                    run.no_raise_until = now_of(self) + 200;
+                } else {
+                    match self.end_pillar(host, b, run, top, pos) {
+                        Prog::Failed => run.raised = None,
+                        _ => return true,
+                    }
                 }
             } else if run.perch.is_none_or(|p| {
                 let f = feet(pos);
