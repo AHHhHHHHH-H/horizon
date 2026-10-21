@@ -1428,6 +1428,8 @@ impl Game<'_> {
             self.note_attacker(damage_type, a);
         }
         let mut outcome = horizon_client::health::BlockOutcome::default();
+        let logged = self.player.as_ref().map_or(0, |p| p.hurt_log.len());
+        let angle = self.view_angle_to(from);
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
             && let Ok(o) = player.hurt_blocking(
@@ -1449,8 +1451,20 @@ impl Game<'_> {
                 (player.velocity.y / 2.0 + 0.4).min(0.4),
                 player.velocity.z / 2.0 + dz / l * 0.4,
             );
+            if let Some(r) = player.hurt_log.last_mut() {
+                r.knockback = Some([player.velocity.x, player.velocity.y, player.velocity.z]);
+            }
             self.hurt_armor(amount);
             self.thorns(from);
+        }
+        // What the shield was doing, on the hurt just logged.
+        let using = self.using.map(|(_, t)| t);
+        if let Some(p) = self.player.as_mut()
+            && p.hurt_log.len() > logged.min(63)
+            && let Some(r) = p.hurt_log.last_mut()
+        {
+            r.using = using;
+            r.angle = angle;
         }
         if raised {
             self.after_block(outcome, amount, attacker, projectile);
@@ -2051,14 +2065,21 @@ impl Game<'_> {
                 Hit::Entity { who, .. } => match who {
                     Who::Player => {
                         if !self.creative {
+                            // SmallFireball.onHitEntity: alight for 5 seconds,
+                            // put back as it was when the hit did not hurt
+                            // (a raised shield).
+                            let before = self.player.as_ref().map(|p| p.fire_ticks);
                             if let Some(p) = self.player.as_mut() {
                                 p.ignite_for_ticks(100)?;
                             }
-                            self.mob_hits_player(
+                            let hurt = self.mob_hits_player(
                                 5.0,
                                 [p.previous.x, p.previous.y, p.previous.z],
                                 "minecraft:fireball",
                             );
+                            if !hurt && let (Some(pl), Some(old)) = (self.player.as_mut(), before) {
+                                pl.set_remaining_fire_ticks(old);
+                            }
                         }
                     }
                     Who::Mob(id) => {
@@ -2071,15 +2092,21 @@ impl Game<'_> {
                     }
                 },
                 Hit::Block { pos, face, .. } => {
+                    // SmallFireball.onHitBlock: a mob's only with mobGriefing;
+                    // BaseFireBlock.getState placed with updates (the fire
+                    // ticks, ages and goes out where it can't stay).
                     let fire = [pos[0] + face[0], pos[1] + face[1], pos[2] + face[2]];
-                    if self
-                        .res
-                        .facts()
-                        .is_air(self.world.block(fire[0], fire[1], fire[2]))
-                        && let Some(state) =
-                            self.pack.assets.registry.default_state("minecraft:fire")
+                    let mob = matches!(p.owner, Some(Who::Mob(_)));
+                    if (!mob || self.ui.rules.bool("mob_griefing"))
+                        && self
+                            .res
+                            .facts()
+                            .is_air(self.world.block(fire[0], fire[1], fire[2]))
                     {
-                        self.world.set(fire[0], fire[1], fire[2], state)?;
+                        let at = BlockPos::new(fire[0], fire[1], fire[2]);
+                        let state =
+                            self.with_level(|b, level, ticks| b.fire_state_for(level, ticks, at));
+                        self.level_set(fire, state)?;
                     }
                 }
                 Hit::None => {}

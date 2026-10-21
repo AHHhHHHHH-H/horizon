@@ -50,6 +50,24 @@ impl Game<'_> {
         }
         true
     }
+    /// The angle in degrees between the player's view (flattened) and the
+    /// direction to `src`, as `player_blocking` measures it.
+    pub(super) fn view_angle_to(&self, src: [f64; 3]) -> Option<f32> {
+        let p = self.player.as_ref()?;
+        let yaw = (-self.yaw).to_radians();
+        let view = [f64::from(yaw.sin()), f64::from(yaw.cos())];
+        let (dx, dz) = (src[0] - p.position.x, src[2] - p.position.z);
+        let len = (dx * dx + dz * dz).sqrt();
+        if len < 1.0e-4 {
+            return None;
+        }
+        Some(
+            ((dx / len * view[0] + dz / len * view[1])
+                .clamp(-1.0, 1.0)
+                .acos()
+                .to_degrees()) as f32,
+        )
+    }
     /// `LivingEntity.getItemBlockingWith` and the inputs of `applyItemBlocking`
     /// for an attack from `from` (`DamageSource.getSourcePosition`).
     pub(super) fn player_blocking(

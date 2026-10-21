@@ -306,6 +306,7 @@ impl Game<'_> {
                 self.companion_cancel_work(host, b, Some("stopped"));
             }
             b.run = None;
+            b.nether = None;
             b.walk.reset();
         }
         let start = |game: &mut Self, b: &mut Body, skill: Skill| {
@@ -411,13 +412,23 @@ impl Game<'_> {
             | CompanionCommand::Craft { .. }
             | CompanionCommand::Smelt { .. }
             | CompanionCommand::Sleep) => self.companion_start_work(host, b, work),
-            CompanionCommand::Run { perception } => self.companion_start_run(host, b, perception),
+            CompanionCommand::Run { perception } => {
+                b.nether = None;
+                self.companion_start_run(host, b, perception);
+            }
             CompanionCommand::RunFrom { perception, stage } => {
+                b.nether = None;
                 self.companion_start_run(host, b, Some(perception));
                 if let Some(run) = b.run.as_mut() {
                     run.skip_to(&stage);
                 }
             }
+            CompanionCommand::Nether {
+                from,
+                until,
+                perception,
+                targets,
+            } => self.companion_start_nether(host, b, from, until, perception, targets),
             CompanionCommand::Perception(level) => b.senses.level = level,
             CompanionCommand::End { perception, beds } => {
                 self.companion_start_end(b, perception, beds);
@@ -495,7 +506,9 @@ impl Game<'_> {
             let by = self
                 .mobs
                 .iter()
-                .filter(|m| m.alive() && host.mob_players.get(&m.id) == Some(&b.conn))
+                // Not a neutral one minding its own business: a fall or a
+                // burn blamed on a zombified piglin would set the herd on it.
+                .filter(|m| m.alive() && threat(m) && host.mob_players.get(&m.id) == Some(&b.conn))
                 .filter(|m| c::distance(mob_at(m), pos) < reach(m))
                 .min_by(|x, y| c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos)))
                 .map(|m| (m.id, m.kind.id.to_string()))
@@ -669,6 +682,10 @@ impl Game<'_> {
         let eye = [pos[0], pos[1] + 1.62, pos[2]];
         // A run watches over whatever its work does.
         if b.run.is_some() && self.companion_run_watch(host, b, pos) {
+            return;
+        }
+        // The Nether part fights blazes, endermen and ghasts its own way.
+        if b.nether.is_some() && self.companion_nether_take(host, b, pos) {
             return;
         }
         // Fighting.
@@ -1107,16 +1124,68 @@ impl Game<'_> {
             return;
         }
         let ordered = b.ordered;
+        // A sword's sweep (Player.attack: a charged blow on the ground) hits
+        // what stands beside the target too: by a calm zombified piglin,
+        // piglin or enderman, the blow is struck with something else (else
+        // the whole group turns on it).
+        let target = self.mobs.iter().find(|m| m.id == id).map(mob_at);
+        let calm_near = target.is_some_and(|t| {
+            self.mobs.iter().any(|m| {
+                m.id != id
+                    && m.alive()
+                    && m.ai.target.is_none()
+                    && matches!(
+                        &*m.kind.id,
+                        "minecraft:zombified_piglin" | "minecraft:piglin" | "minecraft:enderman"
+                    )
+                    && c::distance(mob_at(m), t) < 3.0
+            })
+        });
+        let other = calm_near
+            .then(|| {
+                let g = host.hub.guest(b.conn)?;
+                let items = self.res.items();
+                let sword = |s: &ItemStack| {
+                    items
+                        .item_tags
+                        .get("minecraft:swords")
+                        .is_some_and(|t| t.contains(&*s.item))
+                };
+                let held = g.inventory.get(g.selected)?.as_ref()?;
+                if !sword(held) {
+                    return None;
+                }
+                // The best other hotbar item to hit with, else the bare hand.
+                (0..9)
+                    .filter(|&i| g.inventory[i].as_ref().is_none_or(|s| !sword(s)))
+                    .max_by(|&a, &b| {
+                        let dmg = |i: usize| {
+                            g.inventory[i]
+                                .as_ref()
+                                .and_then(|s| items.get(&s.item))
+                                .map_or(0.0, |it| it.attack_damage)
+                        };
+                        dmg(a).total_cmp(&dmg(b))
+                    })
+            })
+            .flatten();
         // The host's own "last hurt mob" is its owner's (wolves follow it).
         let owner_hurt = self.combat.last_hurt_mob;
         let hit = self
             .as_guest(host, b.conn, |g| {
-                // A calm enderman takes no blow it wasn't ordered to (one in
-                // the way of the target would, and then hunt it).
-                let stray = g.mob_hit().is_some_and(|(i, _)| {
-                    calm_enderman(&g.mobs[i]) && !(ordered && g.mobs[i].id == id)
+                let held = g.selected;
+                if let Some(i) = other {
+                    g.selected = i;
+                }
+                // Only the mob it aims at: another in the way (a calm
+                // zombified piglin between it and a blaze) is not hit, nor
+                // a calm enderman it wasn't ordered to hit (it would hunt it).
+                let aimed = g.mob_hit().is_some_and(|(i, _)| {
+                    g.mobs[i].id == id && !(calm_enderman(&g.mobs[i]) && !ordered)
                 });
-                !stray && g.attack_strength_scale() >= 0.95 && g.attack()
+                let hit = aimed && g.attack_strength_scale() >= 0.95 && g.attack();
+                g.selected = held;
+                hit
             })
             .unwrap_or(false);
         self.combat.last_hurt_mob = owner_hurt;

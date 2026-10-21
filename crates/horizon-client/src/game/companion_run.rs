@@ -187,8 +187,6 @@ pub(super) struct Run {
     shelter: Option<[i32; 3]>,
     /// The armour it wears (not in its inventory).
     worn: Vec<String>,
-    /// Told its owner it is ready for the Nether.
-    finished: bool,
     no_shelter: Option<i64>,
     pub deaths: u32,
     night: Option<i64>,
@@ -238,7 +236,6 @@ impl Run {
             death: None,
             shelter: None,
             worn: Vec::new(),
-            finished: false,
             no_shelter: None,
             deaths: 0,
             night: None,
@@ -545,10 +542,13 @@ impl Game<'_> {
         };
         let took = self.companion_run_supervise(host, b, &mut run, pos);
         // The Watch HUD (game/companion_watch.rs) shows the run.
+        let step = self
+            .companion_nether_step(host, b)
+            .unwrap_or_else(|| format!("{}: {}", run.stage.name(), run.note));
         if self.watched(b)
             && let Some(w) = self.companions.watch.as_mut()
         {
-            w.step = format!("{}: {}", run.stage.name(), run.note);
+            w.step = step;
             w.perception = b.senses.level.label().to_owned();
             w.ticks = (self.world.game_time.max(0) as u64).saturating_sub(run.start);
         }
@@ -871,11 +871,10 @@ impl Game<'_> {
             }
         }
         if run.stage == Stage::Done {
-            if !run.finished {
-                run.finished = true;
-                self.companion_report(b, CompanionReport::SkillFinished(Skill::Run));
-            }
-            run.note = "portal lit: ready for the Nether".into();
+            // On to the Nether (game/companion_nether.rs).
+            run.note = "portal lit: on to the Nether".into();
+            self.companion_nether_after_overworld(host, b);
+            self.companion_nether_tick(host, b, pos);
             return;
         }
         // Getting out of a place where work stalls.
@@ -1903,7 +1902,7 @@ impl Game<'_> {
     }
 
     /// Hold the first stack of `item`; false when it carries none.
-    fn companion_hold(&mut self, host: &mut LanHost, b: &Body, item: &str) -> bool {
+    pub(super) fn companion_hold(&mut self, host: &mut LanHost, b: &Body, item: &str) -> bool {
         let Some(slot) = host
             .hub
             .guest(b.conn)

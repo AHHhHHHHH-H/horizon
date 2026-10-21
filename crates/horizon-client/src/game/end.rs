@@ -1046,6 +1046,16 @@ impl Game<'_> {
         self.swing_arm();
     }
 
+    /// Where each eye of ender in flight is, oldest first: what a player
+    /// sees fly (a companion reads its bearing, game/companion_nether.rs).
+    pub(super) fn ender_eyes_in_flight(&self) -> Vec<[f64; 3]> {
+        self.end
+            .eyes
+            .iter()
+            .map(|e| e.position.to_array())
+            .collect()
+    }
+
     /// EyeOfEnder.tick: fly, then drop (4 in 5) or shatter after 80 ticks.
     fn tick_eyes(&mut self) {
         let mut eyes = std::mem::take(&mut self.end.eyes);

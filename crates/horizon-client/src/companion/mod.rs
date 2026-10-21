@@ -9,6 +9,7 @@ pub mod end;
 pub mod file;
 pub mod gear;
 pub mod moves;
+pub mod nether;
 pub mod perception;
 pub mod summary;
 pub mod techtree;
@@ -84,6 +85,14 @@ pub enum CompanionCommand {
     End {
         perception: Option<perception::PerceptionLevel>,
         beds: bool,
+    },
+    /// The Speedrunner's middle part (game/companion_nether.rs): from leg
+    /// `from` through leg `until`, with these targets.
+    Nether {
+        from: nether::Leg,
+        until: nether::Leg,
+        perception: Option<perception::PerceptionLevel>,
+        targets: nether::Targets,
     },
 }
 
@@ -295,9 +304,16 @@ pub enum CompanionReport {
         done: u32,
         total: u32,
     },
-    /// A moment of its route worth calling out ("The dragon is down!").
-    Milestone {
+    /// A line the End route speaks at a moment of its fight ("The dragon
+    /// is down!").
+    Callout {
         line: String,
+    },
+    /// A step of the route reached (game/companion_nether.rs): its name and
+    /// a word on it, for callouts.
+    Milestone {
+        name: String,
+        detail: String,
     },
 }
 
@@ -333,7 +349,8 @@ impl CompanionReport {
                 done,
                 total,
             } => format!("{} {done}/{total} {}", skill.name(), short_id(item)),
-            Self::Milestone { line } => line.clone(),
+            Self::Callout { line } => line.clone(),
+            Self::Milestone { name, detail } => format!("{name}: {detail}"),
         }
     }
 }
@@ -436,6 +453,7 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
                 None => None,
             },
         },
+        "nether" => parse_nether(&words[1..])?,
         "perception" | "senses" => {
             let w = words.get(1..).unwrap_or_default().join(" ");
             CompanionCommand::Perception(
@@ -461,6 +479,62 @@ pub fn parse_command(words: &[&str]) -> Result<CompanionCommand, String> {
             CompanionCommand::End { perception, beds }
         }
         other => return Err(format!("unknown companion command: {other}")),
+    })
+}
+
+/// `nether [leg] [until <leg>] [fair|sharp|scout|all] [rods N] [pearls N]
+/// [eyes N] [barter]`.
+fn parse_nether(words: &[&str]) -> Result<CompanionCommand, String> {
+    let mut from = None;
+    let mut until = nether::Leg::Fill;
+    let mut level = None;
+    let mut targets = nether::Targets::default();
+    let mut i = 0;
+    let number = |w: Option<&&str>| -> Result<u32, String> {
+        w.and_then(|w| w.parse().ok())
+            .filter(|n| (1..=64).contains(n))
+            .ok_or_else(|| "a count from 1 to 64".to_string())
+    };
+    while i < words.len() {
+        let w = words[i].to_ascii_lowercase();
+        match w.as_str() {
+            "until" | "to" => {
+                until = words
+                    .get(i + 1)
+                    .and_then(|w| nether::Leg::parse(w))
+                    .ok_or("until which leg?")?;
+                i += 1;
+            }
+            // A count after it: the target; else the leg of that name.
+            "rods" | "pearls" | "eyes"
+                if words.get(i + 1).is_some_and(|n| n.parse::<i64>().is_ok()) =>
+            {
+                let count = number(words.get(i + 1))?;
+                match w.as_str() {
+                    "rods" => targets.rods = count,
+                    "pearls" => targets.pearls = count,
+                    _ => targets.eyes = count.min(12),
+                }
+                i += 1;
+            }
+            "barter" => targets.barter = true,
+            _ => {
+                if let Some(l) = perception::PerceptionLevel::parse(&w) {
+                    level = Some(l);
+                } else if let Some(l) = nether::Leg::parse(&w).filter(|_| from.is_none()) {
+                    from = Some(l);
+                } else {
+                    return Err(format!("nether: what is {w:?}?"));
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(CompanionCommand::Nether {
+        from: from.unwrap_or(nether::Leg::Enter),
+        until,
+        perception: level,
+        targets,
     })
 }
 
@@ -648,6 +722,35 @@ pub fn valid_name(wanted: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nether_orders_tell_legs_from_counts() {
+        let parse = |line: &str| parse_nether(&line.split_whitespace().collect::<Vec<_>>());
+        match parse("eyes until fill all_knowing rods 5") {
+            Ok(CompanionCommand::Nether {
+                from,
+                until,
+                perception,
+                targets,
+            }) => {
+                assert_eq!(from, nether::Leg::Eyes);
+                assert_eq!(until, nether::Leg::Fill);
+                assert_eq!(perception, Some(perception::PerceptionLevel::AllKnowing));
+                assert_eq!(targets.rods, 5);
+                assert_eq!(targets.eyes, 12);
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse("pearls 9 eyes 20") {
+            Ok(CompanionCommand::Nether { from, targets, .. }) => {
+                assert_eq!(from, nether::Leg::Enter);
+                assert_eq!((targets.pearls, targets.eyes), (9, 12));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(parse("rods 0").is_err());
+        assert!(parse("until nowhere").is_err());
+    }
 
     #[test]
     fn clock_bearings_follow_the_facing() {

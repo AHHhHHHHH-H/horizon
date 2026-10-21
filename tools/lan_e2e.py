@@ -64,6 +64,13 @@ address. The script then checks, from both sides, what a guest's game used to ge
              guest as the host has them (kind, place, rotation, what they hold or wear, the variant).
 - projectiles: primed TNT (one falling), an end crystal and an arrow that lands reach the guest where
              the host has them; a falling block lands on both sides.
+- blast:     primed TNT going off beside a guest in survival hurts the guest and pushes it away
+- fireball:  a fire charge a dispenser shoots onto stone lights a fire both sides see, and the fire
+             goes out on its own within a minute (it ticks: FireBlock.tick on a floor that doesn't burn)
+- worn:      iron armour the guest puts on in its inventory protects it: a 10-damage blow takes 6
+             (armour 15, LivingEntity.getDamageAfterArmorAbsorb), and none takes the full 10
+             (ServerExplosion.hurtEntities takes every player); facing it behind a raised shield, the
+             guest takes nothing.
 - plates:    a stone pressure plate the guest steps on is pressed on both sides, and comes up once
              the guest steps off (#848).
 - swings:    each side sees the other's arm swing while it mines a block, and the guest sees its own
@@ -89,6 +96,7 @@ macOS both games render offscreen. Games started here have no audio (HORIZON_NO_
 """
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -108,7 +116,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
 # The host plays single player on its server thread (--server-thread).
 SERVER_THREAD = False
-CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'crafting', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'hurt', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'commands', 'recipes', 'machines', 'brewing', 'trials', 'clicks', 'sleep', 'push', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'light', 'time', 'swings', 'plates', 'effects', 'portals', 'distance', 'growth']
+CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'crafting', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'hurt', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'commands', 'recipes', 'machines', 'brewing', 'trials', 'clicks', 'sleep', 'push', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'blast', 'fireball', 'deflect', 'worn', 'light', 'time', 'swings', 'plates', 'effects', 'portals', 'distance', 'growth']
 
 
 class Game:
@@ -1519,6 +1527,176 @@ def check_projectiles(host, guest, out):
     return f'{len(theirs)} identical, fuses (host, guest) {fuses}'
 
 
+def check_blast(host, guest, out):
+    guest('command', command='gamemode survival')
+    guest('command', command='clear @s')
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    floor = f'fill {gx - 6} {y - 1} {gz - 4} {gx + 6} {y - 1} {gz + 4} minecraft:bedrock'
+    detail = {}
+    try:
+        for shielded in (False, True):
+            if remote(guest)['health'] <= 0:
+                guest.raw('respawn')
+                guest.wait(40)
+            host('command', command=floor)
+            host('command', command=f'fill {gx - 6} {y} {gz - 4} {gx + 6} {y + 3} {gz + 4} minecraft:air')
+            guest('command', command=f'tp @s {gx + 0.5} {y} {gz + 0.5}')
+            guest('command', command='effect give @s minecraft:instant_health 1 5')
+            guest.wait(30)
+            hold = None
+            if shielded:
+                guest('command', command='item replace entity @s weapon.offhand with minecraft:shield')
+                guest.wait(5)
+                guest.raw('look-at', gx + 5.5, y + 0.5, gz + 0.5)
+                hold = threading.Thread(target=guest.raw, args=('use-item', '--hold', 2.5))
+                hold.start()
+                time.sleep(0.5)
+            before = remote(guest)['health']
+            at = pos_of(guest)
+            # Five blocks off: a blast that hurts without killing (about 14 at full exposure).
+            host('command', command=f'summon minecraft:tnt {gx + 5.5} {y} {gz + 0.5} {{fuse:10s}}')
+            # The guest's own controller is busy holding the shield up: the host waits.
+            host.wait(14)
+            after = remote(guest)['health']
+            moved = pos_of(guest)
+            if hold:
+                hold.join()
+            guest.shot(out, f'blast-{"shield" if shielded else "open"}')
+            detail['shield' if shielded else 'open'] = {
+                'before': before, 'after': after, 'pushed': round(at[0] - moved[0], 2)}
+    finally:
+        host('command', command='gamemode survival')
+        guest('command', command='clear @s')
+        host('command', command=floor)
+    open_, shield = detail['open'], detail['shield']
+    assert open_['after'] < open_['before'], f'the blast never hurt the guest: {detail}'
+    assert open_['pushed'] > 0, f'the blast never pushed the guest away: {detail}'
+    assert shield['after'] >= shield['before'], f'the shield did not stop the blast: {detail}'
+    return detail
+
+
+def check_fireball(host, guest, out):
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    fx, fz = x + 4, z
+    # A stone floor, a dispenser facing down three blocks over it, a fire charge in it, powered.
+    host('command', command=f'fill {fx - 2} {y - 1} {fz - 2} {fx + 2} {y - 1} {fz + 2} minecraft:stone')
+    host('command', command=f'fill {fx - 2} {y} {fz - 2} {fx + 2} {y + 4} {fz + 2} minecraft:air')
+    host('command', command=f'setblock {fx} {y + 3} {fz} minecraft:dispenser[facing=down]')
+    host('command', command=f'item replace block {fx} {y + 3} {fz} container.0 with minecraft:fire_charge')
+    seen, gone = {}, None
+    try:
+        host('command', command=f'setblock {fx} {y + 4} {fz} minecraft:redstone_block')
+        host.wait(10)
+        seen = {'host': host.raw('block', fx, y, fz).get('block'),
+                'guest': guest.raw('block', fx, y, fz).get('block')}
+        # FireBlock.tick every 30-39 ticks ages it by one a third of the time; past age 3 it goes.
+        for waited in range(40, 1240, 40):
+            host.wait(40)
+            if host.raw('block', fx, y, fz).get('block') == 'minecraft:air':
+                gone = waited
+                break
+        guest.wait(5)
+        seen['guest_after'] = guest.raw('block', fx, y, fz).get('block')
+    finally:
+        host('command', command=f'fill {fx - 2} {y} {fz - 2} {fx + 2} {y + 4} {fz + 2} minecraft:air')
+    assert seen.get('host') == 'minecraft:fire' and seen.get('guest') == 'minecraft:fire', \
+        f'no fire where the fire charge landed: {seen}'
+    assert gone is not None, f'the fire on stone never went out (1200 ticks): {seen}'
+    assert seen['guest_after'] == 'minecraft:air', f'the guest still sees the fire: {seen}'
+    return {'out_after_ticks': gone, **seen}
+
+
+def check_deflect(host, guest, out):
+    """The host punches a ghast's fireball back: it flies along the host's view and kills the ghast
+    (Player.attack: AIM_DEFLECT on #redirectable_projectile; Ghast.isReflectedFireball). The ghast is caged
+    (a window toward the host); the game runs at 4 ticks a second, and once the fireball is within 4.5 blocks
+    the host looks at the ghast and clicks."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    guest('command', command='gamemode creative')
+    host('command', command='gamemode survival')
+    host('command', command='difficulty normal')
+    gx, gz = x, z + 30
+    gy = y + 20
+    host('command', command=f'fill {gx - 3} {gy - 1} {gz - 3} {gx + 24} {gy - 1} {gz + 3} minecraft:glass')
+    host('command', command=f'fill {gx - 3} {gy} {gz - 3} {gx + 24} {gy + 8} {gz + 3} minecraft:air')
+    host('command', command=f'tp @s {gx + 0.5} {gy} {gz + 0.5} -90 0')
+    host.wait(20)
+    host.raw('hurtlog')
+    # The ghast in a glass cage it can't drift out of, a 3 x 3 window toward the host.
+    host('command', command=f'fill {gx + 13} {gy} {gz - 3} {gx + 19} {gy + 6} {gz + 3} minecraft:glass hollow')
+    host('command', command=f'fill {gx + 13} {gy + 2} {gz - 1} {gx + 13} {gy + 4} {gz + 1} minecraft:air')
+    host('command', command=f'summon minecraft:ghast {gx + 16.5} {gy + 1} {gz + 0.5}')
+    eye = (gx + 0.5, gy + 1.62, gz + 0.5)
+    host('command', command='tick rate 4')
+    turned, near, ghast, hurt = None, None, None, []
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            balls = [q for q in host.raw('status')['projectiles'] if q['kind'] == 'LargeFireball']
+            near = min((math.dist(q['position'], eye) for q in balls), default=None)
+            if near is not None and near < 4.5:
+                g = [m['pos'] for m in host.raw('mobs', 60).get('near', []) if m['kind'].endswith('ghast')][0]
+                host.raw('look-at', f'{g[0]:.2f}', f'{g[1] + 2:.2f}', f'{g[2]:.2f}')
+                host.raw('mouse', 'left', 'down')
+                host.raw('mouse', 'left', 'up')
+                turned = near
+                break
+        host('command', command='tick rate 20')
+        host.wait(60)
+        ghast = [m for m in host.raw('mobs', 60).get('near', []) if m['kind'].endswith('ghast') and m['health'] > 0]
+        hurt = [h for pl in host.raw('hurtlog')['players'] if pl['name'] == 'host' for h in pl['hurts']
+                if 'fireball' in h['source'] or 'explosion' in h['source']]
+    finally:
+        host('command', command='tick rate 20')
+        host('command', command='kill @e[type=minecraft:ghast]')
+        host('command', command=f'fill {gx - 3} {gy - 1} {gz - 3} {gx + 24} {gy + 8} {gz + 3} minecraft:air')
+        guest('command', command='gamemode survival')
+    assert turned is not None, f'no fireball came within 4.5 blocks (nearest {near})'
+    assert not hurt, f'the host was hit: {hurt}'
+    assert not ghast, f'the ghast lived: the fireball was not turned back ({ghast})'
+    return {'struck_at': round(turned, 2)}
+
+
+def check_worn(host, guest, out):
+    pieces = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']
+    guest('command', command='gamemode survival')
+    taken = {}
+    try:
+        for worn in (False, True):
+            guest('command', command='clear @s')
+            if remote(guest)['health'] <= 0:
+                guest.raw('respawn')
+                guest.wait(40)
+            if worn:
+                for piece in pieces:
+                    guest('command', command=f'give @s minecraft:{piece}')
+                guest.wait(10)
+                # Shift-clicked from the hotbar onto the body in the inventory menu (the hub moves them).
+                guest.raw('key', 'e', 'tap')
+                guest.raw('wait-for', 'screen', 'inventory')
+                for piece in pieces:
+                    guest.raw('click-slot', hotbar_slot(guest, f'minecraft:{piece}'), 'shift')
+                    guest.wait(2)
+                guest.raw('key', 'esc', 'tap')
+                guest.wait(5)
+            guest('command', command='effect give @s minecraft:instant_health 1 5')
+            guest.wait(30)
+            host.raw('hurtlog')
+            # A mob's blow (no attacker: no difficulty scaling); armour counts against it.
+            guest('command', command='damage @s 10 minecraft:mob_attack')
+            guest.wait(10)
+            log = [h for p in host.raw('hurtlog')['players'] if p['name'] == GUEST_NAME for h in p['hurts']]
+            taken['worn' if worn else 'bare'] = [(h['amount'], h['armor'], round(h['taken'], 2)) for h in log]
+    finally:
+        guest('command', command='clear @s')
+        guest('command', command='effect give @s minecraft:instant_health 1 5')
+    assert taken['bare'] == [(10.0, 0.0, 10.0)], f'10 damage on no armour: {taken}'
+    assert taken['worn'] == [(10.0, 15.0, 6.0)], f'10 damage through iron armour (15) should take 6: {taken}'
+    return taken
+
+
 def light_differences(host, guest, lo, hi):
     """Positions of the box loaded on both sides, and those whose sky or block light differ."""
     h, g = host.raw('light', *lo, *hi), guest.raw('light', *lo, *hi)
@@ -1632,7 +1810,7 @@ def check_light(host, guest, out):
     return results
 
 
-CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour, 'nametags': check_nametags,
+CHECK_FNS = {'deflect': check_deflect, 'tab': check_tab, 'self': check_self, 'armour': check_armour, 'nametags': check_nametags,
              'chest': check_chest, 'crafting': check_crafting, 'sign': check_sign, 'damage': check_damage,
              'mobs': check_mobs, 'hazards': check_hazards, 'pvp': check_pvp,
              'respawn': check_respawn,
@@ -1644,7 +1822,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour, 'name
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance, 'clicks': check_clicks,
              'sleep': check_sleep, 'push': check_push, 'eat': check_eat, 'eating': check_eating,
-             'xp': check_xp, 'objects': check_objects, 'projectiles': check_projectiles,
+             'xp': check_xp, 'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'fireball': check_fireball, 'worn': check_worn,
              'light': check_light, 'plates': check_plates,
              'swings': check_swings,
              'time': check_time, 'growth': check_growth}

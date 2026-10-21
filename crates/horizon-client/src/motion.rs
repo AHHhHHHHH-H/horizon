@@ -287,6 +287,11 @@ pub struct PlayerMotion {
     /// The powder snow blocks this tick's movement went into: the game
     /// destroys them if the player is burning, then puts the fire out.
     pub powder_snow_entered: Vec<BlockPos>,
+    /// The last hurts taken (`hurt_blocking`), newest last, for tests and
+    /// the control socket's `hurtlog`.
+    pub hurt_log: Vec<crate::health::HurtRecord>,
+    /// The last melee attacks made on mobs, newest last.
+    pub attack_log: Vec<crate::health::AttackRecord>,
 }
 fn attribute_error(error: impl std::fmt::Debug) -> io::Error {
     io::Error::other(format!("movement attribute: {error:?}"))
@@ -430,6 +435,8 @@ impl PlayerMotion {
             old_position: position,
             block_effects: true,
             powder_snow_entered: Vec::new(),
+            hurt_log: Vec::new(),
+            attack_log: Vec::new(),
         })
     }
     /// `Entity.getTicksRequiredToFreeze`.

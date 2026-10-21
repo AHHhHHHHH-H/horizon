@@ -27,6 +27,8 @@ mod commands;
 mod companion;
 mod companion_body;
 mod companion_craft;
+mod companion_cruise;
+mod companion_nether;
 mod companion_run;
 mod companion_senses;
 mod companion_walk;
@@ -39,6 +41,7 @@ mod control;
 mod copper_golems;
 mod creaking;
 mod creatures;
+mod deflect;
 mod crossbow;
 mod debug_keys;
 mod decorated_pot;
@@ -6501,6 +6504,10 @@ impl Game<'_> {
             self.break_painting(i, true);
             return true;
         }
+        // A ghast's fireball or a wind charge in front: turned back.
+        if self.attack_redirectable() {
+            return true;
+        }
         let hand_damage = 1.0
             + self
                 .held()
@@ -6548,7 +6555,24 @@ impl Game<'_> {
             Some(f) => self.attack_source(f),
             None => horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic),
         };
-        if self.hurt_by_player(index, amount, source) {
+        let landed = self.hurt_by_player(index, amount, source);
+        if let Some(p) = self.player.as_mut() {
+            if p.attack_log.len() >= 64 {
+                p.attack_log.remove(0);
+            }
+            p.attack_log.push(horizon_client::health::AttackRecord {
+                game_time: p.health.game_time(),
+                target: target_kind.clone(),
+                id: self.mobs[index].id,
+                killed: landed && !self.mobs[index].alive(),
+                amount,
+                scale,
+                crit,
+                landed,
+                dealt: old_health - self.mobs[index].health,
+            });
+        }
+        if landed {
             let mob = &self.mobs[index];
             // Player.damageStatsAndHearts: the damage the hit actually did.
             let actual = old_health - mob.health;

@@ -26,7 +26,7 @@
 //! 5. **Exit.** Into the exit portal; the run is over.
 //!
 //! The Watch HUD shows the step ("Destroying crystals 6/10"), and the
-//! moments are spoken as [`CompanionReport::Milestone`].
+//! moments are spoken as [`CompanionReport::Callout`].
 //!
 //! Movement here is the End's own few primitives (a straight staircase
 //! and bridge, pillar up to a height, dig down a pillar); the general
@@ -246,8 +246,6 @@ pub(super) struct EndRun {
     tower: Option<(i32, i32, u64)>,
     /// The mobs after it last tick (to tell what set a new one off).
     hunted_by: Vec<u32>,
-    /// The armour modifiers put on its attributes (`end_wear_armor`).
-    armor_mods: Vec<(String, String)>,
 }
 
 impl EndRun {
@@ -287,7 +285,6 @@ impl EndRun {
             stall: None,
             health: 20.0,
             arena: false,
-            armor_mods: Vec::new(),
             fence_tries: 0,
             peak: 0.0,
             passes: 0,
@@ -496,7 +493,7 @@ impl Game<'_> {
             return false;
         };
         if b.ticks.is_multiple_of(20) {
-            self.end_wear_armor(host, b, &mut run);
+            self.end_wear_pumpkin(host, b);
         }
         self.end_trace_hurt(host, b, &mut run, pos);
         let handled = self.end_step(host, b, &mut run, pos);
@@ -600,11 +597,9 @@ impl Game<'_> {
         }
     }
 
-    /// Its worn armour protects it: the hub never puts a guest's armour
-    /// modifiers on its attributes (`LivingEntity.collectEquipmentChanges`),
-    /// so the dragon's head, its wings and the endermen hit as through none.
-    /// The local player's `apply_equipment`, for the guest, with its own list.
-    fn end_wear_armor(&mut self, host: &mut LanHost, b: &Body, run: &mut EndRun) {
+    /// Its armour protects it as any guest's does (the hub puts a guest's
+    /// worn armour on its attributes); here only the pumpkin goes on.
+    fn end_wear_pumpkin(&mut self, host: &mut LanHost, b: &Body) {
         // A carved pumpkin it carries goes on its head (endermen don't mind
         // its gaze then), its helmet back in the bag.
         if let Some(g) = host.hub.guest_mut(b.conn)
@@ -618,13 +613,6 @@ impl Game<'_> {
             g.inventory[i] = std::mem::replace(&mut g.armor[0], pumpkin);
             log::info!("[end] {} puts on a carved pumpkin", b.file.name);
         }
-        let mut mods = std::mem::take(&mut run.armor_mods);
-        self.as_guest(host, b.conn, |g| {
-            std::mem::swap(&mut g.applied_modifiers, &mut mods);
-            g.apply_equipment();
-            std::mem::swap(&mut g.applied_modifiers, &mut mods);
-        });
-        run.armor_mods = mods;
     }
 
     /// Each hurt in the log, with what was round it then (the harness's
@@ -714,7 +702,7 @@ impl Game<'_> {
     fn end_say(&mut self, b: &mut Body, line: &str) {
         self.companion_report(
             b,
-            CompanionReport::Milestone {
+            CompanionReport::Callout {
                 line: line.to_owned(),
             },
         );

@@ -209,7 +209,10 @@ impl Game<'_> {
                 let at = [p.position.x, p.position.y, p.position.z];
                 self.companion_move_to(host, b, at);
             }
-            b.commands.push_back(CompanionCommand::Stay);
+            // A runner goes on with its route; anyone else holds there.
+            if b.run.is_none() {
+                b.commands.push_back(CompanionCommand::Stay);
+            }
             return None;
         }
         let g = host.hub.guest(b.conn)?;
