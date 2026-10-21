@@ -1180,9 +1180,11 @@ impl Game<'_> {
                 // Only the mob it aims at: another in the way (a calm
                 // zombified piglin between it and a blaze) is not hit, nor
                 // a calm enderman it wasn't ordered to hit (it would hunt it).
-                let aimed = g.mob_hit().is_some_and(|(i, _)| {
-                    g.mobs[i].id == id && !(calm_enderman(&g.mobs[i]) && !ordered)
-                });
+                // The dragon is no mob: a blow on one of its parts lands.
+                let aimed = g.dragon_hit().is_some()
+                    || g.mob_hit().is_some_and(|(i, _)| {
+                        g.mobs[i].id == id && !(calm_enderman(&g.mobs[i]) && !ordered)
+                    });
                 let hit = aimed && g.attack_strength_scale() >= 0.95 && g.attack();
                 g.selected = held;
                 hit

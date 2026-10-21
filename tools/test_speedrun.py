@@ -51,7 +51,7 @@ def stop(process):
             process.wait(timeout=10)
 
 
-def one_run(endpoint, seed, level, budget, out):
+def one_run(endpoint, seed, level, budget, out, route=False):
     wait_for(endpoint, 'screen', lambda v: v['screen'] == 'title', what='title screen')
     command(endpoint, f'open Speedrun{seed} {seed}')
     wait_for(endpoint, 'status', lambda v: v['player'] is not None and v['pending_chunks'] == 0,
@@ -80,15 +80,33 @@ def one_run(endpoint, seed, level, budget, out):
             break
         run = c.get('run') or {}
         last = run
+        nether = c.get('nether') or {}
+        end = c.get('end') or {}
         log['samples'].append({
             'ticks': run.get('ticks'), 'stage': run.get('stage'), 'note': run.get('note'),
             'skill': c.get('skill'), 'task': c.get('task'),
             'position': c.get('position'), 'health': c.get('health'), 'food': c.get('food'),
+            'dimension': c.get('dimension'),
+            'nether': {k: nether.get(k) for k in ('leg', 'note', 'outcome', 'deaths', 'rods', 'pearls', 'eyes',
+                                                   'filled')} if nether else None,
+            'end': {k: end.get(k) for k in ('phase', 'note', 'failure', 'deaths', 'destroyed',
+                                            'dragon_health')} if end else None,
             'wall_s': round(time.monotonic() - started, 1),
         })
+        if route:
+            log['nether'] = nether or log.get('nether')
+            log['end'] = end or log.get('end')
         out.write(json.dumps(log['samples'][-1]) + '\n')
         out.flush()
         splits = {s['name'] for s in run.get('splits', [])}
+        if route:
+            # The whole route: until the End is over, or the Nether part
+            # ended short of it.
+            if end.get('phase') in ('done', 'failed'):
+                break
+            if nether.get('outcome') not in (None, 'done'):
+                break
+            continue
         # Done: the portal lit and the armour made (or given up).
         if run.get('stage') == 'overworld done' and ('first_night' in splits or done > 30000):
             break
@@ -118,7 +136,7 @@ def one_run(endpoint, seed, level, budget, out):
 def run_seed(args, seed):
     results = ROOT / '.local/speedrun'
     results.mkdir(parents=True, exist_ok=True)
-    name = f'{args.perception}-{seed}'
+    name = f'{args.perception}-{seed}{args.tag}'
     with tempfile.TemporaryDirectory(prefix='horizon-speedrun-') as directory:
         home = Path(directory) / 'game'
         home.mkdir()
@@ -127,7 +145,7 @@ def run_seed(args, seed):
             process = start(args.client, args.resources, home, endpoint, log, args.offscreen,
                             timeout=args.ticks // 10 + 1200)
             try:
-                result = one_run(endpoint, seed, args.perception, args.ticks, out)
+                result = one_run(endpoint, seed, args.perception, args.ticks, out, args.route)
                 process.wait(timeout=60)
             except Exception as e:
                 log.seek(0)
@@ -162,6 +180,10 @@ def main():
     parser.add_argument('--seed', type=int, action='append', help='these seeds instead')
     parser.add_argument('--ticks', type=int, default=72000, help='game ticks per run at most')
     parser.add_argument('--parallel', type=int, default=1)
+    parser.add_argument('--route', action='store_true',
+                        help='the whole route: on through the Nether and the End (game/companion_nether.rs, '
+                             'companion_end.rs) until the End is over or the Nether part ends short of it')
+    parser.add_argument('--tag', default='', help='a suffix for the result files')
     args = parser.parse_args()
     args.client, args.resources = args.client.resolve(), args.resources.resolve()
     seeds = args.seed or SEEDS[:args.seeds]

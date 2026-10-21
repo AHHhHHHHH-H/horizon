@@ -101,12 +101,14 @@ fn hazard(name: &str) -> bool {
             | "minecraft:wither_rose"
             | "minecraft:powder_snow"
             | "minecraft:pointed_dripstone"
-            // Not a hurt, but a walk through one ends the run in another
-            // dimension (it lit its portal, then walked into it fetching
-            // logs): going through is a choice, not a way.
-            | "minecraft:nether_portal"
-            | "minecraft:end_portal"
     )
+}
+
+/// A portal block: a wall while the overworld route runs (it lit its
+/// portal, then walked into it fetching logs for its armour, and lost the
+/// run in the Nether); going through is the Nether part's choice.
+fn portal(name: &str) -> bool {
+    matches!(name, "minecraft:nether_portal" | "minecraft:end_portal")
 }
 
 fn falls(name: &str) -> bool {
@@ -239,6 +241,8 @@ struct GameTerrain<'a, 'g> {
     /// Each block's cell, worked out once a search.
     cells: RefCell<HashMap<[i32; 3], Cell>>,
     min_y: i32,
+    /// Portal blocks are walls (the overworld route under way).
+    portal_walls: bool,
 }
 
 impl GameTerrain<'_, '_> {
@@ -249,7 +253,7 @@ impl GameTerrain<'_, '_> {
         if f.fluid == Fluid::Lava {
             return Cell::Lava;
         }
-        if hazard(&f.name) {
+        if hazard(&f.name) || self.portal_walls && portal(&f.name) {
             return Cell::Hazard;
         }
         if f.fluid == Fluid::Water && !f.full_collision {
@@ -433,6 +437,7 @@ impl Game<'_> {
                 states: RefCell::new(std::mem::take(&mut p.states)),
                 cells: RefCell::new(std::mem::take(&mut p.cells)),
                 min_y: self.dim.min_y(),
+                portal_walls: b.run.as_ref().is_some_and(|r| r.overworld()),
             };
             let route = p.search.run(&t, started + PLAN_SLICE);
             // No way: what the planner saw around it (debug logs).

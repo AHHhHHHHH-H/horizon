@@ -150,6 +150,8 @@ struct Flight {
 
 /// The middle part under way (`Body::nether`).
 pub(super) struct NetherRun {
+    /// The End handed the route once (the whole route, not a segment).
+    pub ended: bool,
     pub leg: Leg,
     /// The run stops after this leg (a harness segment).
     pub until: Leg,
@@ -244,6 +246,7 @@ pub(super) struct NetherRun {
 impl NetherRun {
     pub fn new(from: Leg, until: Leg, targets: Targets, now: u64) -> Self {
         Self {
+            ended: false,
             leg: from,
             until,
             targets,
@@ -564,6 +567,14 @@ impl Game<'_> {
             {
                 b.keys.jump = true;
             }
+        }
+        // The whole route (begun as a run, not a harness segment): eyes in
+        // the frames, on to the End (game/companion_end.rs).
+        if run.outcome.as_deref() == Some("done") && b.run.is_some() && b.end.is_none() && !run.ended {
+            run.ended = true;
+            log::info!("[companion] {} route: on to the End", b.file.name);
+            let level = b.senses.level;
+            self.companion_start_end(b, Some(level), false);
         }
         b.nether = Some(run);
     }

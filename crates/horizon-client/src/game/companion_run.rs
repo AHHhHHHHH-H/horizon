@@ -267,6 +267,11 @@ impl Run {
         }
         self.stage = s;
     }
+    /// Still on the overworld route (the portal not lit and its armour
+    /// not made).
+    pub fn overworld(&self) -> bool {
+        self.stage != Stage::Done
+    }
     /// A report the body made: a failure is kept.
     pub fn heard(&mut self, report: &CompanionReport) {
         match report {
