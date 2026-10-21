@@ -3133,14 +3133,17 @@ impl Game<'_> {
     }
 
     /// The dragon on a pass that may reach it: a strafe aimed at it, a
-    /// charge, a fireball in the air near.
+    /// charge, a fireball in the air near, the dragon flying close.
     fn end_pass_at(&self, b: &Body, pos: [f64; 3]) -> bool {
         let pass = self.dragon_view().is_some_and(|d| {
             d.alive
                 && (d.phase == 1
                     && d.strafing == Some(b.conn)
                     && c::distance(pos, d.position) < 80.0
-                    || d.phase == 8 && c::distance(pos, d.position) < 48.0)
+                    || d.phase == 8 && c::distance(pos, d.position) < 48.0
+                    // (Flying round near the spikes: a wing's knockback
+                    // throws it off its pillar.)
+                    || !d.sitting && c::distance(pos, d.position) < 24.0)
         });
         pass || self
             .dragon_fireball_view()
