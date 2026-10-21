@@ -103,6 +103,28 @@ enum PitStep {
     Fight,
 }
 
+/// A box by a blaze spawner: walls on three sides, a roof, open toward the
+/// spawner.
+#[derive(Clone, Copy, Debug)]
+struct Bunker {
+    spawner: [i32; 3],
+    feet: [i32; 3],
+    /// Toward the spawner (x, z): the opening.
+    front: [i32; 2],
+    built: bool,
+}
+
+impl Bunker {
+    /// The three walled sides (x, z).
+    fn sides(front: [i32; 2]) -> [[i32; 2]; 3] {
+        [
+            [front[1], front[0]],
+            [-front[1], -front[0]],
+            [-front[0], -front[1]],
+        ]
+    }
+}
+
 struct PitFight {
     pit: Pit,
     step: PitStep,
@@ -203,6 +225,8 @@ pub(super) struct NetherRun {
     chase: Option<u32>,
     /// The armour modifiers put on its attributes (`nether_wear_armor`).
     armor_mods: Vec<(String, String)>,
+    /// Its box by the blaze spawner.
+    bunker: Option<Bunker>,
 }
 
 impl NetherRun {
@@ -258,6 +282,7 @@ impl NetherRun {
             ignored: Vec::new(),
             chase: None,
             armor_mods: Vec::new(),
+            bunker: None,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -534,17 +559,6 @@ impl Game<'_> {
         }
         // In lava (knocked in, a flow over the path): out by the nearest
         // dry spot, jumping, before anything else.
-        let lava_at = |p: [f64; 3]| {
-            self.res
-                .facts()
-                .get(self.world.block(
-                    p[0].floor() as i32,
-                    p[1].floor() as i32,
-                    p[2].floor() as i32,
-                ))
-                .fluid
-                == Fluid::Lava
-        };
         // In fire (a fireball lit the floor): out of it, the nearest way.
         let fire_at = |p: [f64; 3]| {
             let name = &self
@@ -560,6 +574,19 @@ impl Game<'_> {
         };
         if fire_at(pos) || fire_at([pos[0], pos[1] + 0.9, pos[2]]) {
             let here = feet(pos);
+            // Put out first (a blow breaks a fire block at once): in its box
+            // it stays, and a step away still burns.
+            let cell = if fire_at(pos) {
+                here
+            } else {
+                [here[0], here[1] + 1, here[2]]
+            };
+            if self.companion_dig_step(host, b, cell, 1).is_ok() {
+                b.target = None;
+                self.companion_shield(host, b, run, None, pos);
+                run.note = "putting out a fire".into();
+                return true;
+            }
             let out = (1..=3).find_map(|r| {
                 (-r..=r)
                     .flat_map(|dx| (-r..=r).map(move |dz| (dx, dz)))
@@ -583,6 +610,17 @@ impl Game<'_> {
                 return true;
             }
         }
+        let lava_at = |p: [f64; 3]| {
+            self.res
+                .facts()
+                .get(self.world.block(
+                    p[0].floor() as i32,
+                    p[1].floor() as i32,
+                    p[2].floor() as i32,
+                ))
+                .fluid
+                == Fluid::Lava
+        };
         if lava_at(pos) || lava_at([pos[0], pos[1] + 0.9, pos[2]]) {
             let here = feet(pos);
             let out = (1..=5).find_map(|r| {
@@ -686,6 +724,23 @@ impl Game<'_> {
             .filter(|m| m.alive() && &*m.kind.id == "minecraft:ghast" && m.extra.flag)
             .map(|m| [m.position.x, m.position.y + 2.0, m.position.z])
             .find(|at| c::distance(*at, pos) < 64.0 && self.in_sight(from, *at));
+        // A ghast after it while it stands at an edge (lava or a drop
+        // beside it): onto solid ground first; a blast there throws it in
+        // even through the shield.
+        let ghast_near = self.mobs.iter().any(|m| {
+            m.alive() && &*m.kind.id == "minecraft:ghast" && c::distance(mob_at(m), pos) < 64.0
+        });
+        if ghast_near
+            && !pressed
+            && self.on_edge(feet(pos))
+            && let Some(g) = self.solid_ground_near(feet(pos))
+        {
+            self.companion_shield(host, b, run, None, pos);
+            run.note = "off the edge, a ghast about".into();
+            if self.companion_steer(host, b, at_block(g), 0.3, true) != Steer::Stuck {
+                return true;
+            }
+        }
         // A fireball on its way to it (a ghast's, a blaze's): the shield
         // toward it until it lands.
         let incoming = self
@@ -768,10 +823,13 @@ impl Game<'_> {
         // A fight coming (something hostile near) at an edge (a drop or
         // lava beside it, a bridge): onto solid ground first, where a
         // knock back doesn't throw it off.
-        let danger = self
-            .mobs
-            .iter()
-            .any(|m| m.alive() && threat(m) && c::distance(mob_at(m), pos) < 16.0);
+        // (A ghast's blast throws it too, from much further.)
+        let danger = self.mobs.iter().any(|m| {
+            m.alive()
+                && threat(m)
+                && (c::distance(mob_at(m), pos) < 16.0
+                    || &*m.kind.id == "minecraft:ghast" && c::distance(mob_at(m), pos) < 64.0)
+        });
         if danger
             && self.on_edge(feet(pos))
             && let Some(g) = self.solid_ground_near(feet(pos))
@@ -938,6 +996,43 @@ impl Game<'_> {
             return false;
         }
         b.target = None;
+        // In its box by the spawner: it stays in, the blazes come to the
+        // one opening a block wide (the shield covers it), one at a time.
+        if let Some(bx) = run.bunker
+            && bx.built
+            && feet(pos) == bx.feet
+        {
+            b.keys = Default::default();
+            let charged = now.saturating_sub(run.last_swing) >= SWING;
+            let nearest = foes
+                .iter()
+                .min_by(|x, y| x.2.reach.total_cmp(&y.2.reach))
+                .copied();
+            let seen = foes.iter().any(|f| f.2.sees);
+            match nearest {
+                Some((id, at, f)) if f.reach <= n::REACH && charged => {
+                    self.companion_shield(host, b, run, None, pos);
+                    b.yaw = c::yaw_toward(pos, at) as f32;
+                    b.pitch = look_pitch(from, at);
+                    self.companion_strike(host, b, id);
+                    run.last_swing = now;
+                    run.note = "fighting a blaze from the box".into();
+                }
+                Some((_, at, f)) if f.sees => {
+                    self.companion_shield(host, b, run, Some(at), pos);
+                    run.note = "shield up in the box".into();
+                }
+                _ => {
+                    self.companion_shield(host, b, run, None, pos);
+                    if !seen && health < 16.0 && host.hub.guest(b.conn).is_some_and(|g| g.food < 20)
+                    {
+                        self.companion_start_eating(host, b);
+                    }
+                    run.note = "waiting in the box".into();
+                }
+            }
+            return true;
+        }
         let arrows = host.hub.guest(b.conn).is_some_and(|g| {
             count(&g.inventory, "minecraft:bow") > 0 && count(&g.inventory, "minecraft:arrow") > 0
         });
@@ -1178,6 +1273,121 @@ impl Game<'_> {
             self.companion_use_block(host, b, n, face, pos);
         }
         true
+    }
+
+    /// A spot 2 to 5 blocks from the spawner, near its height, off any edge,
+    /// its opening (toward the spawner) clear and walls placeable round it:
+    /// near where it stands, then needing few blocks.
+    fn bunker_site(&self, spawner: [i32; 3], here: [i32; 3], avoid: &[[i32; 3]]) -> Option<Bunker> {
+        let mut best: Option<(i32, i32, Bunker)> = None;
+        for dx in -5..=5i32 {
+            for dz in -5..=5i32 {
+                let r = dx.abs().max(dz.abs());
+                if !(2..=5).contains(&r) {
+                    continue;
+                }
+                let (x, z) = (spawner[0] + dx, spawner[2] + dz);
+                let Some(y) = self.cruise_stand(x, spawner[1], z) else {
+                    continue;
+                };
+                let c = [x, y, z];
+                if (y - spawner[1]).abs() > 2 || avoid.contains(&c) || self.on_edge(c) {
+                    continue;
+                }
+                let front = if dx.abs() >= dz.abs() {
+                    [-dx.signum(), 0]
+                } else {
+                    [0, -dz.signum()]
+                };
+                let open = |p: [i32; 3]| self.passable(p);
+                if !open([x + front[0], y, z + front[1]])
+                    || !open([x + front[0], y + 1, z + front[1]])
+                {
+                    continue;
+                }
+                let mut need = 0;
+                let mut ok = true;
+                for s in Bunker::sides(front) {
+                    let low = [x + s[0], y, z + s[1]];
+                    if open(low) {
+                        need += 2;
+                        ok &= self.floor([low[0], y - 1, low[2]]);
+                    } else if open([low[0], y + 1, low[2]]) {
+                        need += 1;
+                    }
+                }
+                if open([x, y + 2, z]) {
+                    need += 2;
+                }
+                if !ok {
+                    continue;
+                }
+                let bx = Bunker {
+                    spawner,
+                    feet: c,
+                    front,
+                    built: false,
+                };
+                // Near where it is (each step there is under fire), then few
+                // blocks.
+                let walk = (x - here[0]).abs() + (z - here[2]).abs() + (y - here[1]).abs() * 2;
+                let score = walk * 2 + need;
+                if best
+                    .as_ref()
+                    .is_none_or(|(s0, r0, _)| (score, r) < (*s0, *r0))
+                {
+                    best = Some((score, r, bx));
+                }
+            }
+        }
+        best.map(|(_, _, bx)| bx)
+    }
+
+    /// The next block of the box: Some(true) while it builds (a block every
+    /// 4 ticks), Some(false) when it stands, None without blocks.
+    fn bunker_build(
+        &mut self,
+        host: &mut LanHost,
+        b: &mut Body,
+        bx: Bunker,
+        pos: [f64; 3],
+    ) -> Option<bool> {
+        let f = bx.feet;
+        // (cell, block clicked, face)
+        let mut todo: Vec<([i32; 3], [i32; 3], u8)> = Vec::new();
+        for s in Bunker::sides(bx.front) {
+            let low = [f[0] + s[0], f[1], f[2] + s[1]];
+            let high = [low[0], f[1] + 1, low[2]];
+            todo.push((low, [low[0], low[1] - 1, low[2]], 1));
+            todo.push((high, low, 1));
+        }
+        // The roof, held by a third block on the first side wall.
+        let s0 = Bunker::sides(bx.front)[0];
+        let prop = [f[0] + s0[0], f[1] + 2, f[2] + s0[1]];
+        todo.push((prop, [prop[0], prop[1] - 1, prop[2]], 1));
+        let face = match s0 {
+            [1, 0] => 4,
+            [-1, 0] => 5,
+            [0, 1] => 2,
+            _ => 3,
+        };
+        todo.push(([f[0], f[1] + 2, f[2]], prop, face));
+        let Some(&(_, against, face)) = todo
+            .iter()
+            .find(|(cell, against, _)| self.passable(*cell) && !self.passable(*against))
+        else {
+            return Some(false);
+        };
+        let slot = host.hub.guest(b.conn).and_then(|g| {
+            g.inventory
+                .iter()
+                .position(|s| s.as_ref().is_some_and(|s| THROWAWAY.contains(&&*s.item)))
+        })?;
+        if b.ticks.is_multiple_of(4) {
+            self.companion_hold_slot(host, b, slot);
+            self.companion_use_block(host, b, against, face, pos);
+        }
+        Some(true)
     }
 
     /// Whether a column next to `p` drops more than 3 blocks (or onto
@@ -1831,6 +2041,51 @@ impl Game<'_> {
             }
             return;
         };
+        // A box by the spawner (walls on three sides and a roof, open toward
+        // it): there, built, it waits; the fights come to its opening.
+        let near_spawner = c::horizontal(pos, at_block(spawner)) < 10.0;
+        if near_spawner && run.bunker.is_none_or(|bx| bx.spawner != spawner) {
+            run.bunker = self.bunker_site(spawner, here, &run.bad);
+            log::info!(
+                "[companion] {} nether: box by the spawner {:?}",
+                b.file.name,
+                run.bunker
+            );
+        }
+        if let Some(mut bx) = run.bunker {
+            if here != bx.feet {
+                run.note = "to a spot for a box by the spawner".into();
+                bx.built = false;
+                run.bunker = Some(bx);
+                if self.nether_go(host, b, run, Goal::exact(bx.feet), pos) == Steer::Stuck {
+                    run.bad.push(bx.feet);
+                    run.bunker = None;
+                }
+                return;
+            }
+            b.walk.reset();
+            if !bx.built {
+                run.note = "walling itself in by the spawner".into();
+                match self.bunker_build(host, b, bx, pos) {
+                    Some(true) => return,
+                    Some(false) => bx.built = true,
+                    None => {
+                        // Out of blocks: as it is.
+                        bx.built = true;
+                    }
+                }
+                run.bunker = Some(bx);
+            }
+            run.note = "waiting in the box".into();
+            let front = at_block([
+                bx.feet[0] + bx.front[0],
+                bx.feet[1],
+                bx.feet[2] + bx.front[1],
+            ]);
+            b.yaw = c::yaw_toward(pos, front) as f32;
+            b.pitch = -15.0;
+            return;
+        }
         // At the spawner: it waits there, the fights come to it.
         let goal = Goal {
             at: spawner,
