@@ -1428,6 +1428,8 @@ impl Game<'_> {
             self.note_attacker(damage_type, a);
         }
         let mut outcome = horizon_client::health::BlockOutcome::default();
+        let logged = self.player.as_ref().map_or(0, |p| p.hurt_log.len());
+        let angle = self.view_angle_to(from);
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
             && let Ok(o) = player.hurt_blocking(
@@ -1454,6 +1456,15 @@ impl Game<'_> {
             }
             self.hurt_armor(amount);
             self.thorns(from);
+        }
+        // What the shield was doing, on the hurt just logged.
+        let using = self.using.map(|(_, t)| t);
+        if let Some(p) = self.player.as_mut()
+            && p.hurt_log.len() > logged.min(63)
+            && let Some(r) = p.hurt_log.last_mut()
+        {
+            r.using = using;
+            r.angle = angle;
         }
         if raised {
             self.after_block(outcome, amount, attacker, projectile);

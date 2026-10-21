@@ -720,6 +720,7 @@ impl Game<'_> {
                         "blocked": r.blocked, "taken": r.taken, "hurt": r.hurt,
                         "armor": r.armor, "toughness": r.toughness, "health": r.health,
                         "fire_ticks": r.fire_ticks, "knockback": r.knockback,
+                        "using": r.using, "angle": r.angle,
                     })
                 })
                 .collect();

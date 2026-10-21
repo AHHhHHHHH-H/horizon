@@ -337,6 +337,8 @@ impl PlayerMotion {
             health: after,
             fire_ticks,
             knockback: None,
+            using: None,
+            angle: None,
         });
         Ok(outcome)
     }
@@ -412,6 +414,11 @@ pub struct HurtRecord {
     pub fire_ticks: i32,
     /// The push the hurt gave, if the caller applied one.
     pub knockback: Option<[f64; 3]>,
+    /// For a hit from a point (a mob, a projectile): the item in use and
+    /// for how many ticks (a shield blocks from its delay on), and the
+    /// angle in degrees between the view and the source (blocked below 90).
+    pub using: Option<u32>,
+    pub angle: Option<f32>,
 }
 /// One melee attack on a mob: the damage after the attack strength, the
 /// strength (`getAttackStrengthScale`), and the health it took.
