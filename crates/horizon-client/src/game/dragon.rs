@@ -2753,6 +2753,13 @@ impl Game<'_> {
             sitting: d.phase.sitting(),
             alive: d.alive(),
             parts: std::array::from_fn(|i| corners(d.part_box(i))),
+            strafing: match &d.phase {
+                Phase::Strafe {
+                    player: Some(FightWho::Guest(conn)),
+                    ..
+                } => Some(*conn),
+                _ => None,
+            },
         })
     }
     /// The breath clouds on the ground (the dragon's and its fireballs'):
@@ -2791,6 +2798,8 @@ pub(super) struct DragonView {
     pub sitting: bool,
     pub alive: bool,
     pub parts: [([f64; 3], [f64; 3]); 8],
+    /// The guest a strafe (phase 1) is after, its fireball aimed at them.
+    pub strafing: Option<u32>,
 }
 /// Respawning the dragon with end crystals on the exit portal
 /// (`EndCrystalItem.useOn`, `EnderDragonFight.tryRespawn`, `DragonRespawnStage`).
