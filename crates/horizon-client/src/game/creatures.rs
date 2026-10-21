@@ -1449,6 +1449,9 @@ impl Game<'_> {
                 (player.velocity.y / 2.0 + 0.4).min(0.4),
                 player.velocity.z / 2.0 + dz / l * 0.4,
             );
+            if let Some(r) = player.hurt_log.last_mut() {
+                r.knockback = Some([player.velocity.x, player.velocity.y, player.velocity.z]);
+            }
             self.hurt_armor(amount);
             self.thorns(from);
         }
@@ -2063,9 +2066,7 @@ impl Game<'_> {
                                 [p.previous.x, p.previous.y, p.previous.z],
                                 "minecraft:fireball",
                             );
-                            if !hurt
-                                && let (Some(pl), Some(old)) = (self.player.as_mut(), before)
-                            {
+                            if !hurt && let (Some(pl), Some(old)) = (self.player.as_mut(), before) {
                                 pl.set_remaining_fire_ticks(old);
                             }
                         }
