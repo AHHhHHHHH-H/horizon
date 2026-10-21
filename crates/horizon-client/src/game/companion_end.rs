@@ -609,7 +609,7 @@ impl Game<'_> {
                 .map(|(at, _, _)| c::distance(pos, *at))
                 .fold(f64::INFINITY, f64::min);
             log::info!(
-                "[end] {} hurt {:.1} -> {health:.1} at {:?} phase {} danger '{}' dragon {dragon:?} cloud {cloud:.1} crystals {} fireballs {}",
+                "[end] {} hurt {:.1} -> {health:.1} at {:?} phase {} danger '{}' dragon {dragon:?} cloud {cloud:.1} crystals {} fireballs {} note '{}' raised {:?} perch {:?} blocks {}",
                 b.file.name,
                 run.health - health,
                 pos.map(|v| (v * 10.0).round() / 10.0),
@@ -617,7 +617,26 @@ impl Game<'_> {
                 run.danger,
                 self.crystals.len(),
                 self.dragon_fireball_view().len(),
+                run.note,
+                run.raised,
+                run.perch.map(|p| (p.spot, p.step)),
+                count_any(
+                    &host
+                        .hub
+                        .guest(b.conn)
+                        .map(|g| g.inventory.clone())
+                        .unwrap_or_default(),
+                    &BLOCKS
+                ),
             );
+            if std::env::var_os("HORIZON_END_TRACE").is_some() {
+                let clouds: Vec<_> = self
+                    .breath_view()
+                    .iter()
+                    .map(|(at, r, d)| (at.map(|v| (v * 10.0).round() / 10.0), *r, *d))
+                    .collect();
+                log::info!("[end] clouds then {clouds:?}");
+            }
         }
         run.health = health;
         let grounded = host.hub.guest(b.conn).is_some_and(|g| g.on_ground);
