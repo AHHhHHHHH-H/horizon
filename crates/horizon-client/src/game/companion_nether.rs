@@ -53,7 +53,9 @@ use std::sync::Arc;
 /// Ticks each leg may take before the run ends on it.
 fn budget(leg: Leg) -> u64 {
     match leg {
-        Leg::Enter => 1200,
+        // Back to the portal first: from the route it may be 80 blocks
+        // up or away, making armour (1,200 ran out on seed 987654321).
+        Leg::Enter => 6000,
         Leg::Fortress => 14_400,
         Leg::Blazes => 14_400,
         Leg::Pearls => 24_000,

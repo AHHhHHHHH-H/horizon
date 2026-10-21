@@ -761,13 +761,63 @@ sight section with 0.4 ms of CPU) are the thread being descheduled, not companio
    by caves below y 0; village chests for iron and food.
 4. **Armour**: smelt in two furnaces at once, and look for gold while tunnelling for iron (it
    is often in the same caves).
-5. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) when
-   the coordinator says so. The Nether branch's armour fix (`e0549f88`: a LAN guest's worn
-   armour protects it) is not on this branch: the pieces are worn here but absorb no damage
-   until it is merged.
-   - **Nether**: lit portal → fortress → rods → pearls (bartering) → eyes.
-   - **Stronghold and End**: triangulation → portal room → crystals → dragon.
-   - **Harness**: add the Nether and End milestones.
+5. **Merge the Nether and End branches**: done in round 4 (section 6), with the armour fix;
+   `tools/test_speedrun.py --route` follows the run into the Nether and the End.
+
+## 6. Round 4: one route (`feat/companion-route`)
+
+The three segments are one branch: this one (f2dfd7ce), `feat/companion-end` @ 6bb5c9ec and
+`feat/companion-nether` @ 9b43f2ad, then dce981dc. The Nether's engine fixes are kept (guest armour
+e0549f88, explosions 0782a598, fireball fire 5b7235c2) and the End's own armour and explosion
+workarounds dropped. Chaining: the Overworld run's Done starts the Nether run (Enter → Fill), and a
+Nether run that ends "done" starts the End once. While the Overworld run is on, portal blocks are
+walls to the walker; the Nether's Enter leg has 6,000 ticks (it walks back from where it made the
+armour).
+
+Overworld changes in this round:
+
+- **Night**: in the portal stage it digs in for the night unless it wears two pieces of armour or
+  more (the cast used to go on through the night, and zombies killed it there).
+- **Lava**: flowing lava at its feet or head, beside or below, is walled off at once (not within 2
+  blocks of the mould).
+- **Out of the portal**: standing in its own lit portal during the Overworld run, it steps out.
+- **Explore**: three leg time-outs within 6 blocks send it 12 blocks on and 6 up.
+- **Water clock**: two minutes for a bucket of water, whichever source it is after (two it couldn't
+  reach took turns for 33,000 ticks).
+- **Mobs out of reach**: a mob it was fighting when it got stuck is left alone for two minutes (it
+  took the same one back for 130,000 ticks).
+- **A new body keeps the run**: a body that dies in another dimension now takes the Overworld run
+  back, as it did the Nether run (before, it began again from wood).
+- **Armour order**: `HORIZON_ARMOUR_FIRST=1` makes the armour before the cast. Armour after the
+  portal stays the default:
+
+| Batch (All-knowing, 5 seeds, 48,000 ticks) | portal lit | armour | gold boots | deaths by seed |
+| --- | --- | --- | --- | --- |
+| r9a, armour after | 2/5 (9:14, 22:12) | 1/5 | 1/5 | 0, 0, 0, 15, 2 |
+| r9b, armour first | 0/5 | 3/5 | 1/5 | 22, 1, 1, 9, 1 |
+| r9c, armour after, water clock | 1/5 (23:46) | 0/5 | 0/5 | 3, 0, 0, 0, 0 |
+| r9d, armour after, all fixes | 2/5 (9:05, 30:28) | 1/5 | 1/5 | 2, 0, 5, 0, 7 |
+
+(seeds 20261020, 1, 42, 123456, 987654321.) No death in the portal stage over r9a and r9c (r7w-r8b:
+8 zombies, 5 drownings there); the seeds that didn't light ran out of time. Seed 123456 starts in a
+desert with no tree within 48 blocks: all its deaths are husks, zombies and spiders while it looks
+for wood.
+
+**The chained route** (`--route`, seed 987654321, All-knowing, 200,000 ticks; times game min:s):
+
+| Try | build | how far | where it ended |
+| --- | --- | --- | --- |
+| 1 | merge | portal lit, making armour | stood in its own portal, died in the Nether, the new body began again from wood (fixed: steps out, keeps the run) |
+| 2 | merge | iron kit | never lit: 11 deaths (6 skeletons), kit lost each time |
+| 3 | merge | portal stage | "looking for a lava pool" in one place for 190,000 ticks (fixed: explore escape) |
+| 4 | water clock | lit 12:58, armour 27:49 | the Nether's Enter leg ran out (1,200 ticks) walking back down 80 blocks to the portal (fixed: 6,000) |
+| 5 | Enter 6,000 | frame block 6 of 10 | chased a mob it couldn't reach for 130,000 ticks (fixed: left alone) |
+| 6 | Enter 6,000 | iron kit | 11 deaths, then starving in a water hole it couldn't pillar out of (not fixed) |
+| 7 | final | lit 10:21, armour 22:07, Nether 23:04 | fortress located; killed by a hoglin 12 min into the Nether |
+| 8 | final | lit 54:35 (6 deaths), armour 70:01 | in the Nether after a 4.5 min walk back; killed by a piglin on the way to a fortress 833 blocks off |
+
+Both of the last two tries reach the Nether; the next deaths are the Nether leg's (hoglins and
+piglins on the way to the fortress).
 
 ## Appendix: tests run
 

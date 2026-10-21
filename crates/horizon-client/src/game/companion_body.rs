@@ -665,8 +665,11 @@ impl Game<'_> {
                     .map(|m| m.id);
             }
         }
+        let until = now.max(0) as u64;
+        b.shunned.retain(|&(_, t)| t > until);
         if let Some(id) = pick
             && !alive(id).is_some_and(calm_enderman)
+            && !b.shunned.iter().any(|&(i, _)| i == id)
         {
             b.target = Some(id);
             b.ordered = false;

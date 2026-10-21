@@ -112,6 +112,9 @@ struct Explore {
     since: u64,
     /// When its current leg (or lead) began.
     leg_since: u64,
+    /// Legs given up in a row near one spot, and where.
+    stalls: u32,
+    stall_at: Option<[i32; 3]>,
     /// What it is after, and the leads it followed (what it saw that may
     /// lead there: trees far off, a cave below).
     want: Want,
@@ -187,6 +190,9 @@ pub(super) struct Run {
     shelter: Option<[i32; 3]>,
     /// The armour it wears (not in its inventory).
     worn: Vec<String>,
+    /// The armour stage before the cast (`HORIZON_ARMOUR_FIRST`), not
+    /// after the portal is lit.
+    armour_first: bool,
     no_shelter: Option<i64>,
     pub deaths: u32,
     night: Option<i64>,
@@ -236,6 +242,7 @@ impl Run {
             death: None,
             shelter: None,
             worn: Vec::new(),
+            armour_first: std::env::var_os("HORIZON_ARMOUR_FIRST").is_some(),
             no_shelter: None,
             deaths: 0,
             night: None,
@@ -266,6 +273,15 @@ impl Run {
             s = s.next();
         }
         self.stage = s;
+    }
+    /// The stage after `stage`: the armour before the cast or after it.
+    fn following(&self, stage: Stage) -> Stage {
+        match (stage, self.armour_first) {
+            (Stage::Kit, true) => Stage::Armour,
+            (Stage::Armour, true) => Stage::Portal,
+            (Stage::Portal, true) => Stage::Done,
+            (s, _) => s.next(),
+        }
     }
     /// Still on the overworld route (the portal not lit and its armour
     /// not made).
@@ -682,6 +698,27 @@ impl Game<'_> {
             run.ignored.push(id);
             run.backing = None;
         }
+        // In its own portal before the overworld is done (fetching coal by
+        // it, it stood there 4 seconds and went through): out, to the side.
+        if run.overworld() {
+            let f = feet(pos);
+            let portal = |q: [i32; 3]| &*self.block_name(q) == "minecraft:nether_portal";
+            if portal(f) || portal([f[0], f[1] + 1, f[2]]) {
+                let out = [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [-2, 0], [0, 2], [0, -2]]
+                    .iter()
+                    .map(|d| [f[0] + d[0], f[1], f[2] + d[1]])
+                    .find(|q| {
+                        let up = [q[0], q[1] + 1, q[2]];
+                        self.passable(*q) && self.passable(up) && !portal(*q) && !portal(up)
+                    });
+                if let Some(q) = out {
+                    run.note = "out of the portal".into();
+                    self.companion_stop_dig(host, b);
+                    let _ = self.companion_steer(host, b, [f64::from(q[0]) + 0.5, f64::from(q[1]), f64::from(q[2]) + 0.5], 0.3, false);
+                    return true;
+                }
+            }
+        }
         if let Some((id, creeper)) = self
             .mobs
             .iter()
@@ -787,8 +824,12 @@ impl Game<'_> {
                 );
                 run.moving = (key, now);
                 b.walk.reset();
-                // Whatever held it (a mob it can't get at): back to the route.
-                b.target = None;
+                // Whatever held it (a mob it can't get at): back to the route,
+                // that mob left alone for two minutes (it took it straight
+                // back, for 130,000 ticks, on seed 987654321).
+                if let Some(id) = b.target.take() {
+                    b.shunned.push((id, now + 2400));
+                }
                 if b.work.tasks.is_empty() {
                     b.skill = Skill::Run;
                 }
@@ -917,6 +958,27 @@ impl Game<'_> {
             return;
         }
         if run.stage == Stage::Portal {
+            // Lava flowing at its side (a spill by the pool, a flow down a
+            // cave wall): a block in it first, away from the mould.
+            if b.ticks.is_multiple_of(5) && run.cast.as_ref().is_none_or(|c| c.trying.is_none()) {
+                let f = feet(pos);
+                let flow = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]]
+                    .iter()
+                    .flat_map(|d| [0, 1].map(|up| [f[0] + d[0], f[1] + d[1] + up, f[2] + d[2]]))
+                    .find(|q| {
+                        let s = self.world.block(q[0], q[1], q[2]).0;
+                        let fl = self.res.facts().get(horizon_world::registry::BlockStateId(s));
+                        fl.fluid == Fluid::Lava
+                            && !self.is_source(s, Fluid::Lava)
+                            && !b.walk.keep.iter().any(|k| (0..3).all(|i| (k[i] - q[i]).abs() <= 2))
+                    });
+                if let Some(q) = flow
+                    && self.companion_place_block(host, b, q, pos)
+                {
+                    log::info!("[companion] {} run: walled off lava at {q:?}", b.file.name);
+                    return;
+                }
+            }
             self.companion_cast_tick(host, b, run, pos, &inventory);
             return;
         }
@@ -980,6 +1042,8 @@ impl Game<'_> {
                     legs: 0,
                     since: now,
                     leg_since: 0,
+                    stalls: 0,
+                    stall_at: None,
                     want: Want::of(&lack),
                     visited: Vec::new(),
                 });
@@ -990,13 +1054,13 @@ impl Game<'_> {
 
     fn companion_run_next(&mut self, run: &mut Run, now: u64) {
         log::info!("[companion] run: {} done at {}", run.stage.name(), now - run.start);
-        run.stage = run.stage.next();
+        run.stage = run.following(run.stage);
         // Armour is made once: a stage that ran out of time, or armour
         // lost in a death, isn't gone after again.
         if run.stage == Stage::Armour
             && (run.failed.iter().any(|f| f.starts_with("armour")) || run.splits.iter().any(|(s, _)| s == "armour"))
         {
-            run.stage = Stage::Portal;
+            run.stage = run.following(Stage::Armour);
         }
         run.stage_start = now;
         run.explore = None;
@@ -1404,6 +1468,8 @@ impl Game<'_> {
                     legs: 0,
                     since: self.world.game_time.max(0) as u64,
                     leg_since: 0,
+                    stalls: 0,
+                    stall_at: None,
                     want: Want::Other,
                     visited: Vec::new(),
                 });
@@ -1460,6 +1526,27 @@ impl Game<'_> {
             ex.goal = None;
             ex.heading += 2.1;
             b.walk.reset();
+            // Three headings given up from one spot (a pocket at y -50
+            // kept it 190,000 ticks): up and out of it first.
+            let f = feet(pos);
+            if ex.stall_at.is_some_and(|q| (0..3).all(|k| (q[k] - f[k]).abs() <= 6)) {
+                ex.stalls += 1;
+            } else {
+                ex.stall_at = Some(f);
+                ex.stalls = 1;
+            }
+            if ex.stalls >= 3 {
+                ex.stalls = 0;
+                let (dx, dz) = (ex.heading.cos(), ex.heading.sin());
+                let goal = Goal {
+                    at: [f[0] + (dx * 12.0) as i32, f[1] + 6, f[2] + (dz * 12.0) as i32],
+                    near: 3.0,
+                    vertical: 4,
+                };
+                log::info!("[companion] {} run: exploring stuck at {f:?}: getting out", b.file.name);
+                run.escape = Some((goal, now + 1200));
+                return;
+            }
         }
         let goal = match ex.goal {
             Some(g) => g,
@@ -1821,6 +1908,8 @@ impl Game<'_> {
                 legs: 0,
                 since: self.world.game_time.max(0) as u64,
                 leg_since: 0,
+                stalls: 0,
+                stall_at: None,
                 want: Want::Other,
                 visited: Vec::new(),
             });
@@ -2383,12 +2472,18 @@ impl Game<'_> {
         if b.target.is_some() && !sheltered {
             b.target = None;
         }
-        if casting && armed && health >= 8.0 && !sheltered {
+        // By the pool (the cast) only in armour: zombies and skeletons
+        // killed it there, away from any cover, more than anything else.
+        let armoured = run.worn.len() >= 2;
+        let works_on = casting && fights && (run.stage != Stage::Portal || armoured);
+        if works_on && !sheltered {
             run.shelter = None;
             return false;
         }
-        // Healed in its pit: back to work (the night is long).
-        if casting && sheltered && health >= 18.0 {
+        // Healed in its pit: back to work (the night is long), if it can
+        // fight what waits above (bare-handed it went up into the horde
+        // round the spawn, and died again).
+        if works_on && sheltered && health >= 18.0 {
             log::info!("[companion] {} run: healed, out of the pit", b.file.name);
             run.shelter = None;
             b.walk.reset();
@@ -2848,15 +2943,19 @@ impl Cast {
     /// After water `w`: false once two minutes went by on it (it is then
     /// given up).
     fn after_water(&mut self, w: [i32; 3], now: u64) -> bool {
+        // The clock runs for the bucket, whichever source it is after: two
+        // it can't get at took turns for 33,000 ticks (seed 42, r9a).
         match self.water_target {
-            Some((q, t)) if q == w => {
-                if now > t + 2400 {
-                    self.bad.push(w);
-                    self.water_target = None;
-                    return false;
+            Some((q, t)) if now > t + 2400 => {
+                self.bad.push(w);
+                if q != w {
+                    self.bad.push(q);
                 }
+                self.water_target = None;
+                return false;
             }
-            _ => self.water_target = Some((w, now)),
+            Some((_, t)) => self.water_target = Some((w, t)),
+            None => self.water_target = Some((w, now)),
         }
         true
     }

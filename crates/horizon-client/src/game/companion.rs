@@ -80,6 +80,9 @@ pub(super) struct Body {
     /// on (in a nook it cannot reach).
     pub reaching: Option<(u32, u64)>,
     pub out_of_reach: Vec<u32>,
+    /// Mobs it stopped fighting, and until when (game time): out of its
+    /// reach, it would chase them for ever.
+    pub shunned: Vec<(u32, u64)>,
     pub recent: VecDeque<String>,
     pub random: u64,
     pub ticks: u64,
@@ -233,6 +236,7 @@ impl Body {
             seen: Vec::new(),
             reaching: None,
             out_of_reach: Vec::new(),
+            shunned: Vec::new(),
             recent: VecDeque::new(),
             random: uuid as u64 ^ (uuid >> 64) as u64 | 1,
             ticks: 0,
@@ -299,6 +303,9 @@ pub(super) struct Companions {
     /// The Nether part of a body that left the hub (parked, or dead and
     /// back alone), by name: picked up again when it comes back.
     pub nether: std::collections::HashMap<String, Box<super::companion_nether::NetherRun>>,
+    /// Its overworld route the same way (it died in the Nether by its
+    /// portal, and the new body began again from wood).
+    pub runs: std::collections::HashMap<String, Box<super::companion_run::Run>>,
     /// What the bodies told the brain: the companion's name and the report.
     pub reports: VecDeque<(String, CompanionReport)>,
     /// Mobs a companion hit, and when: their deaths are its kills.
@@ -526,6 +533,15 @@ impl Game<'_> {
             b.commands
                 .retain(|c| !matches!(c, CompanionCommand::Run { .. }));
         }
+        // Its overworld route too, where it was.
+        b.run = self.companions.runs.remove(&file.name);
+        if b.run.is_some() {
+            b.commands
+                .retain(|c| !matches!(c, CompanionCommand::Run { .. } | CompanionCommand::RunFrom { .. }));
+            if b.nether.is_none() {
+                b.skill = Skill::Run;
+            }
+        }
         b.last_health = health;
         if beside_owner {
             // Called back by name: with its owner, whatever it did before.
@@ -596,6 +612,9 @@ impl Game<'_> {
         if let Some(mut run) = b.nether.take() {
             run.body_ticks = b.ticks;
             self.companions.nether.insert(b.file.name.clone(), run);
+        }
+        if let Some(run) = b.run.take() {
+            self.companions.runs.insert(b.file.name.clone(), run);
         }
         b.keep_skill();
         self.companion_save_senses(&b);
