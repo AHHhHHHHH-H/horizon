@@ -112,6 +112,9 @@ struct Bunker {
     /// Toward the spawner (x, z): the opening.
     front: [i32; 2],
     built: bool,
+    /// Walled in where it stood to heal (no spawner by): forgotten once it
+    /// has healed and opened it.
+    heal_only: bool,
 }
 
 impl Bunker {
@@ -227,6 +230,9 @@ pub(super) struct NetherRun {
     bunker: Option<Bunker>,
     /// Its box closed on the open side while it heals.
     sealed: bool,
+    /// The blaze it is after (id, since, its health then): one it can't
+    /// hurt for a while (out of reach, no way there) is left alone.
+    blaze_engaged: Option<(u32, u64, f32)>,
 }
 
 impl NetherRun {
@@ -283,6 +289,7 @@ impl NetherRun {
             chase: None,
             bunker: None,
             sealed: false,
+            blaze_engaged: None,
         }
     }
     /// A report the body made: deaths are kept with their cause, kills
@@ -666,11 +673,13 @@ impl Game<'_> {
             b.pitch = 90.0;
             return true;
         }
-        // Magma cubes (hard hits, they split, fire doesn't hurt them): not
-        // fought, it gets out of their way (they hop slowly).
+        // Magma cubes (hard hits, they split, fire doesn't hurt them): low,
+        // it gets out of their way (they hop slowly); else they are fought
+        // like hoglins, below (one after it can't be outrun for long).
         let cube = self
             .mobs
             .iter()
+            .filter(|_| health < 8.0)
             .filter(|m| m.alive() && &*m.kind.id == "minecraft:magma_cube")
             .map(mob_at)
             .filter(|at| c::distance(*at, pos) < 6.0 && (at[1] - pos[1]).abs() < 3.0)
@@ -875,6 +884,7 @@ impl Game<'_> {
             .filter(|m| {
                 m.alive()
                     && ((&*m.kind.id == "minecraft:hoglin" && !m.is_baby())
+                        || &*m.kind.id == "minecraft:magma_cube"
                         || (shielded && &*m.kind.id == "minecraft:wither_skeleton"))
             })
             .filter(|m| {
@@ -887,7 +897,12 @@ impl Game<'_> {
                     m.id,
                     mob_at(m),
                     box_distance(from, m.bounds()),
-                    if m.ai.swinging { 1 } else { m.extra.anim_ticks },
+                    // A magma cube shows no swing: any moment is one.
+                    if m.ai.swinging || &*m.kind.id == "minecraft:magma_cube" {
+                        1
+                    } else {
+                        m.extra.anim_ticks
+                    },
                 )
             })
             .min_by(|x, y| x.2.total_cmp(&y.2));
@@ -988,6 +1003,11 @@ impl Game<'_> {
                 })
             })
             .filter(|(_, _, f)| f.sees || f.reach < 6.0)
+            .filter(|(id, _, _)| {
+                !run.ignored
+                    .iter()
+                    .any(|&(i, until)| i == *id && now < until)
+            })
             .collect();
         if foes.is_empty() {
             self.companion_shield(host, b, run, None, pos);
@@ -1019,6 +1039,51 @@ impl Game<'_> {
         // Its box by the spawner is where it heals: hurt, it goes in, closes
         // it, eats and heals out of sight, then opens it and fights on in the
         // open (from inside the blazes keep their distance and none die).
+        // Hurt with no box near: walled in where it stands (the side toward
+        // the blaze first), to close it and heal in.
+        let box_near = run
+            .bunker
+            .is_some_and(|bx| bx.built && c::horizontal(pos, at_block(bx.feet)) < 10.0);
+        let here = feet(pos);
+        if health < 12.0
+            && !box_near
+            && foes.iter().any(|f| f.2.sees)
+            && foes.iter().all(|f| f.2.reach > 4.0)
+            && b.eating.is_none()
+            && self.floor([here[0], here[1] - 1, here[2]])
+            && !self.on_edge(here)
+        {
+            let nearest = foes
+                .iter()
+                .min_by(|x, y| x.2.reach.total_cmp(&y.2.reach))
+                .map_or(pos, |f| f.1);
+            let (dx, dz) = (nearest[0] - pos[0], nearest[2] - pos[2]);
+            // The opening away from it.
+            let front = if dx.abs() >= dz.abs() {
+                [-(dx.signum() as i32), 0]
+            } else {
+                [0, -(dz.signum() as i32)]
+            };
+            let bx = run
+                .bunker
+                .filter(|bx| bx.feet == here && bx.heal_only)
+                .unwrap_or(Bunker {
+                    spawner: run.spawner.unwrap_or(here),
+                    feet: here,
+                    front,
+                    built: false,
+                    heal_only: true,
+                });
+            run.bunker = Some(bx);
+            b.walk.reset();
+            b.keys = Default::default();
+            self.companion_shield(host, b, run, None, pos);
+            if self.bunker_build(host, b, bx, pos) == Some(true) {
+                run.note = "walling itself in to heal".into();
+                return true;
+            }
+            run.bunker = Some(Bunker { built: true, ..bx });
+        }
         if let Some(bx) = run.bunker
             && bx.built
         {
@@ -1040,7 +1105,27 @@ impl Game<'_> {
         });
         let charged = now.saturating_sub(run.last_swing) >= SWING;
         let list: Vec<Foe> = foes.iter().map(|f| f.2).collect();
-        match n::blaze_stance(health, charged, &list, arrows) {
+        let stance = n::blaze_stance(health, charged, &list, arrows);
+        if let Stance::Strike(i) | Stance::Block(i) | Stance::Close(i) | Stance::Shoot(i) = stance {
+            let id = foes[i].0;
+            let hp = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map_or(0.0, |m| m.health);
+            match run.blaze_engaged {
+                Some((e, since, start)) if e == id => {
+                    if hp < start {
+                        run.blaze_engaged = Some((id, now, hp));
+                    } else if now.saturating_sub(since) > 400 {
+                        run.ignored.push((id, now + 1200));
+                        run.blaze_engaged = None;
+                    }
+                }
+                _ => run.blaze_engaged = Some((id, now, hp)),
+            }
+        }
+        match stance {
             Stance::Strike(i) => {
                 let (id, at, _) = foes[i];
                 self.companion_shield(host, b, run, None, pos);
@@ -1329,6 +1414,7 @@ impl Game<'_> {
                     feet: c,
                     front,
                     built: false,
+                    heal_only: false,
                 };
                 // Near where it is (each step there is under fire), then few
                 // blocks.
@@ -1469,6 +1555,9 @@ impl Game<'_> {
         {
             run.note = "opening its box".into();
             return true;
+        }
+        if bx.heal_only {
+            run.bunker = None;
         }
         false
     }

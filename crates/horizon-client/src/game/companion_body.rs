@@ -1045,11 +1045,65 @@ impl Game<'_> {
         if self.look_at_entity(host, gi, entity).is_none() {
             return;
         }
+        // A sword's sweep (Player.attack: a charged blow on the ground) hits
+        // what stands beside the target too: by a calm zombified piglin,
+        // piglin or enderman, the blow is struck with something else (else
+        // the whole group turns on it).
+        let target = self.mobs.iter().find(|m| m.id == id).map(mob_at);
+        let calm_near = target.is_some_and(|t| {
+            self.mobs.iter().any(|m| {
+                m.id != id
+                    && m.alive()
+                    && m.ai.target.is_none()
+                    && matches!(
+                        &*m.kind.id,
+                        "minecraft:zombified_piglin" | "minecraft:piglin" | "minecraft:enderman"
+                    )
+                    && c::distance(mob_at(m), t) < 3.0
+            })
+        });
+        let other = calm_near
+            .then(|| {
+                let g = host.hub.guest(b.conn)?;
+                let items = self.res.items();
+                let sword = |s: &ItemStack| {
+                    items
+                        .item_tags
+                        .get("minecraft:swords")
+                        .is_some_and(|t| t.contains(&*s.item))
+                };
+                let held = g.inventory.get(g.selected)?.as_ref()?;
+                if !sword(held) {
+                    return None;
+                }
+                // The best other hotbar item to hit with, else the bare hand.
+                (0..9)
+                    .filter(|&i| g.inventory[i].as_ref().is_none_or(|s| !sword(s)))
+                    .max_by(|&a, &b| {
+                        let dmg = |i: usize| {
+                            g.inventory[i]
+                                .as_ref()
+                                .and_then(|s| items.get(&s.item))
+                                .map_or(0.0, |it| it.attack_damage)
+                        };
+                        dmg(a).total_cmp(&dmg(b))
+                    })
+            })
+            .flatten();
         // The host's own "last hurt mob" is its owner's (wolves follow it).
         let owner_hurt = self.combat.last_hurt_mob;
         let hit = self
             .as_guest(host, b.conn, |g| {
-                g.attack_strength_scale() >= 0.95 && g.attack()
+                let held = g.selected;
+                if let Some(i) = other {
+                    g.selected = i;
+                }
+                // Only the mob it aims at: another in the way (a calm
+                // zombified piglin between it and a blaze) is not hit.
+                let aimed = g.mob_hit().is_some_and(|(i, _)| g.mobs[i].id == id);
+                let hit = aimed && g.attack_strength_scale() >= 0.95 && g.attack();
+                g.selected = held;
+                hit
             })
             .unwrap_or(false);
         self.combat.last_hurt_mob = owner_hurt;

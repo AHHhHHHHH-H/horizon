@@ -103,6 +103,8 @@ def gear(endpoint, args, segment):
         items.append('shield')
     if args.bow:
         items += ['bow', 'arrow 32']
+    if args.armour:
+        items += ['iron_helmet', 'iron_chestplate', 'iron_leggings']
     if segment in ('pearls', 'home'):
         items.append('blaze_rod 7')
     if segment == 'home':
@@ -190,9 +192,15 @@ def one_run(endpoint, seed, args, segment, out):
     done = 0
     nether = {}
     still, dumped = [], set()
+    hurts = []
+    command(endpoint, 'hurtlog')
     while done < BUDGET[segment] and time.monotonic() - started < args.wall:
         sprint(endpoint, args.slice)
         done += args.slice
+        # Every hurt it took (the game's hurtlog keeps the last 64 per slice).
+        for p in command(endpoint, 'hurtlog')['players']:
+            if p['name'] == NAME:
+                hurts += [dict(h, slice=done) for h in p['hurts']]
         c = runner(endpoint)
         if c is None:
             result['error'] = 'the runner is gone'
@@ -237,6 +245,12 @@ def one_run(endpoint, seed, args, segment, out):
         'rods': nether.get('rods'), 'pearls': nether.get('pearls'), 'eyes': nether.get('eyes'),
         'filled': nether.get('filled'), 'throws': nether.get('throws'), 'stronghold': nether.get('stronghold'),
         'hud': hud,
+        'taken_by_source': {k: round(sum(h['taken'] for h in hurts if h['source'] == k), 1)
+                            for k in sorted({h['source'] for h in hurts})},
+        'fireballs_blocked': [sum(1 for h in hurts if h['source'] == 'minecraft:fireball' and h['blocked'] > 0),
+                              sum(1 for h in hurts if h['source'] == 'minecraft:fireball')],
+        'hurts_last': [(h['t'], h['source'].replace('minecraft:', ''), h['blocked'] > 0, round(h['taken'], 1),
+                        round(h['health'], 1)) for h in hurts[-30:]],
         'milestones': [r for r in reports if ':' in r and not r.startswith('hurt')][-30:],
     })
     if segment == 'stronghold' and nether.get('stronghold'):
@@ -254,7 +268,7 @@ def one_run(endpoint, seed, args, segment, out):
 def run_seed(args, segment, seed):
     results = ROOT / '.local/companion-nether'
     results.mkdir(parents=True, exist_ok=True)
-    name = f'{segment}-{LEVELS[args.perception]}-{seed}'
+    name = f'{segment}-{LEVELS[args.perception]}{args.tag}-{seed}'
     with tempfile.TemporaryDirectory(prefix='horizon-nether-') as directory:
         home = Path(directory) / 'game'
         home.mkdir()
@@ -335,6 +349,9 @@ def main():
     parser.add_argument('--no-shield', action='store_true')
     parser.add_argument('--slice', type=int, default=SLICE, help='ticks per sample (smaller to trace a fight)')
     parser.add_argument('--bow', action='store_true', help='give a bow and arrows too')
+    parser.add_argument('--armour', action='store_true',
+                        help='iron helmet, chestplate and leggings too (the gold boots stay for the piglins)')
+    parser.add_argument('--tag', default='', help='a suffix for the result files')
     parser.add_argument('--rods', type=int)
     parser.add_argument('--pearls', type=int)
     args = parser.parse_args()
@@ -344,7 +361,7 @@ def main():
         results = list(pool.map(lambda s: run_seed(args, args.segment, s), seeds))
     report = table(args.segment, LEVELS[args.perception], results)
     print(report)
-    out = ROOT / '.local/companion-nether' / f'report-{args.segment}-{LEVELS[args.perception]}.md'
+    out = ROOT / '.local/companion-nether' / f'report-{args.segment}-{LEVELS[args.perception]}{args.tag}.md'
     out.write_text(report + '\n')
 
 
