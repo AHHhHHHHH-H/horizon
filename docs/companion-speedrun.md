@@ -604,105 +604,98 @@ still fails.
 `tools/test_speedrun.py`: 5 fixed seeds (20261020, 1, 42, 123456, 987654321), Easy, 48,000 game
 ticks (40 game minutes) per run, `/tick sprint`, Watch mode, 5 clients in parallel on the Mac mini.
 Times are game min:s from the start of the run. Success counts the seeds that reached the
-milestone.
+milestone. Final run (round 2, commit of this section):
 
 | Milestone | All-knowing | median | Fair | median |
 | --- | --- | --- | --- | --- |
-| wooden pickaxe | 4/5 | 0:26 | 5/5 | 0:26 |
-| stone tools | 4/5 | 10:20 | 5/5 | 0:55 |
-| food (4 cooked) | 2/5 | 8:26 | 0/5 | - |
-| 10 iron | 3/5 | 3:09 | 0/5 | - |
-| iron pickaxe | 3/5 | 8:10 | 0/5 | - |
-| buckets | 3/5 | 8:10 | 0/5 | - |
+| wooden pickaxe | 5/5 | 0:14 | 5/5 | 0:17 |
+| stone tools | 5/5 | 1:02 | 4/5 | 0:54 |
+| food (4 cooked) | 2/5 | 6:23 | 0/5 | - |
+| 10 iron | 4/5 | 7:52 | 0/5 | - |
+| iron pickaxe | 4/5 | 10:31 | 0/5 | - |
+| buckets | 4/5 | 10:31 | 0/5 | - |
 | 10 obsidian | 0/5 | - | 0/5 | - |
 | portal lit | 0/5 | - | 0/5 | - |
-| first night survived | 4/5 | 19:07 | 4/5 | 19:07 |
+| first night survived | 2/5 | 19:05 | 5/5 | 19:05 |
 
-Runs are not deterministic: mobs, drops and timing vary, so the same seeds give different results
-from one run to the next. Over the last ten All-knowing runs, each milestone's success varied as
-follows:
-
-| Milestone | Seeds reaching it (of 5) |
-| --- | --- |
-| wood and stone tools | 3 to 5 |
-| iron and the kit | 1 to 4 |
-| food | 0 to 4 |
-
-The 10:20 stone median comes from two seeds stuck on "no cobbled deepslate" for a while (see
-below); the other three took under 1:05. Obsidian was reached once, at 28:02 (seed 1), but that
-portal never lit. In an earlier Fair run, 2 of 5 seeds reached 10 iron (median 14:19) and 1 reached
-the iron pickaxe (24:32).
+The run before it (same code but for the stage-goal fix, see below) lit a portal on seed
+987654321 at 12:38 (tick 15,172), on All-knowing: the first lit portal in natural terrain. That run
+had 1/5 obsidian and 1/5 lit, food 2/5, iron 3/5. Runs are not deterministic (mobs, drops, timing),
+so the same seeds give different results from one run to the next; the lit portal did not repeat in
+the final run, where two seeds ran out of time in the portal stage and one in the kit stage.
 
 On a prepared platform, `tools/test_companion_portal.py` (kit given, a 5x5 lava pool, one water
-source) casts all ten blocks and lights the portal in 1350-2200 ticks. It is still flaky, passing
-in about half the runs. When it fails, it is out of reach of lava from that pool after five or six
-blocks, or the water spills over the frame's open top-right corner during the last pour.
+source) casts all ten blocks and lights the portal in 9 of 10 runs, in 1,180-2,410 ticks. The one
+failure swam in spilled water by the pool and gave the pool up.
+
+The method kept is the mould (option c), fixed: front stands at heights 1 and 2, lava taken from
+the pool's nearest sources first, water seen through blocks, water that can't be reached left in
+the frame rather than buried, and stands dug out when a block lands in them. The dug frame slot by
+a lava pool (a) and the ruined portal (b) are not built: on the platform the fixed mould reached
+9/10, and every real-seed failure so far is getting to a pool, not the cast itself.
 
 ### Hard failures and their causes
 
-- **Portal cast in natural terrain (0/5)**: the cast is still the wall. Causes seen:
-  - Pools under the ground or in caves that the walker can't plan a way to.
-  - Water poured into the frame and not taken back, which then floods the next block.
-  - A side frame block (L2) whose stand needs a raised floor the mould doesn't build.
-  - The frame's interior full of water when it comes to lighting (now drained first).
-  - The watchdogs now move it to another pool instead of looping, but a full cast in natural
-    terrain hasn't happened yet.
-- **Desert spawn (seed 123456)**: no tree within 48 blocks. It walks the sand at night and husks
-  kill it over and over (8 to 22 deaths). Wood comes late or never. The search should go further
-  before the first night and dig in at dusk on any level.
-- **Food 0/5 in the final runs**: hunting works, but the four cooked meats wait for the furnace in
-  the kit stage. When the kit stage runs out of time or the smelt stalls, the food split never
-  comes. It should cook with the first furnace instead.
-- **Iron on Fair (0/5 in the final run)**: Fair has no x-ray. "Collect raw iron" fails at once with
-  "no raw iron within 48 blocks", and the tunnels at y 16 don't find 10 ore in the 40 minutes. It
-  doesn't follow the caves it sees from the surface.
-- **Stone on some seeds**: when the cobblestone it can see stalls, the planner turns to cobbled
-  deepslate (none near). It then searches downward for a long while before it comes back to plain
-  stone.
-- **Kit stage**: "no room to place it": the crafting table or furnace has nowhere to go in a
-  1x2 tunnel. It needs to dig a pocket first.
-- **Deaths**: these came from drowning and from fish and squid pushing it under. The air reflex
-  now prevents most of them.
+- **Portal cast in natural terrain (1 of 10 seed runs on All-knowing)**:
+  - Pools underground or behind cliffs: walks to them fail or take minutes of backing off.
+  - Deaths on the way: falls, lava and drowning in deep water. The "hurt by squid/fish" reports
+    are drowning damage (2 per hit) misattributed. Seeds 42 and 987654321 died 11 and 12 times in
+    the final run.
+  - Time: on two seeds the kit was ready by 10-11 minutes and the cast was still going at 40.
+- **Fair iron (0/5)**: "no raw iron within 48 blocks". It now follows leads (ore it has seen,
+  floors well below it with dry air above) and digs 40-block legs, but no seed reached 10 iron in
+  40 minutes. Following caves from the surface needs a real cave finder, not single floor cells.
+- **Desert spawn (seed 123456)**: it now walks to the nearest remembered tree, but on Fair it saw
+  none and spent the run on wood and stone. Village chests are not used.
+- **Food 2/5**: hunting works when animals are near. Hunger now sends it hunting whatever the
+  stage, but cooked food still comes late, with the kit's furnace.
+- **Stations**: when no spot is free in a tunnel it digs the cell beside it first, which fixed
+  "no room to place it".
+- **Stage goals** were counts of what was missing, read as stock to hold, so the planner thought
+  it was done and sat on "looking for raw iron" with an empty plan. Goals are now stock counts.
 
-### Tick cost and spikes (task 8)
+### Tick cost and spikes
 
-The companion's own work per tick, measured by `companion cost` over whole runs:
+`companion cost` over whole runs, one client alone (24,000 ticks, seed 1, other agents' work still
+running on the machine). Wall time includes preemption; CPU time is the companion thread's own:
 
 | | All-knowing | Fair |
 | --- | --- | --- |
-| mean ms per tick | 0.10-0.35 | 0.06-1.29 |
-| max single tick (ms) | 26-107 | 26-63 |
-| sight max (ms) | 4-34 | - |
+| CPU p99 (ms) | 0.35 | 0.48 |
+| CPU p99.9 (ms) | 1.77 | 0.73 |
+| CPU max (ms) | 2.05 | 1.47 |
+| ticks over 2 ms CPU | 2 of 24,107 | 0 of 24,145 |
+| wall p99 / p99.9 (ms) | 0.39 / 3.04 | 0.51 / 2.77 |
+| wall max (ms) | 9.9 | 67 |
 
-The earlier 1.9-5.5 ms ticks and the spike "during smelt" had three causes:
+Every section over 2 ms of wall time used under 1.3 ms of CPU: the wall peaks (the 67 ms one is a
+sight section with 0.4 ms of CPU) are the thread being descheduled, not companion work. Round 1's
+26-107 ms ticks had these causes, now fixed:
 
-1. **First-use cache builds** (sight table, block drops, recipe book), which took 30-180 ms once.
-   They are now built when the companion joins (`companion_warm_caches`).
-2. **The walker replanning every tick** when a plan was undone at once, at 40-45 ms each. It now
-   plans every 5 ticks at most, and every 20 after a failed plan.
-3. **Slow A\* nodes.** Each node built new vectors and recomputed every cell. Buffers are now
-   reused and cells cached by position.
-
-Each search is also capped at 12 ms. The worst ticks left are single walk plans (checked against
-the cap every 256 nodes) and the first block search of a collect: 26-107 ms, measured with five
-clients in parallel on a shared CPU. Sight peaks (up to about 60 ms) come when a block search over
-48 blocks starts. Both are rare: the mean is well under a millisecond on most seeds.
+1. **Advancements.** Each award scanned all 1,739 `recipe_unlocked` criteria, and each inventory
+   change tested every `inventory_changed` criterion. Both are now indexed (by recipe id and by
+   plain item id) and the indexes are built when the tree loads, on the loader thread.
+2. **Planner state.** The tech planner cloned its stock map and action list on every node; it now
+   uses `Rc<str>` keys and a shared linked list of actions.
+3. **Walk plans.** The A\* search is resumable and runs in 1.5 ms slices, one per tick, with the
+   plan applied when it finishes.
+4. **Block searches** are spread over ticks (`BlockSearch`, one section per tick) and stop at a
+   cap of finds; the harvest checks and the memory scan are memoized.
 
 ### Next, toward the Nether and the End
 
-1. **Make the overworld cast work.** Pick sites by line of sight to a surface pool, and add the
-   raised stands to the mould. Check that each poured water source is taken back before the next
-   block. A mould-free variant (dig a 4x5 slot into a wall beside the pool) may be more reliable.
-   The fallback is a ruined portal's obsidian plus a bucket cast of the missing blocks.
-2. **Cook with the first furnace** (the food split) and dig a pocket before placing stations.
-3. **Fair iron**: follow visible caves down, and branch-mine at y 16 in longer straight tunnels.
-4. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) into
-   this route:
-   - **Nether**: lit portal → fortress → rods → pearls (bartering) → eyes, using this walker
-     (bridging over lava, pillaring) and these perception levels. Ghast and blaze fights need the
-     bow and shield logic from the body.
-   - **Stronghold and End**: triangulation → portal room → crystals → dragon, on the engine work
-     already merged (E1-E6).
+1. **Reach pools.** Most cast failures are getting to the lava: pick pools the walker can already
+   plan a way to, bridge or dig stairs to the rest, and cast at the pool rather than walking back.
+2. **Fewer deaths.** Swim up before the air runs out in deep water, avoid fall-prone cliffs at
+   night, and stop retrying the spot it died at.
+3. **Fair iron**: a cave finder (follow open air downward from cave mouths and ravines), then
+   long y 16 tunnels.
+4. **Fallbacks for the cast**: a ruined portal's obsidian (known to Scout and All-knowing) and a
+   dug frame slot by a surface pool.
+5. **Merge the Nether and End branches** (`feat/companion-nether`, `feat/companion-end`) when they
+   are ready:
+   - **Nether**: lit portal → fortress → rods → pearls (bartering) → eyes.
+   - **Stronghold and End**: triangulation → portal room → crystals → dragon.
    - **Harness**: add the Nether and End milestones.
 
 ## Appendix: tests run
