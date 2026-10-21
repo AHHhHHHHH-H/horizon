@@ -27,7 +27,7 @@ from test_companion import ROOT, command, companion, wait_for
 
 SEEDS = [20261020, 1, 42, 123456, 987654321, 7, 31337, 2024, 555, 8675309]
 MILESTONES = ['wooden_pickaxe', 'stone_tools', 'food', 'iron_10', 'iron_pickaxe', 'buckets',
-              'obsidian_10', 'portal_lit', 'first_night']
+              'obsidian_10', 'portal_lit', 'armour', 'gold_boots', 'first_night']
 SLICE = 1200
 
 
@@ -89,9 +89,8 @@ def one_run(endpoint, seed, level, budget, out):
         out.write(json.dumps(log['samples'][-1]) + '\n')
         out.flush()
         splits = {s['name'] for s in run.get('splits', [])}
-        if 'portal_lit' in splits and 'first_night' in splits:
-            break
-        if 'portal_lit' in splits and done > 30000:
+        # Done: the portal lit and the armour made (or given up).
+        if run.get('stage') == 'overworld done' and ('first_night' in splits or done > 30000):
             break
     cost = command(endpoint, 'companion cost').get('cost', {})
     final = companion(endpoint) or {}

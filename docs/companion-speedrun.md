@@ -557,8 +557,11 @@ still fails.
     sprint.
   - **Blocks it keeps**: it never digs the portal mould's blocks on its way.
   - **Planning rate**: one plan every 5 ticks at most (20 after a plan that found nothing).
-  - **Cost of water**: being fully under water costs three times as much as swimming at the
-    surface.
+  - **Cost of water**: a move fully under water costs twelve walks, a surface swim three, so it
+    goes around or bridges a lake rather than swim under it. It doesn't dig while its head is
+    under water off a floor; with a floor, digging there costs 25 times more, and digging a cell
+    beside water costs 60 more. It swims up into air only where a side step leads out, and treads
+    water (holds jump) while it plans or digs.
 - **Tech-tree planner** (`companion/techtree.rs`, `GameKnowledge`): turns stage goals into mine,
   hunt, craft and smelt actions. Gather cost comes from the remembered distance. The x-ray levels
   also use flat guesses for natural blocks. Actions run as work commands (`collect`, `make`,
@@ -571,22 +574,44 @@ still fails.
     ceiling. It stays up until its air is back, and heads for the nearest air to the side when the
     way up is blocked.
   - **Night**: under open sky it digs a capped pit two blocks deep. It stays in the pit while mobs
-    gather above. In the portal stage, with 12 health or more, it works on through the night.
-  - **Threats**: it backs off from creepers (5 blocks) and pillagers (20 blocks).
+    gather above. From the iron stage on, carrying a sword with 8 health or more, it works through
+    the night; in a pit, it comes out once healed (18). The kit includes a stone sword when it has
+    none.
+  - **Threats**: it backs off from creepers (5 blocks) and pillagers (20 blocks); a creeper it has
+    backed off from for 30 s is ignored.
+  - **Damage causes**: the body's hurt sound names the cause (drowning, fire, freezing, berry
+    bush). A plain hurt goes to the nearest mob in reach (4.5 blocks, 16 for ranged kinds), else it
+    is a fall or a wall. Drowning was reported as "hurt by squid/fish": that was the companion's
+    own attribution (nearest mob within 16 blocks), not the game's death message, and is fixed.
+  - **Places it died**: kept as dangers; leads and pools within 12 blocks of one are skipped.
   - **Death recovery**: it goes back for its things for up to 2 minutes, unless it died there
     the last time too.
-  - **Hunger**: hungry (10 or less) with nothing to eat, it hunts first whatever the stage.
+  - **Hunger**: hungry (10 or less) with nothing to eat, it hunts first whatever the stage. A
+    runner below 18 health eats to heal when nothing is close. The food stage cooks the meat as soon
+    as it has hunted (furnace, fuel it carries); the iron stage tops its logs up to 4 so the kit's
+    furnace has fuel, and a smelt loads only what its fuel can cook.
   - **Exploring**: legs run nearly straight. It follows leads from memory first: for wood, the
     nearest tree it saw (a desert spawn walks to the tree line); for iron on Fair, iron ore it
-    saw however far, then cave and ravine floors seen well below it (not lake beds). Tunnels at
-    y 16 run 40 blocks a leg. Stuck twice at one spot, it digs up and out.
+    saw however far (not ore under water), then cave and ravine floors seen well below it (the
+    nearest dry ones, not lake beds). Wood leads and wood targets are logs in a tree (open or
+    leaves above), not the logs of a mineshaft or a house. Mine legs go down in short staircase
+    steps (6 across, 6 down); a surface search under a roof goes up first. The goal it looks for
+    is the planner's missing item, not a crafted one it can make from it.
   - **Watchdogs**:
     - work that changes no item for 3000 ticks;
     - the route's own moves going nowhere for 3000 ticks;
     - a smelt is let finish rather than cut off by the stage budget;
-    - after a stalled smelt, the meat stays raw.
+    - after a stalled smelt, the meat stays raw;
+    - a craft that hasn't finished in 1200 ticks fails;
+    - stalled twice within 4 blocks, it walks 12 blocks away and 4 up ("getting unstuck");
+    - a task that keeps failing waits 30 s before it is planned again.
 - **Portal cast**: lava and water are found in memory, through walls on Sharp and up, or (lava)
   near ruined portals on Scout and up.
+  - **Which pool**: by cost, not distance: distance plus twice the blocks down and three times
+    the blocks up, plus twice the solid blocks over it, less a bonus for size. Only sources on top
+    (open air above) count. A pool not come 2 blocks nearer in 75 s, or not reached in 4 minutes,
+    is given up and the next one tried; the chosen pool stays chosen while it is there. With no
+    pool known, All-knowing digs down to y -40 soon, Fair to y -50 after a few legs.
   - **Site and mould**: the site is two blocks from a pool. It builds a mould of floors, a back
     wall and three corners, then fills the ten frame blocks one at a time.
   - **Each frame block**: water first, lava poured on the back wall's face, water beside or
@@ -595,9 +620,11 @@ still fails.
     pool's near edge first. Sources and pools it can't reach are given up after 30 s, and a frame
     block that won't cast in 5 minutes moves it to another pool. Water left in the frame is taken
     back from the ground before it; water it can't reach is left there (lava poured beside it
-    sets), never buried under a block.
+    sets), never buried under a block. A water source it can't fill a bucket from in 2 minutes
+    is given up. Once a frame block is cast, the site is kept: a new pool doesn't move it.
   - **Lighting**: before the flint and steel, it drains the inside of the frame and the cells in
-    front of it.
+    front of it, giving up a source it can't take in 30 s.
+  - **After a death**: it keeps the site and the blocks cast, and looks for a pool again.
 
 ### Harness results
 

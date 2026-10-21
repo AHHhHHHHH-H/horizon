@@ -39,6 +39,7 @@ pub(super) enum Stage {
     Iron,
     Kit,
     Portal,
+    Armour,
     Done,
 }
 
@@ -50,6 +51,7 @@ impl Stage {
             Stage::Food => "food",
             Stage::Iron => "iron",
             Stage::Kit => "iron kit",
+            Stage::Armour => "armour",
             Stage::Portal => "nether portal",
             Stage::Done => "overworld done",
         }
@@ -61,7 +63,10 @@ impl Stage {
             Stage::Food => Stage::Iron,
             Stage::Iron => Stage::Kit,
             Stage::Kit => Stage::Portal,
-            Stage::Portal | Stage::Done => Stage::Done,
+            // Armour once the portal is lit, before it goes through: the
+            // cast doesn't wait for 21 more iron.
+            Stage::Portal => Stage::Armour,
+            Stage::Armour | Stage::Done => Stage::Done,
         }
     }
 }
@@ -72,9 +77,10 @@ fn budget(stage: Stage) -> u64 {
     match stage {
         Stage::Wood => 4800,
         Stage::Stone => 4800,
-        Stage::Food => 2400,
+        Stage::Food => 3600,
         Stage::Iron => 24_000,
         Stage::Kit => 14_400,
+        Stage::Armour => 18_000,
         Stage::Portal => 24_000,
         Stage::Done => u64::MAX,
     }
@@ -104,6 +110,8 @@ struct Explore {
     goal: Option<Goal>,
     legs: u32,
     since: u64,
+    /// When its current leg (or lead) began.
+    leg_since: u64,
     /// What it is after, and the leads it followed (what it saw that may
     /// lead there: trees far off, a cave below).
     want: Want,
@@ -114,7 +122,8 @@ struct Explore {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Want {
     Wood,
-    Ore,
+    /// Ore, by the block's name ending (`iron_ore`, `gold_ore`).
+    Ore(&'static str),
     Other,
 }
 
@@ -123,8 +132,10 @@ impl Want {
         let n = c::short_id(item);
         if n.ends_with("_log") || n.ends_with("_planks") || n.ends_with("_wood") || n == "stick" {
             Want::Wood
+        } else if n.contains("gold") {
+            Want::Ore("gold_ore")
         } else if n.contains("iron") || n.ends_with("_ore") || n == "coal" {
-            Want::Ore
+            Want::Ore("iron_ore")
         } else {
             Want::Other
         }
@@ -174,6 +185,10 @@ pub(super) struct Run {
     /// The pit it spends the night in (where its feet go), and whether
     /// the night is given up on (no way to dig one here).
     shelter: Option<[i32; 3]>,
+    /// The armour it wears (not in its inventory).
+    worn: Vec<String>,
+    /// Told its owner it is ready for the Nether.
+    finished: bool,
     no_shelter: Option<i64>,
     pub deaths: u32,
     night: Option<i64>,
@@ -183,6 +198,18 @@ pub(super) struct Run {
     stuck: ([i32; 3], u32),
     /// Where it died last.
     last_death: Option<[f64; 3]>,
+    /// Where work last stalled, and a way out it takes (until when) when
+    /// work stalls there again.
+    stall_at: Option<[i32; 3]>,
+    escape: Option<(Goal, u64)>,
+    /// Where it died: its leads keep away from there.
+    dangers: Vec<[i32; 3]>,
+    /// The creeper (or pillager) it backs off from and since when; those
+    /// it gave up backing off from (behind a wall, stuck).
+    backing: Option<(u32, u64)>,
+    ignored: Vec<u32>,
+    /// Moving on from work that keeps failing: no new plan before then.
+    moving_on: u64,
 }
 
 impl Run {
@@ -210,6 +237,8 @@ impl Run {
             at: [0.0; 3],
             death: None,
             shelter: None,
+            worn: Vec::new(),
+            finished: false,
             no_shelter: None,
             deaths: 0,
             night: None,
@@ -217,6 +246,12 @@ impl Run {
             turn: 0,
             stuck: ([0; 3], 0),
             last_death: None,
+            stall_at: None,
+            escape: None,
+            dangers: Vec::new(),
+            backing: None,
+            ignored: Vec::new(),
+            moving_on: 0,
         }
     }
     fn split(&mut self, name: &str, ticks: u64) -> bool {
@@ -246,8 +281,24 @@ impl Run {
                 let again = self.last_death.is_some_and(|p| c::distance(p, self.at) < 8.0);
                 self.death = (!again).then_some((self.at, None));
                 self.last_death = Some(self.at);
+                self.dangers.push(feet(self.at));
                 self.explore = None;
-                self.cast = None;
+                // A pit dug before it died is where the mobs are: it digs
+                // a new one where it wakes up.
+                self.shelter = None;
+                // Frame blocks cast stay where they are: the site is kept,
+                // the rest starts again.
+                if let Some(cast) = self.cast.as_mut() {
+                    cast.pool = None;
+                    cast.phase = Phase::Lava;
+                    cast.trying = None;
+                    cast.trying_water = None;
+                    cast.approach = None;
+                    cast.slot_since = None;
+                    cast.ruin = None;
+                    cast.scanned = None;
+                    cast.search = None;
+                }
                 if self.night.is_some() {
                     self.died_at_night = true;
                 }
@@ -388,6 +439,15 @@ const RAW: [&str; 4] = [
     "minecraft:porkchop",
     "minecraft:mutton",
     "minecraft:chicken",
+];
+/// What the armour stage makes: iron armour, a shield, gold boots (worn
+/// pieces count, `Run::worn`).
+const ARMOUR: [&str; 5] = [
+    "minecraft:iron_helmet",
+    "minecraft:iron_chestplate",
+    "minecraft:iron_leggings",
+    "minecraft:shield",
+    "minecraft:golden_boots",
 ];
 /// Pieces of meat a run takes along.
 const FOOD: u32 = 4;
@@ -544,6 +604,14 @@ impl Game<'_> {
         let under = self.watery(head);
         run.under = if under { run.under + 1 } else { run.under.saturating_sub(4) };
         if run.under > AIR_TICKS {
+            if !run.surfacing {
+                // Its ways keep off where its air ran out.
+                let f = feet(pos);
+                let now = b.ticks;
+                for p in [f, head, [f[0], f[1] - 1, f[2]]] {
+                    b.walk.avoid(p, now);
+                }
+            }
             run.surfacing = true;
         } else if run.under < 20 {
             run.surfacing = false;
@@ -574,8 +642,10 @@ impl Game<'_> {
                 .take_while(|p| self.passable(*p) || self.watery(*p))
                 .any(|p| !self.watery(p));
             if !open_up {
-                let air = (-4..=4)
-                    .flat_map(|dx| (-4..=4).flat_map(move |dz| (0..=4).map(move |dy| [dx, dy, dz])))
+                // Air nearest, up, aside or down (a cave under a flooded
+                // pocket): toward it, sinking to it when it is below.
+                let air = (-5..=5)
+                    .flat_map(|dx| (-5..=5).flat_map(move |dz| (-5..=5).map(move |dy| [dx, dy, dz])))
                     .map(|d| [head[0] + d[0], head[1] + d[1], head[2] + d[2]])
                     .filter(|p| self.passable(*p) && !self.watery(*p) && self.passable([p[0], p[1] - 1, p[2]]))
                     .min_by_key(|p| (p[0] - head[0]).pow(2) + (p[2] - head[2]).pow(2) + (p[1] - head[1]).pow(2));
@@ -584,6 +654,10 @@ impl Game<'_> {
                     if c::horizontal(pos, to) > 0.3 {
                         b.yaw = c::yaw_toward(pos, to) as f32;
                         b.keys.forward = true;
+                    }
+                    if a[1] < head[1] {
+                        b.keys.jump = false;
+                        b.pitch = 30.0;
                     }
                 }
             }
@@ -595,18 +669,29 @@ impl Game<'_> {
         }
         // A creeper close, or the crossbows of a pillager outpost: away
         // from it, whatever it was doing.
-        if let Some(creeper) = self
+        // (Half a minute backing off from one that stays as near: it can't
+        // get at it either, or won't; left alone.)
+        if let Some((id, since)) = run.backing
+            && now > since + 600
+        {
+            run.ignored.push(id);
+            run.backing = None;
+        }
+        if let Some((id, creeper)) = self
             .mobs
             .iter()
-            .filter(|m| m.alive())
+            .filter(|m| m.alive() && !run.ignored.contains(&m.id))
             .filter_map(|m| match &*m.kind.id {
-                "minecraft:creeper" => Some((mob_at(m), 5.0)),
-                "minecraft:pillager" => Some((mob_at(m), 20.0)),
+                "minecraft:creeper" => Some((m.id, mob_at(m), 5.0)),
+                "minecraft:pillager" => Some((m.id, mob_at(m), 20.0)),
                 _ => None,
             })
-            .find(|(at, near)| c::distance(*at, pos) < *near)
-            .map(|(at, _)| at)
+            .find(|(_, at, near)| c::distance(*at, pos) < *near)
+            .map(|(id, at, _)| (id, at))
         {
+            if run.backing.is_none_or(|(b, _)| b != id) {
+                run.backing = Some((id, now));
+            }
             self.companion_stop_dig(host, b);
             let away = [
                 pos[0] + (pos[0] - creeper[0]) * 3.0,
@@ -628,7 +713,10 @@ impl Game<'_> {
             if run.progress.0 != sig {
                 run.progress = (sig, now);
             }
-            let stalled = now.saturating_sub(run.progress.1) > STALL;
+            // A long smelt (21 iron is 4200 ticks) changes no item until
+            // it takes the ingots out.
+            let limit = if b.skill == Skill::Smelt { STALL * 2 } else { STALL };
+            let stalled = now.saturating_sub(run.progress.1) > limit;
             // A smelt under way finishes (what is in the furnace would be
             // lost to it); it doesn't go long without items changing.
             let late = now.saturating_sub(run.stage_start) > budget(run.stage) && b.skill != Skill::Smelt;
@@ -649,6 +737,24 @@ impl Game<'_> {
                 if stalled && let Some(s) = run.source.take() {
                     run.exhausted.push((s, feet(pos)));
                 }
+                // Stalled here twice: out of this place first (up and
+                // aside, a staircase dug if need be), then the work again.
+                let f = feet(pos);
+                if stalled {
+                    log::info!("[companion] {} run: walk when stalled: {}", b.file.name, b.walk.status());
+                    if run.stall_at.is_some_and(|q| (0..3).all(|k| (q[k] - f[k]).abs() <= 4)) {
+                        let heading = self.companion_heading(b, run);
+                        let (dx, dz) = (heading.cos(), heading.sin());
+                        let goal = Goal {
+                            at: [f[0] + (dx * 12.0) as i32, f[1] + 4, f[2] + (dz * 12.0) as i32],
+                            near: 3.0,
+                            vertical: 4,
+                        };
+                        log::info!("[companion] {} run: stalled here again: out to {:?}", b.file.name, goal.at);
+                        run.escape = Some((goal, now + 1200));
+                    }
+                    run.stall_at = Some(f);
+                }
                 run.progress = (sig, now);
             }
         } else {
@@ -666,9 +772,21 @@ impl Game<'_> {
             if run.moving.0 != key || run.shelter.is_some() || run.death.is_some() {
                 run.moving = (key, now);
             } else if now.saturating_sub(run.moving.1) > STALL {
-                log::info!("[companion] {} run: stuck at {f:?} ({}), trying elsewhere", b.file.name, run.note);
+                log::info!(
+                    "[companion] {} run: stuck at {f:?} ({}), trying elsewhere; skill {:?} target {:?}; walk {}",
+                    b.file.name,
+                    run.note,
+                    b.skill,
+                    b.target,
+                    b.walk.status()
+                );
                 run.moving = (key, now);
                 b.walk.reset();
+                // Whatever held it (a mob it can't get at): back to the route.
+                b.target = None;
+                if b.work.tasks.is_empty() {
+                    b.skill = Skill::Run;
+                }
                 let again = (0..3).all(|k| (run.stuck.0[k] - f[k]).abs() <= 3);
                 run.stuck = (f, if again { run.stuck.1 + 1 } else { 1 });
                 if let Some(ex) = run.explore.as_mut() {
@@ -690,6 +808,9 @@ impl Game<'_> {
                     if let Some(ruin) = cast.ruin.take() {
                         cast.ruins_seen.push(ruin);
                     }
+                    if let Some((w, _)) = cast.water_target.take() {
+                        cast.bad.push(w);
+                    }
                     if !cast.mould_done && let Some(pool) = cast.pool.take() {
                         cast.bad.push(pool);
                         cast.site = None;
@@ -708,6 +829,7 @@ impl Game<'_> {
             return;
         };
         let inventory = g.inventory.clone();
+        run.worn = g.armor.iter().flatten().map(|s| s.item.to_string()).collect();
         let _ = ticks;
         // Died: back for its things (they lie there 5 minutes).
         if let Some((at, back)) = run.death {
@@ -749,7 +871,20 @@ impl Game<'_> {
             }
         }
         if run.stage == Stage::Done {
+            if !run.finished {
+                run.finished = true;
+                self.companion_report(b, CompanionReport::SkillFinished(Skill::Run));
+            }
             run.note = "portal lit: ready for the Nether".into();
+            return;
+        }
+        // Getting out of a place where work stalls.
+        if let Some((goal, until)) = run.escape {
+            run.note = "getting unstuck".into();
+            if now > until || self.companion_travel(host, b, goal, pos) != Steer::Moving {
+                run.escape = None;
+                b.walk.reset();
+            }
             return;
         }
         // Out of time for this stage: classified, then on (food is optional).
@@ -757,24 +892,38 @@ impl Game<'_> {
             let what = format!("{} ({})", run.stage.name(), run.failure.clone().unwrap_or_else(|| "out of time".into()));
             log::info!("[companion] run: out of time: {what}");
             run.failed.push(what);
-            if run.stage == Stage::Food {
+            if matches!(run.stage, Stage::Food | Stage::Armour) {
                 self.companion_run_next(run, now);
             } else {
                 run.stage_start = now;
             }
         }
+        // Gold boots get 5 minutes after the iron set: gold is rarer, and
+        // the portal waits.
+        if run.stage == Stage::Armour
+            && let Some((_, t)) = run.splits.iter().find(|(s, _)| s == "armour")
+            && now.saturating_sub(run.start + t) > 6000
+            && b.skill != Skill::Smelt
+        {
+            log::info!("[companion] {} run: no gold boots: on without them", b.file.name);
+            run.failed.push("armour (no gold boots)".into());
+            self.companion_cancel_work(host, b, None);
+            b.skill = Skill::Run;
+            self.companion_run_next(run, now);
+            return;
+        }
         if run.stage == Stage::Portal {
             self.companion_cast_tick(host, b, run, pos, &inventory);
             return;
         }
-        let mut goals = self.companion_stage_goals(run.stage, &inventory, pos, !run.no_cook);
+        let mut goals = self.companion_stage_goals(run.stage, &inventory, &run.worn, pos, !run.no_cook);
         // Hungry with nothing to eat: meat first, whatever the stage (at
         // a heart with no food it would never heal).
         let hunger = host.hub.guest(b.conn).map_or(20, |g| g.food);
         let items = self.res.items();
         let fed = inventory.iter().flatten().any(|s| gear::food_score(items, s).is_some());
         if hunger <= 10 && !fed && run.stage != Stage::Food {
-            let meat = self.companion_stage_goals(Stage::Food, &inventory, pos, false);
+            let meat = self.companion_stage_goals(Stage::Food, &inventory, &run.worn, pos, false);
             if !meat.is_empty() {
                 run.note = "hungry: hunting".into();
                 goals = meat;
@@ -792,7 +941,7 @@ impl Game<'_> {
             run.failure = Some(f);
         }
         // Plan from what it carries and knows.
-        if run.explore.is_none() || b.ticks.is_multiple_of(40) {
+        if run.explore.is_none() || b.ticks.is_multiple_of(40) && now >= run.moving_on {
             let plan = self.companion_run_plan(b, run, &inventory, &goals, pos);
             if let Some(action) = plan.actions.first() {
                 run.explore = None;
@@ -800,9 +949,20 @@ impl Game<'_> {
                 return;
             }
             if run.explore.is_none() {
+                // What to look for: a goal itself when it is what lacks (raw
+                // iron, not the stripped logs some other recipe tried), else
+                // the first natural thing (a log, not a stripped one).
+                let worked = |n: &str| {
+                    let n = c::short_id(n);
+                    n.starts_with("stripped_") || n.ends_with("_wood") || n.ends_with("_planks") || n.ends_with("_block") || n.ends_with("_hyphae")
+                };
                 let lack = plan
-                    .lacks
-                    .first()
+                    .missing
+                    .iter()
+                    .find(|m| plan.lacks.contains(m))
+                    .or_else(|| plan.lacks.iter().find(|l| c::short_id(l).starts_with("raw_")))
+                    .or_else(|| plan.lacks.iter().find(|l| !worked(l) && !l.ends_with("_nugget")))
+                    .or_else(|| plan.lacks.first())
                     .cloned()
                     .unwrap_or_else(|| goals[0].0.clone());
                 let search = search_for(&lack, feet(pos));
@@ -815,6 +975,7 @@ impl Game<'_> {
                     goal: None,
                     legs: 0,
                     since: now,
+                    leg_since: 0,
                     want: Want::of(&lack),
                     visited: Vec::new(),
                 });
@@ -826,6 +987,13 @@ impl Game<'_> {
     fn companion_run_next(&mut self, run: &mut Run, now: u64) {
         log::info!("[companion] run: {} done at {}", run.stage.name(), now - run.start);
         run.stage = run.stage.next();
+        // Armour is made once: a stage that ran out of time, or armour
+        // lost in a death, isn't gone after again.
+        if run.stage == Stage::Armour
+            && (run.failed.iter().any(|f| f.starts_with("armour")) || run.splits.iter().any(|(s, _)| s == "armour"))
+        {
+            run.stage = Stage::Portal;
+        }
         run.stage_start = now;
         run.explore = None;
         run.last = None;
@@ -860,6 +1028,13 @@ impl Game<'_> {
         if buckets(inventory) >= 2 {
             hit.push("buckets");
         }
+        let has = |a: &str| count(inventory, a) > 0 || run.worn.iter().any(|w| w == a);
+        if ARMOUR[..4].iter().all(|a| has(a)) {
+            hit.push("armour");
+        }
+        if has(ARMOUR[4]) {
+            hit.push("gold_boots");
+        }
         // The first night: from dusk until morning without dying.
         let day = self.world.day_time.div_euclid(24000);
         let time = self.world.day_time.rem_euclid(24000);
@@ -884,7 +1059,7 @@ impl Game<'_> {
                         skill: Skill::Run,
                         item: h.into(),
                         done: run.splits.len() as u32,
-                        total: 9,
+                        total: 11,
                     },
                 );
             }
@@ -892,7 +1067,14 @@ impl Game<'_> {
     }
 
     /// What a stage still wants (item, count), from what it carries.
-    fn companion_stage_goals(&self, stage: Stage, inv: &[Option<ItemStack>], pos: [f64; 3], cook: bool) -> Vec<(String, u32)> {
+    fn companion_stage_goals(
+        &self,
+        stage: Stage,
+        inv: &[Option<ItemStack>],
+        worn: &[String],
+        pos: [f64; 3],
+        cook: bool,
+    ) -> Vec<(String, u32)> {
         let m = |s: &str| format!("minecraft:{s}");
         let mut goals = Vec::new();
         match stage {
@@ -938,9 +1120,47 @@ impl Game<'_> {
                         goals.push((meat.to_string(), count(inv, meat) + FOOD - have));
                     }
                 }
+                // Then cooked at once, in its first furnace (logs or planks
+                // burn): food that heals more and a furnace for the iron.
+                if goals.is_empty() && cook {
+                    for (raw, cooked) in RAW.iter().zip(COOKED) {
+                        let n = count(inv, raw);
+                        if n > 0 {
+                            goals.push((cooked.to_string(), count(inv, cooked) + n));
+                        }
+                    }
+                }
             }
             Stage::Iron => {
                 let have = iron(inv);
+                // Wood carried down: sticks, a table, fuel for the iron
+                // (under ground there is none to be had).
+                let logs: u32 = inv
+                    .iter()
+                    .flatten()
+                    .filter(|s| natural_wood(&s.item) && s.item.ends_with("_log"))
+                    .map(|s| s.count)
+                    .sum::<u32>()
+                    + inv.iter().flatten().filter(|s| s.item.ends_with("_planks")).map(|s| s.count).sum::<u32>() / 4;
+                let kind = inv
+                    .iter()
+                    .flatten()
+                    .filter(|s| natural_wood(&s.item) && s.item.ends_with("_log"))
+                    .max_by_key(|s| s.count)
+                    .map(|s| s.item.to_string())
+                    .or_else(|| {
+                        inv.iter()
+                            .flatten()
+                            .find(|s| s.item.ends_with("_planks"))
+                            .map(|s| s.item.replace("_planks", "_log"))
+                    });
+                // Only under open sky, where the trees are: from under
+                // ground it went looking for them for minutes.
+                let f = feet(pos);
+                let outdoors = (2..40).all(|dy| self.passable([f[0], f[1] + dy, f[2]]));
+                if have < 10 && logs < 4 && outdoors && let Some(kind) = kind {
+                    goals.push((kind.clone(), count(inv, &kind) + 4 - logs));
+                }
                 if have < 10 {
                     goals.push((m("raw_iron"), count(inv, "minecraft:raw_iron") + 10 - have));
                 }
@@ -965,10 +1185,41 @@ impl Game<'_> {
                 if count(inv, "minecraft:flint_and_steel") == 0 {
                     goals.push((m("flint_and_steel"), 1));
                 }
+                // A sword (the first one wears out): nights are fought.
+                if !inv.iter().flatten().any(|s| s.item.ends_with("_sword")) {
+                    goals.push((m("stone_sword"), 1));
+                }
                 // Blocks to bridge, pillar and build the mould with.
                 let blocks = Self::companion_blocks(inv);
                 if blocks < 24 {
                     goals.push((m("cobblestone"), count(inv, "minecraft:cobblestone") + 32 - blocks));
+                }
+            }
+            Stage::Armour => {
+                // Iron armour and a shield for the Nether's blazes and
+                // skeletons, then gold boots for its piglins. Only once:
+                // after a stage out of time (or lost in a death) it goes
+                // on without.
+                let has = |a: &str| count(inv, a) > 0 || worn.iter().any(|w| w == a);
+                for a in &ARMOUR[..4] {
+                    if !has(a) {
+                        goals.push((a.to_string(), 1));
+                    }
+                }
+                let iron_set = goals.is_empty();
+                if iron_set && !has(ARMOUR[4]) {
+                    goals.push((ARMOUR[4].to_string(), 1));
+                }
+                // Coal for the smelts (21 iron, then 4 gold), mined beside
+                // the ore (logs are a climb to the surface from there).
+                let coal = count_any(inv, &["minecraft:coal", "minecraft:charcoal"]);
+                let need = match () {
+                    _ if !iron_set => 3,
+                    _ if has(ARMOUR[4]) => 0,
+                    _ => 1,
+                };
+                if coal < need {
+                    goals.push((m("coal"), count(inv, "minecraft:coal") + need - coal));
                 }
             }
             Stage::Portal | Stage::Done => {}
@@ -1139,6 +1390,8 @@ impl Game<'_> {
                 // Work that keeps failing here: somewhere else may do.
                 run.note = format!("{} keeps failing: moving on", words.replace('_', " "));
                 log::info!("[companion] {} run: {}", b.file.name, run.note);
+                // Half a minute elsewhere before the work is tried again.
+                run.moving_on = self.world.game_time.max(0) as u64 + 600;
                 let heading = self.companion_heading(b, run);
                 run.explore = Some(Explore {
                     search: Search::Surface,
@@ -1146,6 +1399,7 @@ impl Game<'_> {
                     goal: None,
                     legs: 0,
                     since: self.world.game_time.max(0) as u64,
+                    leg_since: 0,
                     want: Want::Other,
                     visited: Vec::new(),
                 });
@@ -1184,20 +1438,42 @@ impl Game<'_> {
         // What it has seen that may lead there first.
         if let Some(ex) = run.explore.as_mut()
             && ex.goal.is_none()
-            && let Some(lead) = self.companion_lead(b, ex.want, f, &ex.visited)
+            && let Some(lead) = self.companion_lead(b, ex.want, f, &ex.visited, &run.dangers)
         {
             log::info!("[companion] {} run: following a lead to {:?} ({:?})", b.file.name, lead.at, ex.want);
             ex.visited.push(lead.at);
             ex.goal = Some(lead);
+            ex.leg_since = self.world.game_time.max(0) as u64;
         }
+        let now = self.world.game_time.max(0) as u64;
         let Some(ex) = run.explore.as_mut() else {
             return;
         };
+        // A leg (or lead) that goes on and on: it walked to and fro in one
+        // tunnel for half an hour once. Another way.
+        if ex.goal.is_some() && now.saturating_sub(ex.leg_since) > 1500 {
+            log::info!("[companion] {} run: explore leg to {:?} not reached in 1500 ticks: turning", b.file.name, ex.goal.map(|g| g.at));
+            ex.goal = None;
+            ex.heading += 2.1;
+            b.walk.reset();
+        }
         let goal = match ex.goal {
             Some(g) => g,
             None => {
                 let (dx, dz) = (ex.heading.cos(), ex.heading.sin());
+                // Under ground, the surface is searched from the surface:
+                // up there first (a staircase up).
+                let roof = (2..=40).rev().find(|dy| {
+                    let q = [f[0], f[1] + dy, f[2]];
+                    let n = self.block_name(q);
+                    !self.passable(q) && !self.watery(q) && !natural_wood(&n)
+                });
                 let g = match ex.search {
+                    Search::Surface if roof.is_some() => Goal {
+                        at: [f[0] + (dx * 6.0) as i32, f[1] + roof.unwrap_or(4) + 1, f[2] + (dz * 6.0) as i32],
+                        near: 3.0,
+                        vertical: 2,
+                    },
                     Search::Surface => Goal::column(
                         [f[0] + (dx * 48.0) as i32, f[1], f[2] + (dz * 48.0) as i32],
                         4.0,
@@ -1207,10 +1483,12 @@ impl Game<'_> {
                         near: 2.0,
                         vertical: 1,
                     },
+                    // Down a staircase in short legs (a short plan is found
+                    // where a long one runs out of nodes).
                     Search::Mine(y) if f[1] > y + 2 => Goal {
-                        at: [f[0] + (dx * 12.0) as i32, y, f[2] + (dz * 12.0) as i32],
-                        near: 3.0,
-                        vertical: 2,
+                        at: [f[0] + (dx * 6.0) as i32, y.max(f[1] - 6), f[2] + (dz * 6.0) as i32],
+                        near: 2.0,
+                        vertical: 1,
                     },
                     // Long tunnels: more ore seen per block dug.
                     Search::Mine(_) => Goal {
@@ -1220,6 +1498,7 @@ impl Game<'_> {
                     },
                 };
                 ex.goal = Some(g);
+                ex.leg_since = now;
                 g
             }
         };
@@ -1244,15 +1523,17 @@ impl Game<'_> {
                 b.walk.reset();
             }
         }
-        let _ = ex.since;
     }
 
     /// A lead for what it explores for, from what it remembers: for wood,
     /// the nearest tree (leaves or logs) beyond what work searched; for
     /// ore, without senses through walls, the nearest cave or ravine floor
     /// it has seen well below it. None past the leads it followed.
-    fn companion_lead(&self, b: &Body, want: Want, f: [i32; 3], visited: &[[i32; 3]]) -> Option<Goal> {
-        let fresh = |p: [i32; 3]| visited.iter().all(|v| (v[0] - p[0]).abs().max((v[2] - p[2]).abs()) > 12);
+    fn companion_lead(&self, b: &Body, want: Want, f: [i32; 3], visited: &[[i32; 3]], dangers: &[[i32; 3]]) -> Option<Goal> {
+        let fresh = |p: [i32; 3]| {
+            visited.iter().all(|v| (v[0] - p[0]).abs().max((v[2] - p[2]).abs()) > 12)
+                && dangers.iter().all(|v| (v[0] - p[0]).abs().max((v[2] - p[2]).abs()) > 12)
+        };
         let d2 = |p: [i32; 3]| (0..3).map(|k| i64::from(p[k] - f[k]).pow(2)).sum::<i64>();
         match want {
             Want::Wood => {
@@ -1263,17 +1544,22 @@ impl Game<'_> {
                     .iter()
                     .filter(|(p, s)| wood.get(*s as usize).copied().unwrap_or(false) && fresh(*p))
                     .filter(|(p, _)| (p[0] - f[0]).abs().max((p[2] - f[2]).abs()) > 6)
+                    .filter(|(p, _)| self.in_a_tree(*p))
                     .min_by_key(|(p, _)| d2(*p))?
                     .0;
                 Some(Goal::column(p, 3.0))
             }
-            Want::Ore if b.senses.level.xray_radius(48).is_none() => {
-                // Iron ore it saw, however far (work looks within 48).
-                let iron = self.states_where(|n| n.ends_with("iron_ore"));
+            Want::Ore(kind) if b.senses.level.xray_radius(48).is_none() => {
+                // Ore it saw, however far (work looks within 48).
+                let iron = self.states_where(|n| n.ends_with(kind));
                 let memory = b.senses.memory();
+                let wet_near = |p: [i32; 3]| {
+                    (-2..=2).any(|dx| (-2..=2).any(|dz| (0..=4).any(|dy| self.watery([p[0] + dx, p[1] + dy, p[2] + dz]))))
+                };
                 let ore = memory
                     .iter()
                     .filter(|(p, s)| iron.get(*s as usize).copied().unwrap_or(false) && fresh(*p))
+                    .filter(|(p, _)| !wet_near(*p))
                     .min_by_key(|(p, _)| d2(*p));
                 if let Some((p, _)) = ore {
                     return Some(Goal::near(p, 3.0));
@@ -1282,13 +1568,22 @@ impl Game<'_> {
                 // with the air it was seen through over it (not water: a
                 // lake's bed is no cave): a cave or ravine.
                 let open = |q: [i32; 3]| self.passable(q) && !self.watery(q);
-                let p = memory
+                let mut floors: Vec<[i32; 3]> = memory
                     .iter()
                     .filter(|(p, _)| p[1] <= f[1] - 5 && fresh(*p))
                     .filter(|(p, _)| (p[0] - f[0]).abs().max((p[2] - f[2]).abs()) <= 64)
                     .filter(|(p, _)| open([p[0], p[1] + 1, p[2]]) && open([p[0], p[1] + 2, p[2]]))
-                    .min_by_key(|(p, _)| d2(*p))?
-                    .0;
+                    .map(|(p, _)| p)
+                    .collect();
+                floors.sort_by_key(|p| d2(*p));
+                // Dry around it too (an air pocket in a flooded cave, a
+                // sea cave, is a drowning).
+                let dry = |p: [i32; 3]| {
+                    (-3..=3).all(|dx| {
+                        (-3..=3).all(|dz| (0..=6).all(|dy| !self.watery([p[0] + dx, p[1] + dy, p[2] + dz])))
+                    })
+                };
+                let p = floors.into_iter().take(8).find(|p| dry(*p))?;
                 Some(Goal::near([p[0], p[1] + 1, p[2]], 3.0))
             }
             _ => None,
@@ -1310,8 +1605,9 @@ impl Game<'_> {
         if run.cast.as_ref().is_none_or(|c| c.site.is_none()) {
             b.walk.keep.clear();
         }
-        // The kit first: two buckets, flint and steel, blocks.
-        if buckets(inventory) < 2 || have("minecraft:flint_and_steel") == 0 {
+        // The kit first: two buckets, flint and steel, a sword, blocks.
+        let armed = inventory.iter().flatten().any(|s| s.item.ends_with("_sword"));
+        if buckets(inventory) < 2 || have("minecraft:flint_and_steel") == 0 || !armed {
             run.stage = Stage::Kit;
             return;
         }
@@ -1365,6 +1661,7 @@ impl Game<'_> {
         // A full bucket: the clock for getting it stops.
         if have("minecraft:water_bucket") > 0 {
             cast.trying_water = None;
+            cast.water_target = None;
         }
         if have("minecraft:lava_bucket") > 0 {
             cast.trying = None;
@@ -1382,6 +1679,14 @@ impl Game<'_> {
                 return;
             };
             run.note = "filling a bucket with water".into();
+            let now = self.world.game_time.max(0) as u64;
+            if let Some(cast) = run.cast.as_mut()
+                && !cast.after_water(w, now)
+            {
+                log::info!("[companion] {} run: water at {w:?}: no getting there", b.file.name);
+                b.walk.reset();
+                return;
+            }
             let reach = super::companion_work::to_block(eye(pos), w);
             if reach > 3.8 {
                 let goal = Goal::near([w[0], w[1] + 1, w[2]], 2.0);
@@ -1407,9 +1712,36 @@ impl Game<'_> {
         }
         // A lava pool.
         let pools = b.senses.memory().pools(|s| self.is_source(s, Fluid::Lava), feet(pos), 160);
-        let given_up = run.cast.as_ref().map_or(Vec::new(), |c| c.bad.clone());
+        let mut given_up = run.cast.as_ref().map_or(Vec::new(), |c| c.bad.clone());
+        // Where it died too.
+        given_up.extend(run.dangers.iter().copied());
         let near_bad = |p: &[i32; 3]| given_up.iter().any(|q| (0..3).all(|k| (p[k] - q[k]).abs() <= 6));
-        let Some((pool, size)) = pools.iter().copied().find(|(p, n)| *n >= 4 && !near_bad(p)) else {
+        // The cheapest to get to, not the nearest: down a staircase costs
+        // less than up, under the open sky less than under rock.
+        let here = feet(pos);
+        let cost = |p: [i32; 3], n: usize| -> i32 {
+            let h = (p[0] - here[0]).abs().max((p[2] - here[2]).abs());
+            let dy = p[1] - here[1];
+            let vertical = if dy < 0 { -dy * 2 } else { dy * 3 };
+            let covered = (1..=12)
+                .map(|k| [p[0], p[1] + k, p[2]])
+                .filter(|q| !self.passable(*q) && !self.watery(*q))
+                .count() as i32;
+            h + vertical + covered * 2 - (n.min(20) as i32) / 2
+        };
+        // The pool chosen stays chosen while it is there (its nearest block
+        // moves as it walks: the cheapest would flip between pools, and the
+        // mould with it).
+        let current = run.cast.as_ref().and_then(|c| c.pool).filter(|p| {
+            !near_bad(p) && pools.iter().any(|(q, n)| *n >= 4 && (0..3).all(|k| (q[k] - p[k]).abs() <= 8))
+        });
+        let Some((pool, size)) = current.map(|p| (p, 4)).or_else(|| {
+            pools
+                .iter()
+                .copied()
+                .filter(|(p, n)| *n >= 4 && !near_bad(p))
+                .min_by_key(|(p, n)| cost(*p, *n))
+        }) else {
             // Scout and All-knowing know where ruined portals are: lava
             // and obsidian lie by most of them.
             let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
@@ -1433,8 +1765,20 @@ impl Game<'_> {
                 }
                 return;
             }
-            let search = if run.explore.as_ref().is_some_and(|e| e.legs > 6) {
-                Search::Mine(-50)
+            // Through walls nothing within reach of its senses: down, where
+            // lava lies in most caves (below y 0 it is everywhere).
+            let deep = b.senses.level.xray_radius(48).is_some();
+            let now = self.world.game_time.max(0) as u64;
+            let (legs, ticks) = if deep { (1, 1200) } else { (2, 3000) };
+            // Without senses through walls, just over the lava level (y
+            // -55): every cave it opens there has lava in it.
+            let depth = if deep { -40 } else { -50 };
+            let search = if run
+                .explore
+                .as_ref()
+                .is_some_and(|e| e.legs > legs || now.saturating_sub(e.since) > ticks || e.search == Search::Mine(depth))
+            {
+                Search::Mine(depth)
             } else {
                 Search::Surface
             };
@@ -1443,8 +1787,11 @@ impl Game<'_> {
         };
         run.explore = None;
         let cast = run.cast.get_or_insert_with(|| Box::new(Cast::default()));
-        // Another pool than the one its site was built by: a new site there.
+        // Another pool than the one its site was built by: a new site there
+        // (unless frame blocks stand there already: the lava is carried).
+        let started = cast.site.is_some_and(|site| self.frame_cast(&site) > 0);
         if let Some(site) = cast.site
+            && !started
             && (0..3).map(|k| (site.base[k] - pool[k]).abs()).max().unwrap_or(0) > 12
         {
             cast.site = None;
@@ -1468,11 +1815,17 @@ impl Game<'_> {
                 goal: None,
                 legs: 0,
                 since: self.world.game_time.max(0) as u64,
+                leg_since: 0,
                 want: Want::Other,
                 visited: Vec::new(),
             });
         }
         self.companion_explore(host, b, run, pos);
+    }
+
+    /// Frame blocks already cast at a site.
+    fn frame_cast(&self, site: &Site) -> usize {
+        SLOTS.iter().filter(|rc| &*self.block_name(site.at(**rc)) == "minecraft:obsidian").count()
     }
 
     /// A water source in the frame's plane or just before it.
@@ -1585,6 +1938,24 @@ impl Game<'_> {
                 && (f[1] - pool[1]).abs() <= 3;
             if !near {
                 run.note = "going to the lava pool".into();
+                // No nearer in a minute and a half: given up for the next.
+                let now = self.world.game_time.max(0) as u64;
+                let d = (pool[0] - f[0]).abs().max((pool[2] - f[2]).abs()) + (pool[1] - f[1]).abs();
+                let same = |p: [i32; 3]| (0..3).all(|k| (p[k] - pool[k]).abs() <= 8);
+                match cast.approach {
+                    Some((p, best, _, t0)) if same(p) && d + 2 <= best => cast.approach = Some((p, d, now, t0)),
+                    Some((p, _, t, t0)) if same(p) && (now > t + 1500 || now > t0 + 4800) => {
+                        log::info!("[companion] {} run: no nearer the lava pool at {pool:?}: the next", b.file.name);
+                        cast.bad.push(pool);
+                        cast.bad.push(p);
+                        cast.pool = None;
+                        cast.approach = None;
+                        b.walk.reset();
+                        return;
+                    }
+                    Some((p, _, _, _)) if same(p) => {}
+                    _ => cast.approach = Some((pool, d, now, now)),
+                }
                 if self.companion_travel(host, b, Goal::near([pool[0], pool[1] + 1, pool[2]], 5.0), pos) == Steer::Stuck {
                     // Can't get there: another pool.
                     log::info!("[companion] {} run: no way to the lava pool at {pool:?}", b.file.name);
@@ -1649,11 +2020,14 @@ impl Game<'_> {
                 } else if now > t + 6000 {
                     log::info!("[companion] {} run: frame block {} won't cast here", b.file.name, cast.slot + 1);
                     cast.bad.push(pool);
-                    cast.site = None;
                     cast.pool = None;
-                    cast.mould_done = false;
                     cast.slot_since = None;
                     cast.phase = Phase::Lava;
+                    // Blocks cast stay: lava from another pool, carried.
+                    if self.frame_cast(&site) == 0 {
+                        cast.site = None;
+                        cast.mould_done = false;
+                    }
                     b.walk.reset();
                     return;
                 }
@@ -1674,7 +2048,6 @@ impl Game<'_> {
                 b.senses.memory_mut().places.insert("portal".into(), interior);
                 log::info!("[companion] {} run: portal lit at {interior:?}", b.file.name);
                 self.companion_run_next(run, now);
-                self.companion_report(b, CompanionReport::SkillFinished(Skill::Run));
                 return;
             }
             run.note = "lighting the portal".into();
@@ -1682,18 +2055,28 @@ impl Game<'_> {
             // The inside clear first: the water left from the cast taken
             // back (a source in or before the frame keeps it flowing in),
             // what flowed in and set (cobblestone) dug out.
+            // (Only what flows into the inside: the inside and before it.
+            // One it can't get at in half a minute is left.)
             let mut near_frame: Vec<[i32; 3]> = Vec::new();
-            for x in 0..=3 {
-                for y in 0..=5 {
+            for x in 1..=2 {
+                for y in 1..=4 {
                     near_frame.extend([site.at([x, y]), site.front_cell(x, y)]);
                 }
             }
+            let skip = run.cast.as_ref().map(|c| c.bad.clone()).unwrap_or_default();
             let source = near_frame.iter().copied().find(|q| {
                 let s = self.world.block(q[0], q[1], q[2]).0;
-                self.is_source(s, Fluid::Water) || self.is_source(s, Fluid::Lava)
+                !skip.contains(q) && (self.is_source(s, Fluid::Water) || self.is_source(s, Fluid::Lava))
             });
             if let Some(w) = source {
                 run.note = "draining the portal".into();
+                if let Some(cast) = run.cast.as_mut()
+                    && Cast::stuck_at(&mut cast.trying_water, w, now)
+                {
+                    log::info!("[companion] {} run: can't drain {w:?}: left", b.file.name);
+                    cast.bad.push(w);
+                    return;
+                }
                 if !self.companion_at_stand(host, b, site.stand_at(w[0] - site.base[0], 0), pos) {
                     return;
                 }
@@ -1783,6 +2166,11 @@ impl Game<'_> {
                         self.companion_cast_explore(host, b, run, pos, Search::Surface, "looking for water");
                         return;
                     };
+                    if !cast.after_water(w, self.world.game_time.max(0) as u64) {
+                        log::info!("[companion] {} run: water at {w:?}: no getting there", b.file.name);
+                        b.walk.reset();
+                        return;
+                    }
                     let reach = super::companion_work::to_block(eye(pos), w);
                     if reach > 3.8 {
                         let goal = Goal::near([w[0], w[1] + 1, w[2]], 2.0);
@@ -1812,11 +2200,20 @@ impl Game<'_> {
                     sources.sort_by(|x, y| {
                         super::companion_work::to_block(e, *x).total_cmp(&super::companion_work::to_block(e, *y))
                     });
-                    let Some(src) = sources.iter().copied().find(|s| site.away_from(*s) && !cast.bad.contains(s)) else {
-                        // None left it can use there: another pool.
+                    // Only the pool's top: a source under another lava
+                    // block is out of any bucket's reach.
+                    let top = |s: &[i32; 3]| {
+                        let above = [s[0], s[1] + 1, s[2]];
+                        self.passable(above) && self.res.facts().get(self.world.block(above[0], above[1], above[2])).fluid == Fluid::None
+                    };
+                    let Some(src) = sources.iter().copied().find(|s| top(s) && site.away_from(*s) && !cast.bad.contains(s)) else {
+                        // None left it can use there: another pool (the
+                        // site stays once a block is cast: lava is carried).
                         cast.bad.push(pool);
                         cast.pool = None;
-                        cast.site = None;
+                        if self.frame_cast(&site) == 0 {
+                            cast.site = None;
+                        }
                         return;
                     };
                     // Half a minute at one source (out of reach, the ray
@@ -1961,16 +2358,35 @@ impl Game<'_> {
         if sheltered {
             b.target = None;
         }
-        if run.no_shelter == Some(day) || (b.target.is_some() && !sheltered) || run.stage == Stage::Done {
+        // With iron to find or smelt, or the cast, healthy: the work goes
+        // on through the night (a night in a pit is a quarter of the run),
+        // fighting what comes.
+        let casting = matches!(run.stage, Stage::Iron | Stage::Kit | Stage::Armour | Stage::Portal);
+        let health = host.hub.guest(b.conn).map_or(20.0, |g| g.health);
+        // Armed and not badly hurt, it works on (fighting what comes);
+        // with nothing to fight with (just respawned) or nearly dead, the pit.
+        let armed = host.hub.guest(b.conn).is_some_and(|g| {
+            g.inventory.iter().flatten().any(|s| s.item.ends_with("_sword"))
+        });
+        // Bare-handed or nearly dead, it doesn't take on a night's mobs:
+        // it digs in rather than fight (a horde at the spawn killed it
+        // again and again as it respawned).
+        let fights = armed && health >= 8.0;
+        if run.no_shelter == Some(day) || (b.target.is_some() && !sheltered && fights) || run.stage == Stage::Done {
             return false;
         }
-        // At the portal stage, healthy: the search and the cast go on
-        // through the night (a night in a pit is a quarter of the run),
-        // fighting what comes.
-        let casting = run.stage == Stage::Portal;
-        let health = host.hub.guest(b.conn).map_or(20.0, |g| g.health);
-        if casting && health >= 12.0 && !sheltered {
+        if b.target.is_some() && !sheltered {
+            b.target = None;
+        }
+        if casting && armed && health >= 8.0 && !sheltered {
             run.shelter = None;
+            return false;
+        }
+        // Healed in its pit: back to work (the night is long).
+        if casting && sheltered && health >= 18.0 {
+            log::info!("[companion] {} run: healed, out of the pit", b.file.name);
+            run.shelter = None;
+            b.walk.reset();
             return false;
         }
         let pit = match run.shelter {
@@ -2259,6 +2675,9 @@ fn search_for(item: &str, f: [i32; 3]) -> Search {
         Search::Surface
     } else if n == "cobblestone" || n == "stone" || n == "cobbled_deepslate" {
         Search::Down
+    } else if n.contains("gold") {
+        // Gold is commonest around y -16 (and in badlands, higher).
+        Search::Mine(if f[1] > -8 { -16 } else { f[1].min(-16) })
     } else if n.starts_with("raw_iron") || n.contains("iron") || n == "coal" || n == "flint" || n == "gravel" {
         Search::Mine(if f[1] > 40 { 16 } else { f[1].min(16) })
     } else {
@@ -2413,9 +2832,30 @@ struct Cast {
     trying: Option<([i32; 3], u64)>,
     trying_water: Option<([i32; 3], u64)>,
     bad: Vec<[i32; 3]>,
+    /// The pool it is walking to, the nearest it got, when, and since when.
+    approach: Option<([i32; 3], i32, u64, u64)>,
+    /// The water it is after and since when (a walk to it that never
+    /// gets there is given up too).
+    water_target: Option<([i32; 3], u64)>,
 }
 
 impl Cast {
+    /// After water `w`: false once two minutes went by on it (it is then
+    /// given up).
+    fn after_water(&mut self, w: [i32; 3], now: u64) -> bool {
+        match self.water_target {
+            Some((q, t)) if q == w => {
+                if now > t + 2400 {
+                    self.bad.push(w);
+                    self.water_target = None;
+                    return false;
+                }
+            }
+            _ => self.water_target = Some((w, now)),
+        }
+        true
+    }
+
     /// Half a minute after one source (out of reach, the ray taking
     /// something else): time for another.
     /// (The clock runs for the frame block, whichever source it is after:
@@ -2447,8 +2887,9 @@ mod tests {
             s = s.next();
             names.push(s.name());
         }
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         assert_eq!(names[5], "nether portal");
+        assert_eq!(names[6], "armour");
     }
 
     #[test]

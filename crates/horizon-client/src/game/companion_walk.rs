@@ -174,6 +174,10 @@ impl Walk {
     pub fn forgive(&mut self, cells: &[[i32; 3]]) {
         self.bad.retain(|(q, _)| !cells.contains(q));
     }
+    /// Keep its ways off `p` for a while (where it ran out of air).
+    pub fn avoid(&mut self, p: [i32; 3], now: u64) {
+        self.mark_bad(p, now);
+    }
     fn mark_bad(&mut self, p: [i32; 3], now: u64) {
         self.bad.retain(|(q, t)| *q != p && now.saturating_sub(*t) < BAD_FOR);
         self.bad.push((p, now));
@@ -489,6 +493,12 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| b.walk.step >= r.steps.len());
         if need_plan {
+            // In water while it plans: it treads water, not sinks.
+            let wet = self.res.facts().get(self.world.block(f[0], f[1], f[2])).fluid == Fluid::Water;
+            if wet {
+                b.keys = Default::default();
+                b.keys.jump = true;
+            }
             // The leg it planned is done: there, or as near as it got.
             if b.walk.route.is_some() {
                 let leg_done = b.walk.leg.is_some_and(|l| l.reached(f));
@@ -634,7 +644,12 @@ impl Game<'_> {
                     (f[2] - d[2]).signum(),
                 ]),
             };
-            // While it digs it doesn't wander off.
+            // While it digs it doesn't wander off (nor sink: in water it
+            // treads it).
+            if in_water {
+                b.keys = Default::default();
+                b.keys.jump = true;
+            }
             let was = b.work.dig.map(|(p, _)| p);
             match self.companion_dig_block(host, b, d, face) {
                 Some(true) => {

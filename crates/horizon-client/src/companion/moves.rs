@@ -418,6 +418,10 @@ fn clear<T: Terrain>(
             return None;
         }
         cost += ticks + rules.dig_extra;
+        // Water beside or over it floods in where it digs: dear.
+        if SIDES.iter().map(|d| add(c, *d)).chain([up(c, 1)]).any(|q| t.cell(q) == Cell::Water) {
+            cost += 60;
+        }
         dig.push(c);
         // Gravel or sand stacked above falls in: dug again, a few times.
         let mut above = up(c, 1);
@@ -508,11 +512,24 @@ fn neighbours<T: Terrain>(
     let floor = t.cell(up(p, -1));
     let standing = floor.floor() || swimming;
     let walk = rules.walk;
+    // Digging while it swims is slow (five times off the ground, five more
+    // with its eyes under water): never under water off a floor, dear at
+    // the surface.
+    let head_wet = swimming && t.cell(up(p, 1)) == Cell::Water;
+    let wet_dig = |c: u32, dug: bool| -> Option<u32> {
+        match () {
+            _ if !swimming || !dug => Some(c),
+            _ if head_wet && !floor.floor() => None,
+            _ if head_wet => Some(c * 25),
+            _ => Some(c * 5),
+        }
+    };
     for d in SIDES {
         let q = add(p, d);
         // Flat: walk, bridge or swim.
         let mut dig = Vec::new();
         if let Some(c) = clear(t, &[up(q, 1), q], rules, &mut dig)
+            && let Some(c) = wet_dig(c, !dig.is_empty())
             && body_ok(t, q)
         {
             let below = t.cell(up(q, -1));
@@ -526,9 +543,9 @@ fn neighbours<T: Terrain>(
                 };
                 // Under water (its head too) it has 15 s of air: dear.
                 let cost = if wet && t.cell(up(q, 1)) == Cell::Water {
-                    walk * 6
+                    walk * 12
                 } else if wet {
-                    walk * 2
+                    walk * 3
                 } else {
                     walk
                 } + c
@@ -604,6 +621,7 @@ fn neighbours<T: Terrain>(
         if standing
             && t.cell(up(q, -1)).floor()
             && let Some(c) = clear(t, &[up(p, 2), up(q, 1), q], rules, &mut dig)
+            && let Some(c) = wet_dig(c, !dig.is_empty())
             && body_ok(t, q)
         {
             out.push((
@@ -689,7 +707,16 @@ fn neighbours<T: Terrain>(
         for dy in [1, -1] {
             let q = up(p, dy);
             let c = t.cell(q);
-            if c == Cell::Water || dy == 1 && c == Cell::Open && body_ok(t, q) {
+            // (Up into the air over the water only where it can step out
+            // from there: else it would fall back in.)
+            let step_out = dy == 1
+                && c == Cell::Open
+                && body_ok(t, q)
+                && SIDES.iter().any(|d| {
+                    let side = add(q, *d);
+                    t.cell(up(side, -1)).floor() && t.cell(side).passable() && t.cell(up(side, 1)).passable()
+                });
+            if c == Cell::Water || step_out {
                 out.push((
                     Step {
                         to: q,
@@ -697,7 +724,7 @@ fn neighbours<T: Terrain>(
                         dig: Vec::new(),
                         place: None,
                     },
-                    if t.cell(up(q, 1)) == Cell::Water { walk * 6 } else { walk * 2 },
+                    if t.cell(up(q, 1)) == Cell::Water { walk * 12 } else { walk * 3 },
                 ));
             }
         }

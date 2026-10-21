@@ -64,6 +64,8 @@ pub(super) struct Craft {
     failures: u32,
     tried: Vec<[f64; 3]>,
     place_tries: u32,
+    /// Ticks spent on it.
+    ticks: u32,
     /// The last plan and what it was made from (its stock, a table near):
     /// planned again only when those change.
     planned: Option<(Vec<(String, u32)>, bool, bool, work::Plan)>,
@@ -85,6 +87,7 @@ impl Craft {
             failures: 0,
             tried: Vec::new(),
             place_tries: 0,
+            ticks: 0,
             planned: None,
         }
     }
@@ -514,6 +517,7 @@ impl Game<'_> {
                     .get(self.world.block(p[0], p[1], p[2]))
                     .name
                     == *name
+                    && !b.stations_bad.contains(p)
             })
             .min_by(|x, y| c::distance(centre(**x), pos).total_cmp(&c::distance(centre(**y), pos)))
             .copied();
@@ -538,6 +542,26 @@ impl Game<'_> {
         k.made = have - k.baseline;
         if k.made >= k.count {
             return Outcome::Done;
+        }
+        // A craft is a few seconds' work (gathering is a task of its own):
+        // a minute on one is something in the way.
+        k.ticks += 1;
+        if k.ticks > 1200 {
+            log::info!(
+                "[companion] {} craft of {} stuck: table {:?} searched {} tries {} failures {} grid {} menu {:?}",
+                b.file.name,
+                k.item,
+                k.table,
+                k.searched,
+                k.place_tries,
+                k.failures,
+                g.craft_grid.iter().flatten().count(),
+                b.work.menu,
+            );
+            if let Some(t) = k.table {
+                b.stations_bad.push(t);
+            }
+            return Outcome::Failed(format!("couldn't craft {}", c::short_id(&k.item)));
         }
         // Leftovers in its 2x2 grid go back first.
         if g.craft_grid.iter().any(Option::is_some) && b.work.menu != Some(0) {
@@ -862,6 +886,7 @@ impl Game<'_> {
                 .and_then(|s| work::fuel_value(&s.item).map(|v| v * COOK_TICKS * s.count as f32))
                 .unwrap_or(0.0);
         let fuel_item = f.items[1].as_ref().map(|s| s.item.to_string());
+        let slot_fuel = f.items[1].is_some();
         if foreign {
             return Outcome::Failed("the furnace is busy with something else".into());
         }
@@ -870,7 +895,32 @@ impl Game<'_> {
             k.changed = b.ticks;
         }
         let left = k.count - k.made;
-        let to_load = left.saturating_sub(cooking + done).min(has_input);
+        // No more in than its fuel smelts: what the fire can't take stays
+        // in its pack (left in the furnace it would be lost to the run).
+        let carried_fuel = |matching: bool| -> f32 {
+            host.hub
+                .guest(b.conn)
+                .map(|g| {
+                    g.inventory
+                        .iter()
+                        .flatten()
+                        .filter(|s| *s.item != *k.input)
+                        .filter(|s| !matching || fuel_item.as_deref().is_none_or(|f| *f == *s.item))
+                        .filter_map(|s| work::fuel_value(&s.item).map(|v| v * COOK_TICKS * s.count as f32))
+                        .fold(0.0, f32::max)
+                })
+                .unwrap_or(0.0)
+        };
+        // Fuel of another kind left in the slot doesn't block what it
+        // carries: it is taken out first (its own burn time comes back
+        // with it).
+        let burns = ((fuel_ticks + carried_fuel(true)).max(f.lit_remaining as f32 + carried_fuel(false)) / COOK_TICKS)
+            .floor() as u32;
+        let to_load = left.saturating_sub(cooking + done).min(has_input).min(burns.saturating_sub(cooking));
+        if to_load == 0 && cooking == 0 && done == 0 && has_input > 0 && burns == 0 {
+            self.companion_close_menu(host, b);
+            return Outcome::Failed("no fuel (coal, charcoal, planks or logs)".into());
+        }
         let short_of_fuel = fuel_ticks < (cooking + to_load) as f32 * COOK_TICKS - 1.0;
         let visit = done > 0 && (done >= left || cooking == 0)
             || to_load > 0
@@ -950,6 +1000,17 @@ impl Game<'_> {
                         .max(1.0) as u32;
                     let n = n.min(carried(&inventory, &item));
                     self.companion_put(host, b, window, FURNACE_BASE, &item, 1, n);
+                }
+                None if f_lit_or_fuel(fuel_ticks) && fuel_ticks >= COOK_TICKS => {}
+                // Another kind of fuel in the slot: out with it, then
+                // what it carries goes in.
+                None if slot_fuel
+                    && inventory
+                        .iter()
+                        .flatten()
+                        .any(|s| *s.item != *k.input && work::fuel_value(&s.item).is_some()) =>
+                {
+                    self.companion_click(host, b, window, 1, 0, QUICK_MOVE);
                 }
                 None if f_lit_or_fuel(fuel_ticks) => {}
                 None => {

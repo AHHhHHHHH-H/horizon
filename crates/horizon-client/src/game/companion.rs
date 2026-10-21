@@ -70,6 +70,10 @@ pub(super) struct Body {
     pub last_health: f32,
     /// The mob that hurt it last, and when.
     pub hurt_by: Option<(u32, i64)>,
+    /// What hurt it last that was no mob (drowning, fire, a fall), and when.
+    pub hazard: Option<(&'static str, i64)>,
+    /// Crafting stations a craft got stuck at: the next one uses another.
+    pub stations_bad: Vec<[i32; 3]>,
     /// Hostiles already called out.
     pub seen: Vec<u32>,
     /// The dropped item it is walking to, and since when; items it gave up
@@ -220,6 +224,8 @@ impl Body {
             near_owner: true,
             last_health: 20.0,
             hurt_by: None,
+            hazard: None,
+            stations_bad: Vec::new(),
             seen: Vec::new(),
             reaching: None,
             out_of_reach: Vec::new(),

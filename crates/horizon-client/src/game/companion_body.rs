@@ -199,8 +199,9 @@ impl Game<'_> {
         } else if b.ticks.is_multiple_of(20) {
             self.companion_gear(host, b);
         }
-        // Self-preservation: it backs off when badly hurt.
-        if !b.retreating && health > 0.0 && health < c::RETREAT_BELOW {
+        // Self-preservation: it backs off when badly hurt (a runner, alone,
+        // fights on: what it backs off from follows it, hitting).
+        if !b.retreating && health > 0.0 && health < c::RETREAT_BELOW && b.run.is_none() {
             b.retreating = true;
             b.target = None;
             self.companion_report(b, CompanionReport::SkillStarted(Skill::Retreat));
@@ -212,7 +213,10 @@ impl Game<'_> {
             .mobs
             .iter()
             .any(|m| threat(m) && c::distance(mob_at(m), pos) < 5.0);
-        let hungry = food < c::EAT_BELOW || b.retreating && food < 20 && !danger_close;
+        // (A runner hurt eats to heal: health comes back from 18 food up.)
+        let hungry = food < c::EAT_BELOW
+            || b.retreating && food < 20 && !danger_close
+            || b.run.is_some() && health < 18.0 && food < 18 && !danger_close;
         if b.eating.is_none() && hungry && (b.target.is_none() || !danger_close) {
             self.companion_start_eating(host, b);
         }
@@ -452,21 +456,36 @@ impl Game<'_> {
         // Death itself is the guest tick's to report.
         if health > 0.0 && health < b.last_health - 0.01 {
             let amount = b.last_health - health;
+            let recent = b.hazard.filter(|(_, at)| self.world.game_time - at <= 1).map(|(what, _)| what);
+            let hazard = recent.filter(|w| *w != "plain");
+            // A blow comes from close; arrows and fire balls from further.
+            let reach = |m: &Mob| {
+                let ranged = matches!(
+                    c::short_id(&m.kind.id),
+                    "skeleton" | "stray" | "bogged" | "pillager" | "blaze" | "ghast" | "piglin" | "drowned" | "witch"
+                );
+                if ranged { 16.0 } else { 4.5 }
+            };
             let by = self
                 .mobs
                 .iter()
                 .filter(|m| m.alive() && host.mob_players.get(&m.id) == Some(&b.conn))
-                .filter(|m| c::distance(mob_at(m), pos) < 16.0)
+                .filter(|m| c::distance(mob_at(m), pos) < reach(m))
                 .min_by(|x, y| c::distance(mob_at(x), pos).total_cmp(&c::distance(mob_at(y), pos)))
-                .map(|m| (m.id, m.kind.id.to_string()));
+                .map(|m| (m.id, m.kind.id.to_string()))
+                .filter(|_| hazard.is_none());
+            // Plain hurt with no mob near: a fall or a wall.
+            let hazard = hazard.or_else(|| (by.is_none() && recent == Some("plain")).then_some("a fall or a wall"));
             if let Some((id, _)) = &by {
                 b.hurt_by = Some((*id, self.world.game_time));
+            } else if hazard.is_some() {
+                b.hurt_by = None;
             }
             self.companion_report(
                 b,
                 CompanionReport::Hurt {
                     amount,
-                    by: by.map(|(_, kind)| kind),
+                    by: by.map(|(_, kind)| kind).or(hazard.map(str::to_owned)),
                 },
             );
         }
@@ -1225,10 +1244,15 @@ impl Game<'_> {
             let angle = b.next_float() * std::f64::consts::TAU;
             self.spawn_item(stack, at, [-angle.sin() * f, 0.2, angle.cos() * f], 40);
         }
-        let cause = b
-            .hurt_by
-            .and_then(|(id, _)| self.mobs.iter().find(|m| m.id == id))
-            .map_or_else(|| "hurt".to_owned(), |m| c::short_id(&m.kind.id).to_owned());
+        let hazard = b
+            .hazard
+            .filter(|(what, at)| self.world.game_time - at <= 1 && *what != "plain")
+            .map(|(what, _)| what.to_owned());
+        let cause = hazard.unwrap_or_else(|| {
+            b.hurt_by
+                .and_then(|(id, _)| self.mobs.iter().find(|m| m.id == id))
+                .map_or_else(|| "hurt".to_owned(), |m| c::short_id(&m.kind.id).to_owned())
+        });
         b.dead_ticks = Some(0);
         b.target = None;
         b.ordered = false;
@@ -1473,6 +1497,22 @@ impl Game<'_> {
             g.sprinting = sprinting;
             g.sneaking = crouching;
             g.moved = true;
+        }
+        // Hurt by the world, not a mob: what by, for its reports.
+        if let Some(sound) = sounds.first() {
+            // (A plain hurt is a mob's blow as well as a fall: the mob is
+            // looked for first.)
+            let what = match *sound {
+                "minecraft:entity.player.hurt_drown" => "drowning",
+                "minecraft:entity.player.hurt_on_fire" => "fire",
+                "minecraft:entity.player.hurt_freeze" => "freezing",
+                "minecraft:entity.player.hurt_sweet_berry_bush" => "a berry bush",
+                _ => "plain",
+            };
+            let now = self.world.game_time;
+            if let Some(b) = host.companions.iter_mut().find(|b| b.conn == conn) {
+                b.hazard = Some((what, now));
+            }
         }
         for sound in sounds {
             self.player_hurt_sound(sound, at);

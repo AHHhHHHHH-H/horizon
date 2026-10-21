@@ -311,6 +311,8 @@ pub(super) struct Collect {
     hunting: Option<(u32, [f64; 3])>,
     /// It left one alone because digging it would let lava in.
     unsafe_seen: bool,
+    /// Logs found that grow in no tree (a village's, an ancient city's).
+    not_trees: u32,
     /// A staircase step toward a drop it can't walk to, and the drop it digs toward.
     reach: Option<Stair>,
     dig_to: Option<u32>,
@@ -968,6 +970,7 @@ impl Game<'_> {
             skip: Vec::new(),
             hunting: None,
             unsafe_seen: false,
+            not_trees: 0,
             reach: None,
             dig_to: None,
         })
@@ -1083,6 +1086,12 @@ impl Game<'_> {
                 k.unsafe_seen = true;
                 continue;
             }
+            // A runner's logs grow in trees, not in what was built under
+            // ground (an ancient city's, a mineshaft's).
+            if b.run.is_some() && f.name.ends_with("_log") && !self.in_a_tree(*p) {
+                k.not_trees += 1;
+                continue;
+            }
             let exposed = [
                 [0, 1, 0],
                 [0, -1, 0],
@@ -1096,8 +1105,14 @@ impl Game<'_> {
                 let n = facts.get(world.block(p[0] + d[0], p[1] + d[1], p[2] + d[2]));
                 !n.full_collision && n.fluid != Fluid::Lava
             });
+            // Under water (a lake's bed, a flooded cave): a dive with its
+            // air running out, only when nothing dry is near.
+            let wet = [[0, 1, 0], [0, 2, 0], [0, 3, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]
+                .iter()
+                .any(|d| facts.get(world.block(p[0] + d[0], p[1] + d[1], p[2] + d[2])).fluid == Fluid::Water);
             let cost = c::distance(pos, centre(*p))
                 + if exposed { 0.0 } else { 6.0 }
+                + if wet { 40.0 } else { 0.0 }
                 + (f64::from(p[1]) - pos[1]).abs() * 0.5;
             if best.is_none_or(|(b, _)| cost < b) {
                 best = Some((cost, *p));
@@ -1147,6 +1162,13 @@ impl Game<'_> {
             return Outcome::Busy;
         }
         let name = c::short_id(k.want.id()).replace('_', " ");
+        log::info!(
+            "[companion] {} collect of {name} found {} ({} not in trees, unsafe {}) around {here:?}",
+            b.file.name,
+            found.len(),
+            k.not_trees,
+            k.unsafe_seen
+        );
         Outcome::Failed(if k.unsafe_seen {
             format!("no {name} within {SEARCH_RADIUS} blocks I can dig safely (lava beside it)")
         } else {
@@ -1381,6 +1403,16 @@ impl Game<'_> {
     }
 
     /// Work on the current target: dig it from where it stands, or go where it can.
+    /// A log in a tree: nothing but leaves, logs and air over it up to
+    /// the sky (or 24 blocks).
+    pub(super) fn in_a_tree(&self, p: [i32; 3]) -> bool {
+        (1..=24).all(|dy| {
+            let s = self.world.block(p[0], p[1] + dy, p[2]);
+            let f = self.res.facts().get(s);
+            !f.full_collision || f.name.ends_with("_log") || f.name.ends_with("_leaves") || f.name.ends_with("_wood")
+        })
+    }
+
     fn collect_target(
         &mut self,
         host: &mut LanHost,
