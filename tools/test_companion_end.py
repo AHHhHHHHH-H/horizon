@@ -88,6 +88,8 @@ def gear(endpoint, args, missing, rng):
         items += ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots']
     if args.beds:
         items.append('white_bed 8')
+    if args.pumpkin:
+        items.append('carved_pumpkin')
     for item in items:
         command(endpoint, f'command give {NAME} {item}')
 
@@ -95,7 +97,8 @@ def gear(endpoint, args, missing, rng):
 def one_run(args, seed, level):
     """One world: returns a dict of what happened."""
     rng = random.Random(seed * 31 + len(level))
-    out = {'seed': seed, 'level': level, 'beds': args.beds, 'armour': args.armour}
+    out = {'seed': seed, 'level': level, 'beds': args.beds, 'armour': args.armour,
+           'pumpkin': args.pumpkin}
     with tempfile.TemporaryDirectory(prefix='horizon-end-') as directory:
         home = Path(directory) / 'game'
         home.mkdir()
@@ -120,8 +123,15 @@ def one_run(args, seed, level):
                 missing = portal_room(endpoint, rng)
                 command(endpoint, f'command tp @s 0.5 {ROOM_Y} -3.5')
                 command(endpoint, f'companion spawn {NAME}')
-                time.sleep(1)
-                command(endpoint, f'command tp {NAME} 0.5 {ROOM_Y} 0.5 0 0')
+                # Into the room, checked: under load the body may not be
+                # there yet, and it would start in the ground at spawn.
+                for _ in range(20):
+                    time.sleep(0.5)
+                    c = body(endpoint)
+                    if c and abs(c.get('position', [0, 0, 0])[1] - ROOM_Y) < 1.5:
+                        break
+                    if c:
+                        command(endpoint, f'command tp {NAME} 0.5 {ROOM_Y} 0.5 0 0')
                 time.sleep(0.5)
                 # Its post where it stands now (a Stay before the /tp walks it back).
                 command(endpoint, f'companion do {NAME} stay')
@@ -225,6 +235,8 @@ def main():
     parser.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     parser.add_argument('--levels', nargs='+', default=['all', 'fair'])
     parser.add_argument('--beds', action='store_true', help='the bed one-cycle at perches')
+    parser.add_argument('--pumpkin', action='store_true',
+                        help='a carved pumpkin to wear (endermen ignore its gaze)')
     parser.add_argument('--armour', choices=('iron', 'none'), default='iron')
     parser.add_argument('--arrows', type=int, default=64)
     parser.add_argument('--jobs', type=int, default=2, help='clients at a time')
