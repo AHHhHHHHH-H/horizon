@@ -71,10 +71,15 @@ pub struct Flat {
 /// saves 1.3 ms.
 const MIN_DRAWS: usize = 4096;
 
-/// Whether flat draws apply: the backend emulates multi-draw, and vertex
+/// Whether flat draws apply: the backend emulates multi-draw (Metal, unless
+/// multi-draws run from indirect command buffers: `icb_draws`), and vertex
 /// shaders can read storage buffers large enough for an index page.
 /// `HORIZON_FLAT_DRAWS=1` draws every frame flat, `0` none.
-pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
+pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device, icb_draws: bool) -> bool {
+    // terrain.wgsl's textures are in group 2 then, and flat draws use group 1.
+    if icb_draws {
+        return false;
+    }
     match std::env::var("HORIZON_FLAT_DRAWS").as_deref() {
         Ok("0") => return false,
         Ok("1") => return supported(adapter, device),

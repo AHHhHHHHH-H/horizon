@@ -321,7 +321,7 @@ pub struct Renderer {
     debug_line_capacity: u64,
     /// The terrain resources with the debug crosshair's projection
     /// (`crosshair_globals`).
-    crosshair_group: wgpu::BindGroup,
+    crosshair_group: TerrainGroups,
     crosshair_globals: wgpu::Buffer,
     entity_pipeline: wgpu::RenderPipeline,
     crumbling_pipeline: wgpu::RenderPipeline,
@@ -355,7 +355,7 @@ pub struct Renderer {
     entity_buffer: wgpu::Buffer,
     entity_capacity: u64,
     entity_batch: EntityBatch,
-    group: wgpu::BindGroup,
+    group: TerrainGroups,
     globals: wgpu::Buffer,
     lightmap: wgpu::Texture,
     /// The block sprites, [`SPRITE_SPLIT`] layers per array (the first is
@@ -369,6 +369,10 @@ pub struct Renderer {
     /// The mipmap levels sampled (the Mipmap Levels option), at most `mip_levels - 1`.
     mipmaps: u32,
     terrain_layout: wgpu::BindGroupLayout,
+    /// Terrain's textures as binding arrays, where multi-draws run from Metal
+    /// indirect command buffers ([`icb_multi_draws`]).
+    terrain_texture_layout: Option<wgpu::BindGroupLayout>,
+    icb_draws: bool,
     sprite_sampler: wgpu::Sampler,
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
@@ -497,49 +501,164 @@ fn sprite_views(
         })
         .collect()
 }
-/// terrain.wgsl's group 0.
+/// The group of terrain.wgsl's textures and samplers where multi-draws run
+/// from indirect command buffers ([`terrain_with_binding_arrays`]): wgpu
+/// keeps binding arrays out of groups that hold a uniform buffer.
+const TERRAIN_TEXTURE_GROUP: u32 = 2;
+/// terrain.wgsl's bind groups: group 0, and its textures and samplers in
+/// [`TERRAIN_TEXTURE_GROUP`] as binding arrays of one where multi-draws run
+/// from indirect command buffers.
+struct TerrainGroups {
+    globals: wgpu::BindGroup,
+    textures: Option<wgpu::BindGroup>,
+}
+impl TerrainGroups {
+    fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_bind_group(0, &self.globals, &[]);
+        if let Some(textures) = &self.textures {
+            pass.set_bind_group(TERRAIN_TEXTURE_GROUP, textures, &[]);
+        }
+    }
+}
+/// terrain.wgsl's groups; `texture_layout` (the binding-array layout) puts
+/// the textures and samplers in a group of their own.
 #[allow(clippy::too_many_arguments)]
 fn terrain_group(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::BindGroupLayout,
+    texture_layout: Option<&wgpu::BindGroupLayout>,
     globals: &wgpu::Buffer,
     sprites: &[wgpu::TextureView],
     sprite_sampler: &wgpu::Sampler,
     lightmap: &wgpu::TextureView,
     lightmap_sampler: &wgpu::Sampler,
-) -> wgpu::BindGroup {
-    let view = |binding, view| wgpu::BindGroupEntry {
-        binding,
-        resource: wgpu::BindingResource::TextureView(view),
+) -> TerrainGroups {
+    fn texture<'a>(
+        arrays: bool,
+        binding: u32,
+        view: &'a [&'a wgpu::TextureView; 1],
+    ) -> wgpu::BindGroupEntry<'a> {
+        let resource = if arrays {
+            wgpu::BindingResource::TextureViewArray(view)
+        } else {
+            wgpu::BindingResource::TextureView(view[0])
+        };
+        wgpu::BindGroupEntry { binding, resource }
+    }
+    fn sampler<'a>(
+        arrays: bool,
+        binding: u32,
+        sampler: &'a [&'a wgpu::Sampler; 1],
+    ) -> wgpu::BindGroupEntry<'a> {
+        let resource = if arrays {
+            wgpu::BindingResource::SamplerArray(sampler)
+        } else {
+            wgpu::BindingResource::Sampler(sampler[0])
+        };
+        wgpu::BindGroupEntry { binding, resource }
+    }
+    let arrays = texture_layout.is_some();
+    // One-element slices for binding arrays; their first element otherwise.
+    let sprites: Vec<[&wgpu::TextureView; 1]> = sprites.iter().map(|v| [v]).collect();
+    let (lightmap, sprite_sampler, lightmap_sampler) =
+        ([lightmap], [sprite_sampler], [lightmap_sampler]);
+    let globals = wgpu::BindGroupEntry {
+        binding: 0,
+        resource: globals.as_entire_binding(),
     };
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            },
-            view(1, &sprites[0]),
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sprite_sampler),
-            },
-            view(3, lightmap),
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(lightmap_sampler),
-            },
-            view(5, &sprites[1]),
-            view(6, &sprites[2]),
-            view(7, &sprites[3]),
-            view(8, &sprites[4]),
-            view(9, &sprites[5]),
-            view(10, &sprites[6]),
-            view(11, &sprites[7]),
-        ],
-    })
+    let textures = [
+        texture(arrays, 1, &sprites[0]),
+        sampler(arrays, 2, &sprite_sampler),
+        texture(arrays, 3, &lightmap),
+        sampler(arrays, 4, &lightmap_sampler),
+        texture(arrays, 5, &sprites[1]),
+        texture(arrays, 6, &sprites[2]),
+        texture(arrays, 7, &sprites[3]),
+        texture(arrays, 8, &sprites[4]),
+        texture(arrays, 9, &sprites[5]),
+        texture(arrays, 10, &sprites[6]),
+        texture(arrays, 11, &sprites[7]),
+    ];
+    let group = |layout, entries: &[wgpu::BindGroupEntry<'_>]| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries,
+        })
+    };
+    match texture_layout {
+        Some(texture_layout) => TerrainGroups {
+            globals: group(layout, &[globals]),
+            textures: Some(group(texture_layout, &textures)),
+        },
+        None => {
+            let mut entries = vec![globals];
+            entries.extend(textures);
+            TerrainGroups {
+                globals: group(layout, &entries),
+                textures: None,
+            }
+        }
+    }
+}
+/// Whether the vendored wgpu-hal draws indirect multi-draws from Metal
+/// indirect command buffers (`metal/icb.rs`): one command for a whole
+/// multi-draw instead of one draw call per entry. It does on Apple GPUs from
+/// the M1 on (`Icbs::new` there: keep the two in step) unless
+/// `WGPU_METAL_ICB=0`. Pipelines only qualify with no texture or sampler bound
+/// directly, so terrain then takes its own through binding arrays
+/// ([`terrain_with_binding_arrays`]).
+fn icb_multi_draws(info: &wgpu::AdapterInfo, features: wgpu::Features) -> bool {
+    info.backend == wgpu::Backend::Metal
+        && info.name.starts_with("Apple M")
+        && features.contains(
+            wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::INDIRECT_FIRST_INSTANCE,
+        )
+        && std::env::var_os("WGPU_METAL_ICB").is_none_or(|v| v != "0")
+}
+/// terrain.wgsl with every texture and sampler of group 0 declared as a
+/// binding array of one in [`TERRAIN_TEXTURE_GROUP`] (same bindings) and used
+/// through its element 0. The shader samples
+/// the same textures the same way; on Metal they are then reached through an
+/// argument buffer, which pipelines drawn from indirect command buffers need
+/// ([`icb_multi_draws`]).
+fn terrain_with_binding_arrays(source: &str) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    let mut out = String::with_capacity(source.len() + 1024);
+    out.push_str("enable wgpu_binding_array;\n");
+    for line in source.lines() {
+        let declaration = line
+            .strip_prefix("@group(0) @binding(")
+            .and_then(|_| line.split_once(" var "))
+            .and_then(|(head, rest)| {
+                let (name, ty) = rest.split_once(": ")?;
+                let ty = ty.strip_suffix(';')?;
+                (ty.starts_with("texture_") || ty == "sampler").then_some((head, name, ty))
+            });
+        if let Some((head, name, ty)) = declaration {
+            names.push(name);
+            let head = head.replacen("@group(0)", &format!("@group({TERRAIN_TEXTURE_GROUP})"), 1);
+            out.push_str(&format!("{head} var {name}: binding_array<{ty}, 1>;\n"));
+            continue;
+        }
+        // Every other use of those names (whole identifiers) is element 0.
+        let mut rest = line;
+        while let Some(start) = rest.find(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            let end = rest[start..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(rest.len(), |n| start + n);
+            let word = &rest[start..end];
+            out.push_str(&rest[..end]);
+            if names.contains(&word) && !rest[..start].ends_with('.') {
+                out.push_str("[0]");
+            }
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out.push('\n');
+    }
+    out
 }
 /// CPU texture uploads prepared by the resource worker. Consumed by renderer
 /// construction so the temporary mip chains are released after GPU upload.
@@ -780,11 +899,19 @@ async fn open_device(
         }
         // Mappable primary buffers: section pages that no longer fit in
         // video memory go to system memory.
+        // Binding arrays on Metal: terrain takes its textures through them
+        // where multi-draws use indirect command buffers (`icb_multi_draws`).
+        let binding_arrays = if info.backend == wgpu::Backend::Metal {
+            wgpu::Features::TEXTURE_BINDING_ARRAY
+        } else {
+            wgpu::Features::empty()
+        };
         let features = timing::GpuTimer::features(&adapter)
             | cull::Cull::features(&adapter)
             | (adapter.features()
                 & (wgpu::Features::INDIRECT_FIRST_INSTANCE
-                    | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS));
+                    | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+                    | binding_arrays));
         let driver = format!("{} {}", info.driver, info.driver_info);
         startup_step(format_args!(
             "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -973,9 +1100,14 @@ impl Renderer {
             startup_step(format_args!("creating the pipelines"));
         }
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
+        let icb_draws = icb_multi_draws(&adapter.get_info(), device.features());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(if icb_draws {
+                terrain_with_binding_arrays(include_str!("terrain.wgsl")).into()
+            } else {
+                include_str!("terrain.wgsl").into()
+            }),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -997,58 +1129,84 @@ impl Renderer {
             ("SPRITE_ARRAYS", f64::from(sprite_arrays)),
             ("SPRITE_SPLIT", f64::from(split)),
         ];
-        let bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Horizon terrain bindings"),
-            entries: &[
-                entry(
-                    0,
-                    vf,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                entry(
-                    1,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1 + 1,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(
-                    3,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    4,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(5, vf, sprite_array),
-                entry(6, vf, sprite_array),
-                entry(7, vf, sprite_array),
-                entry(8, vf, sprite_array),
-                entry(9, vf, sprite_array),
-                entry(10, vf, sprite_array),
-                entry(11, vf, sprite_array),
-            ],
-        });
+        let globals_entry = entry(
+            0,
+            vf,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+        );
+        let texture_entries = [
+            entry(
+                1,
+                vf,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+            ),
+            entry(
+                1 + 1,
+                vf,
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            ),
+            entry(
+                3,
+                vf,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            ),
+            entry(
+                4,
+                vf,
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            ),
+            entry(5, vf, sprite_array),
+            entry(6, vf, sprite_array),
+            entry(7, vf, sprite_array),
+            entry(8, vf, sprite_array),
+            entry(9, vf, sprite_array),
+            entry(10, vf, sprite_array),
+            entry(11, vf, sprite_array),
+        ];
+        let bind_group_layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries,
+            })
+        };
+        let (bindings, texture_bindings) = if icb_draws {
+            (
+                bind_group_layout("Horizon terrain bindings", &[globals_entry]),
+                Some(bind_group_layout(
+                    "Horizon terrain textures",
+                    // Binding arrays of one.
+                    &texture_entries.map(|entry| wgpu::BindGroupLayoutEntry {
+                        count: Some(std::num::NonZeroU32::MIN),
+                        ..entry
+                    }),
+                )),
+            )
+        } else {
+            let mut entries = vec![globals_entry];
+            entries.extend(texture_entries);
+            (
+                bind_group_layout("Horizon terrain bindings", &entries),
+                None,
+            )
+        };
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
-            bind_group_layouts: &[Some(&bindings)],
+            bind_group_layouts: &match &texture_bindings {
+                Some(textures) => vec![Some(&bindings), None, Some(textures)],
+                None => vec![Some(&bindings)],
+            },
             ..Default::default()
         });
         let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
@@ -1336,6 +1494,7 @@ impl Renderer {
             &device,
             "Horizon terrain resources",
             &bindings,
+            texture_bindings.as_ref(),
             &globals,
             &sprite_views,
             &sprite_sampler,
@@ -1346,6 +1505,7 @@ impl Renderer {
             &device,
             "Debug crosshair resources",
             &bindings,
+            texture_bindings.as_ref(),
             &crosshair_globals,
             &sprite_views,
             &sprite_sampler,
@@ -2002,7 +2162,7 @@ impl Renderer {
             1 << 20,
         );
         // Sections as one index list per frame where multi-draw is emulated.
-        let flat = flat::wanted(&adapter, &device).then(|| {
+        let flat = flat::wanted(&adapter, &device, icb_draws).then(|| {
             let buffers = [Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -2137,6 +2297,8 @@ impl Renderer {
             mip_levels,
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
+            terrain_texture_layout: texture_bindings,
+            icb_draws,
             sprite_sampler,
             lightmap_view,
             lightmap_sampler,
@@ -2636,6 +2798,7 @@ impl Renderer {
             &self.device,
             "Horizon terrain resources",
             &self.terrain_layout,
+            self.terrain_texture_layout.as_ref(),
             &self.globals,
             &views,
             &self.sprite_sampler,
@@ -3188,19 +3351,21 @@ impl Renderer {
         self.translucency_cursor += budget;
         let translucent_draws = self.draws.len() as u32 - solid_draws;
         self.section_draws = self.draws.len();
-        // Metal replays a multi-draw as one draw call per entry.
-        self.section_draw_calls = if self.multi_draw && self.info.backend != wgpu::Backend::Metal {
-            (0..self.draws.len())
-                .filter(|&i| {
-                    i == 0
-                        || i == phase1_draws as usize
-                        || i == solid_draws as usize
-                        || self.draw_pages[i] != self.draw_pages[i - 1]
-                })
-                .count()
-        } else {
-            self.draws.len()
-        };
+        // Metal replays a multi-draw as one draw call per entry, unless it
+        // runs from an indirect command buffer.
+        self.section_draw_calls =
+            if self.multi_draw && (self.info.backend != wgpu::Backend::Metal || self.icb_draws) {
+                (0..self.draws.len())
+                    .filter(|&i| {
+                        i == 0
+                            || i == phase1_draws as usize
+                            || i == solid_draws as usize
+                            || self.draw_pages[i] != self.draw_pages[i - 1]
+                    })
+                    .count()
+            } else {
+                self.draws.len()
+            };
         let debug_depth = frame.debug_lines.len() as u32;
         let debug_top = frame.debug_lines_on_top.len() as u32;
         let crosshair = frame.debug_crosshair.len() as u32;
@@ -3496,7 +3661,7 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
-            pass.set_bind_group(0, &self.group, &[]);
+            self.group.bind(&mut pass);
             // LevelRenderer: no sky inside lava or powder snow (sky fog ends within 2 blocks).
             let sky_visible = match frame.fog {
                 Some(f) => f.sky_end > 2.0,
@@ -3509,18 +3674,18 @@ impl Renderer {
                 }
                 if frame.title {
                     self.panorama.draw(&mut pass);
-                    pass.set_bind_group(0, &self.group, &[]);
+                    self.group.bind(&mut pass);
                 } else if celestial_vertices > 0 {
                     pass.set_pipeline(&self.celestial_pipeline);
                     pass.set_bind_group(0, &self.entity_group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
                     pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
-                    pass.set_bind_group(0, &self.group, &[]);
+                    self.group.bind(&mut pass);
                 }
                 if !frame.title && frame.stars.is_some() {
                     self.stars.draw(&mut pass);
-                    pass.set_bind_group(0, &self.group, &[]);
+                    self.group.bind(&mut pass);
                 }
                 if !frame.title && frame.dark_disc {
                     pass.set_pipeline(&self.dark_disc);
@@ -3533,7 +3698,7 @@ impl Renderer {
                     flat.draw(&mut pass, &flat.calls[..flat.solid_calls], |p| {
                         self.arena.buffer(p)
                     });
-                    pass.set_bind_group(0, &self.group, &[]);
+                    self.group.bind(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
@@ -3576,7 +3741,7 @@ impl Renderer {
                                 ),
                                 ..Default::default()
                             });
-                            pass.set_bind_group(0, &self.group, &[]);
+                            self.group.bind(&mut pass);
                             pass.set_pipeline(&self.solid);
                             pass.set_index_buffer(
                                 self.indices.slice(..),
@@ -3600,14 +3765,14 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
-                pass.set_bind_group(0, &self.group, &[]);
+                self.group.bind(&mut pass);
             }
             if crumbling_quads > 0 {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..crumbling_quads * 6, (entity_quads * 4) as i32, 0..1);
-                pass.set_bind_group(0, &self.group, &[]);
+                self.group.bind(&mut pass);
             }
             // BoatRenderer's water patch (RenderTypes.waterMask): depth only,
             // before translucent terrain, so no water shows inside the boat.
@@ -3620,14 +3785,14 @@ impl Renderer {
                     ((entity_quads + crumbling_quads + translucent_crumbling_quads) * 4) as i32,
                     0..1,
                 );
-                pass.set_bind_group(0, &self.group, &[]);
+                self.group.bind(&mut pass);
             }
             if additive_quads > 0 {
                 pass.set_pipeline(&self.additive_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..additive_quads * 6, (world_quads * 4) as i32, 0..1);
-                pass.set_bind_group(0, &self.group, &[]);
+                self.group.bind(&mut pass);
             }
             if outline_edges > 0 && !frame.outline_after_terrain {
                 pass.set_pipeline(&self.lines);
@@ -3650,7 +3815,7 @@ impl Renderer {
                     flat.draw(&mut pass, &flat.calls[flat.solid_calls..], |p| {
                         self.arena.buffer(p)
                     });
-                    pass.set_bind_group(0, &self.group, &[]);
+                    self.group.bind(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
@@ -3684,7 +3849,7 @@ impl Renderer {
                     let first = side as u32 * 6;
                     pass.draw_indexed(first..first + 6, 0, 0..1);
                 }
-                pass.set_bind_group(0, &self.group, &[]);
+                self.group.bind(&mut pass);
             }
             if translucent_crumbling_quads > 0 {
                 pass.set_pipeline(&self.crumbling_pipeline);
@@ -3836,7 +4001,7 @@ impl Renderer {
                 ..Default::default()
             });
             pass.set_pipeline(&self.debug_lines_on_top);
-            pass.set_bind_group(0, &self.crosshair_group, &[]);
+            self.crosshair_group.bind(&mut pass);
             pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
             let first = debug_depth + debug_top;
             pass.draw(0..4, first..first + crosshair);
@@ -4312,6 +4477,66 @@ mod tests {
         )
         .validate(&module)
         .unwrap();
+    }
+    /// The binding-array terrain shader (Metal with indirect command buffers)
+    /// validates, declares every group 0 texture and sampler as an array of
+    /// one and reaches them only through element 0, and keeps everything else.
+    #[test]
+    fn terrain_with_binding_arrays_uses_element_zero_of_each() {
+        let source = include_str!("terrain.wgsl");
+        let arrays = super::terrain_with_binding_arrays(source);
+        let module = naga::front::wgsl::parse_str(&arrays).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        let arrays_of_one = module
+            .global_variables
+            .iter()
+            .filter(|(_, v)| {
+                matches!(
+                    module.types[v.ty].inner,
+                    naga::TypeInner::BindingArray {
+                        size: naga::ArraySize::Constant(n),
+                        ..
+                    } if n.get() == 1
+                )
+            })
+            .count();
+        assert_eq!(
+            arrays_of_one, 11,
+            "8 sprite arrays, the lightmap, 2 samplers"
+        );
+        for (before, after) in [
+            (
+                "textureSample(sprites, sprite_sampler, uv",
+                "textureSample(sprites[0], sprite_sampler[0], uv",
+            ),
+            (
+                "textureSampleGrad(sprites_7, sprite_sampler,",
+                "textureSampleGrad(sprites_7[0], sprite_sampler[0],",
+            ),
+            (
+                "textureSampleLevel(lightmap, lightmap_sampler,",
+                "textureSampleLevel(lightmap[0], lightmap_sampler[0],",
+            ),
+            ("fn sample_lightmap(", "fn sample_lightmap("),
+        ] {
+            assert!(source.contains(before), "{before}");
+            assert!(arrays.contains(after), "{after}");
+        }
+        // Nothing else changes: removing the array syntax gives the source back.
+        let mut plain = arrays
+            .strip_prefix("enable wgpu_binding_array;\n")
+            .unwrap()
+            .replace("[0]", "")
+            .replace("@group(2)", "@group(0)");
+        for ty in ["texture_2d_array<f32>", "texture_2d<f32>", "sampler"] {
+            plain = plain.replace(&format!("binding_array<{ty}, 1>"), ty);
+        }
+        assert_eq!(plain.trim_end(), source.trim_end());
     }
     #[test]
     fn terrain_attributes_follow_the_terrain_vertex() {
