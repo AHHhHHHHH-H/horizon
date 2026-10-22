@@ -6,6 +6,9 @@
 
 struct WorldTarget {
     size: [u32; 2],
+    /// Made for a shader pack: also a copy source (its deferred stages and
+    /// `opaque_depth` copy the world).
+    pack: bool,
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
@@ -112,7 +115,11 @@ impl Post {
             return None;
         }
         let size = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
-        if self.target.as_ref().is_none_or(|t| t.size != size) {
+        if self
+            .target
+            .as_ref()
+            .is_none_or(|t| t.size != size || t.pack != pack)
+        {
             let extent = wgpu::Extent3d {
                 width: size[0],
                 height: size[1],
@@ -132,19 +139,23 @@ impl Post {
                     })
                     .create_view(&Default::default())
             };
-            let color = texture(
-                "Scaled world",
-                self.format,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            );
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | if pack {
+                    wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                };
+            let color = texture("Scaled world", self.format, usage);
             let depth = texture(
                 "Scaled world depth",
                 wgpu::TextureFormat::Depth32Float,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage,
             );
             let group = self.bind(device, &color);
             self.target = Some(WorldTarget {
                 size,
+                pack,
                 color,
                 depth,
                 group,

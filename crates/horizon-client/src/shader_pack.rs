@@ -3,6 +3,11 @@
 //! player's option values, puts the prelude before each stage's source and
 //! has naga parse and validate it, so a broken pack is reported (file, line,
 //! column) and never reaches the GPU.
+//!
+//! Api 2 ("Horizon shaders v1") adds `deferred` stages, the pack's own render
+//! targets (formats, scale, previous frame) and textures, a shadow map and
+//! world hooks (`[gbuffer]`): WGSL functions Horizon's terrain, entity and sky
+//! shaders call, which also write a G-buffer the stages read.
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -12,14 +17,23 @@ use std::{
 };
 
 /// The stage and uniform contract this build provides.
-pub const API: u32 = 1;
+pub const API: u32 = 2;
 /// The folder beside `options.txt` that holds the packs.
 pub const DIR: &str = "shaderpacks";
+/// The `Frame` uniform and helpers every pack shader gets.
+pub const COMMON: &str = include_str!("shader_pack_common.wgsl");
+/// The full-screen stages' bindings and helpers (after `COMMON`).
 pub const PRELUDE: &str = include_str!("shader_pack_prelude.wgsl");
+/// The world hooks' bindings and types (after Horizon's world shader and `COMMON`).
+const WORLD: &str = include_str!("shader_pack_world.wgsl");
+const TERRAIN_ENTRIES: &str = include_str!("shader_pack_terrain.wgsl");
+const ENTITY_ENTRIES: &str = include_str!("shader_pack_entity.wgsl");
 /// The prelude's vertex entry point, shared by every stage.
 pub const VERTEX_ENTRY: &str = "horizon_stage_vertex";
 const MAX_STAGES: usize = 16;
 const MAX_OPTIONS: usize = 64;
+const MAX_TARGETS: usize = 8;
+const MAX_TEXTURES: usize = 8;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +43,47 @@ struct Manifest {
     stage: Vec<StageEntry>,
     #[serde(default)]
     options: BTreeMap<String, OptionEntry>,
+    #[serde(default)]
+    target: Vec<TargetEntry>,
+    #[serde(default)]
+    texture: Vec<TextureEntry>,
+    shadow: Option<ShadowEntry>,
+    gbuffer: Option<GbufferEntry>,
+    /// Material id (16..=255) to sprite name patterns (`*` matches anything).
+    #[serde(default)]
+    materials: BTreeMap<String, Vec<String>>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetEntry {
+    name: String,
+    format: Option<String>,
+    scale: Option<f32>,
+    #[serde(default)]
+    history: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextureEntry {
+    name: String,
+    path: String,
+    filter: Option<String>,
+    wrap: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShadowEntry {
+    resolution: Option<u32>,
+    distance: Option<f32>,
+    distortion: Option<f32>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GbufferEntry {
+    shader: Option<String>,
+    sun_moon: Option<bool>,
+    stars: Option<bool>,
+    clouds: Option<bool>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +106,7 @@ struct StageEntry {
     shader: String,
     entry: Option<String>,
     scale: Option<f32>,
+    target: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,13 +117,18 @@ struct OptionEntry {
     max: Option<f64>,
     step: Option<f64>,
     values: Option<Vec<i64>>,
+    /// The specialization constant id compiled (SPIR-V) stages read it by.
+    id: Option<u32>,
 }
 
-/// Where a stage runs. Api 1 has `composite` only.
+/// Where a stage runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StageKind {
     /// After the world pass, before the hand: reads the scene's colour and depth.
     Composite,
+    /// After opaque terrain and entities, before translucent terrain, water
+    /// and clouds: its `color` output becomes the world's colour.
+    Deferred,
 }
 #[derive(Clone, Debug)]
 pub struct Stage {
@@ -77,8 +138,93 @@ pub struct Stage {
     /// The prelude followed by the stage's source.
     pub source: String,
     pub entry: String,
-    /// Target size relative to the world's.
+    /// Target size relative to the world's (`color` stages; a named
+    /// target has its own).
     pub scale: f32,
+    /// The pack target it writes (index into `ShaderPack::targets`), or the
+    /// `color` chain.
+    pub target: Option<usize>,
+    /// The vertex shader's module when `source` has none (a compiled stage).
+    pub vertex: Option<String>,
+    /// The pipeline constants: the option values its module declares (by
+    /// name, or by id for a compiled stage).
+    pub constants: Vec<(String, f64)>,
+}
+/// A render target of the pack's own, read by every stage that doesn't
+/// write it (`<name>`; `<name>_history` holds the last frame's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub name: String,
+    pub format: TargetFormat,
+    pub scale: f32,
+    pub history: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetFormat {
+    Rgba8,
+    Rgba16Float,
+    Rgba32Float,
+    R16Float,
+    Rg16Float,
+    R32Float,
+}
+impl TargetFormat {
+    const NAMES: [(&str, Self); 6] = [
+        ("rgba8unorm", Self::Rgba8),
+        ("rgba16float", Self::Rgba16Float),
+        ("rgba32float", Self::Rgba32Float),
+        ("r16float", Self::R16Float),
+        ("rg16float", Self::Rg16Float),
+        ("r32float", Self::R32Float),
+    ];
+    pub fn wgpu(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+            Self::Rgba32Float => wgpu::TextureFormat::Rgba32Float,
+            Self::R16Float => wgpu::TextureFormat::R16Float,
+            Self::Rg16Float => wgpu::TextureFormat::Rg16Float,
+            Self::R32Float => wgpu::TextureFormat::R32Float,
+        }
+    }
+    /// 32-bit float targets can't be filtered everywhere: read them with
+    /// `nearest_sampler` or `textureLoad`.
+    pub fn filterable(self) -> bool {
+        !matches!(self, Self::Rgba32Float | Self::R32Float)
+    }
+}
+/// A texture of the pack's (`textures/*.png`), RGBA8, not sRGB-decoded.
+#[derive(Clone, Debug)]
+pub struct Texture {
+    pub name: String,
+    pub size: [u32; 2],
+    pub pixels: Vec<u8>,
+    pub linear: bool,
+    pub repeat: bool,
+}
+/// The `[shadow]` map: terrain (and entities) seen from the sun or moon.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+    pub resolution: u32,
+    /// Blocks from the eye the map covers, on each side.
+    pub distance: f32,
+    /// 0: a plain orthographic map; towards 1: more texels near the eye.
+    pub distortion: f32,
+}
+/// The `[gbuffer]` hooks, composed into Horizon's world shaders.
+#[derive(Clone, Debug)]
+pub struct Gbuffer {
+    /// The hooks' file ("" when the pack only wants the G-buffer).
+    pub file: String,
+    /// terrain.wgsl with the hooks and the pack entry points.
+    pub terrain: String,
+    /// entity.wgsl (after the overlay constants) with the hooks.
+    pub entity: String,
+    /// The pack defines `sky_color`: the sky is drawn through it.
+    pub sky: bool,
+    pub sun_moon: bool,
+    pub stars: bool,
+    pub clouds: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OptionKind {
@@ -101,6 +247,8 @@ pub struct PackOption {
     pub values: Vec<i64>,
     pub default: f64,
     pub value: f64,
+    /// Its specialization constant id, for compiled (SPIR-V) stages.
+    pub id: Option<u32>,
 }
 
 pub struct ShaderPack {
@@ -109,6 +257,12 @@ pub struct ShaderPack {
     pub info: Info,
     pub stages: Vec<Stage>,
     pub options: Vec<PackOption>,
+    pub targets: Vec<Target>,
+    pub textures: Vec<Texture>,
+    pub shadow: Option<Shadow>,
+    pub gbuffer: Option<Gbuffer>,
+    /// The pack's own materials: id and sprite name patterns.
+    pub materials: Vec<(u8, Vec<String>)>,
     /// A Java (OptiFine/Iris) pack's translated passes, instead of `stages`.
     pub java: Option<crate::java_pack::JavaPasses>,
     dir: PathBuf,
@@ -136,7 +290,11 @@ impl Stamp {
                 let path = entry.path();
                 let Ok(meta) = entry.metadata() else { continue };
                 if meta.is_dir() {
-                    stack.push(path);
+                    // A Rust pack's build folder: thousands of files the game
+                    // never reads (it reads the .spv copied into shaders/).
+                    if entry.file_name() != "target" {
+                        stack.push(path);
+                    }
                 } else {
                     files.push((path, meta.len(), meta.modified().ok()));
                 }
@@ -231,26 +389,201 @@ impl ShaderPack {
     pub fn load(dir: &Path, values: &BTreeMap<String, String>) -> Result<Self, String> {
         let stamp = Stamp::of(dir);
         let manifest = manifest(dir)?;
-        if manifest.stage.is_empty() || manifest.stage.len() > MAX_STAGES {
+        if manifest.stage.len() > MAX_STAGES
+            || (manifest.stage.is_empty() && manifest.gbuffer.is_none())
+        {
             return Err(format!("pack.toml: 1 to {MAX_STAGES} stages"));
         }
         if manifest.options.len() > MAX_OPTIONS {
             return Err(format!("pack.toml: at most {MAX_OPTIONS} options"));
         }
+        if manifest.target.len() > MAX_TARGETS || manifest.texture.len() > MAX_TEXTURES {
+            return Err(format!(
+                "pack.toml: at most {MAX_TARGETS} targets and {MAX_TEXTURES} textures"
+            ));
+        }
+        let api = manifest.pack.api;
+        let since = |what: &str, version: u32| -> Result<(), String> {
+            if api < version {
+                return Err(format!("pack.toml: {what} needs `api = {version}`"));
+            }
+            Ok(())
+        };
         let options = manifest
             .options
             .into_iter()
             .map(|(key, entry)| option(key, entry, values))
             .collect::<Result<Vec<_>, _>>()?;
+        let mut names = std::collections::BTreeSet::new();
+        let mut name = |name: &str| -> Result<(), String> {
+            let ident = name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !ident || name == "color" || !names.insert(name.to_string()) {
+                return Err(format!(
+                    "pack.toml: `{name}`: names are lowercase identifiers, used once, not `color`"
+                ));
+            }
+            Ok(())
+        };
+        let mut targets = Vec::new();
+        for entry in manifest.target {
+            since("[[target]]", 2)?;
+            name(&entry.name)?;
+            let format = match entry.format.as_deref() {
+                None => TargetFormat::Rgba16Float,
+                Some(f) => TargetFormat::NAMES
+                    .iter()
+                    .find(|(n, _)| *n == f)
+                    .map(|(_, t)| *t)
+                    .ok_or_else(|| {
+                        let known: Vec<_> = TargetFormat::NAMES.iter().map(|(n, _)| *n).collect();
+                        format!(
+                            "pack.toml: target `{}`: format `{f}` isn't one of {}",
+                            entry.name,
+                            known.join(", ")
+                        )
+                    })?,
+            };
+            let scale = entry.scale.unwrap_or(1.0);
+            if !(0.125..=2.0).contains(&scale) {
+                return Err(format!(
+                    "pack.toml: target `{}`: scale must be 0.125 to 2",
+                    entry.name
+                ));
+            }
+            if entry.history {
+                name(&format!("{}_history", entry.name))?;
+            }
+            targets.push(Target {
+                name: entry.name,
+                format,
+                scale,
+                history: entry.history,
+            });
+        }
+        let mut textures = Vec::new();
+        for entry in manifest.texture {
+            since("[[texture]]", 2)?;
+            name(&entry.name)?;
+            let path = inside(dir, &entry.path)?;
+            let (width, height, pixels) =
+                crate::hud::decode(&path).map_err(|e| format!("{}: {e}", entry.path))?;
+            if width > 4096 || height > 4096 {
+                return Err(format!("{}: at most 4096 x 4096", entry.path));
+            }
+            let choice = |value: Option<&str>, a: &str, b: &str| match value {
+                None => Ok(true),
+                Some(v) if v == a => Ok(true),
+                Some(v) if v == b => Ok(false),
+                Some(v) => Err(format!(
+                    "pack.toml: texture `{}`: `{v}` isn't `{a}` or `{b}`",
+                    entry.name
+                )),
+            };
+            textures.push(Texture {
+                linear: choice(entry.filter.as_deref(), "linear", "nearest")?,
+                repeat: choice(entry.wrap.as_deref(), "repeat", "clamp")?,
+                name: entry.name,
+                size: [width, height],
+                pixels,
+            });
+        }
+        let shadow = match manifest.shadow {
+            None => None,
+            Some(s) => {
+                since("[shadow]", 2)?;
+                let resolution = s.resolution.unwrap_or(2048);
+                let distance = s.distance.unwrap_or(128.0);
+                let distortion = s.distortion.unwrap_or(0.85);
+                if !resolution.is_power_of_two() || !(512..=8192).contains(&resolution) {
+                    return Err("pack.toml: shadow resolution: a power of two, 512 to 8192".into());
+                }
+                if !(16.0..=512.0).contains(&distance) || !(0.0..=0.95).contains(&distortion) {
+                    return Err(
+                        "pack.toml: shadow distance 16 to 512 blocks, distortion 0 to 0.95".into(),
+                    );
+                }
+                Some(Shadow {
+                    resolution,
+                    distance,
+                    distortion,
+                })
+            }
+        };
+        let gbuffer = match manifest.gbuffer {
+            None => None,
+            Some(g) => {
+                since("[gbuffer]", 2)?;
+                let (file, code) = match &g.shader {
+                    Some(file) => {
+                        let path = inside(dir, file)?;
+                        let code = fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
+                        (file.clone(), code)
+                    }
+                    None => (String::new(), String::new()),
+                };
+                let hooks = hooks(&code);
+                let world = |shader: &str, entries: &str, entry: &str| -> Result<String, String> {
+                    let before = format!("{shader}\n{COMMON}\n{WORLD}\n");
+                    let source = format!("{before}{hooks}\n{entries}");
+                    let shown = if file.is_empty() { "[gbuffer]" } else { &file };
+                    validate(&source, before.lines().count() as u32, shown, entry)?;
+                    Ok(source)
+                };
+                let terrain = world(
+                    include_str!("terrain.wgsl"),
+                    TERRAIN_ENTRIES,
+                    "fs_solid_pack",
+                )?;
+                let entity = world(
+                    &(crate::overlay::wgsl_constants() + include_str!("entity.wgsl")),
+                    ENTITY_ENTRIES,
+                    "fs_entity_pack",
+                )?;
+                Some(Gbuffer {
+                    sky: defines(&code, "sky_color"),
+                    file,
+                    terrain,
+                    entity,
+                    sun_moon: g.sun_moon.unwrap_or(true),
+                    stars: g.stars.unwrap_or(true),
+                    clouds: g.clouds.unwrap_or(true),
+                })
+            }
+        };
+        let mut materials = Vec::new();
+        for (id, patterns) in manifest.materials {
+            since("[materials]", 2)?;
+            match id.parse::<u8>() {
+                Ok(id) if id >= 16 => materials.push((id, patterns)),
+                _ => return Err(format!("pack.toml: material `{id}`: an id from 16 to 255")),
+            }
+        }
+        let resources = declarations(&targets, &textures);
         let mut stages = Vec::new();
         for entry in manifest.stage {
             let kind = match entry.kind.as_str() {
                 "composite" => StageKind::Composite,
+                "deferred" => {
+                    since("a `deferred` stage", 2)?;
+                    StageKind::Deferred
+                }
                 other => {
                     return Err(format!(
-                        "pack.toml: stage kind `{other}` isn't supported (api {API} has `composite`)"
+                        "pack.toml: stage kind `{other}` isn't supported (api {API} has `composite` and `deferred`)"
                     ));
                 }
+            };
+            let target = match entry.target.as_deref() {
+                None | Some("color") => None,
+                Some(t) => Some(
+                    targets
+                        .iter()
+                        .position(|x| x.name == t)
+                        .ok_or_else(|| format!("pack.toml: {}: no target `{t}`", entry.shader))?,
+                ),
             };
             let scale = entry.scale.unwrap_or(1.0);
             if !(0.25..=2.0).contains(&scale) {
@@ -259,20 +592,50 @@ impl ShaderPack {
                     entry.shader
                 ));
             }
-            let path = dir.join(&entry.shader);
-            if !path.starts_with(dir) || entry.shader.contains("..") {
-                return Err(format!("pack.toml: {} is outside the pack", entry.shader));
+            if kind == StageKind::Deferred && gbuffer.is_none() {
+                return Err(format!(
+                    "pack.toml: {}: a deferred stage needs `[gbuffer]`",
+                    entry.shader
+                ));
             }
-            let code = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", entry.shader))?;
+            if kind == StageKind::Deferred && target.is_none() && scale != 1.0 {
+                return Err(format!(
+                    "pack.toml: {}: a deferred stage writing `color` has scale 1",
+                    entry.shader
+                ));
+            }
+            let path = inside(dir, &entry.shader)?;
             let entry_point = entry.entry.unwrap_or_else(|| "fs_main".into());
-            let source = format!("{PRELUDE}\n{code}");
-            validate(&source, &entry.shader, &entry_point)?;
+            let before = format!("{COMMON}\n{PRELUDE}\n{resources}");
+            let (source, vertex, module) = if entry.shader.ends_with(".spv") {
+                // Compiled (Rust, rust-gpu): the module brings its own
+                // bindings; the prelude only gives the vertex shader.
+                since("a compiled (.spv) stage", 2)?;
+                let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", entry.shader))?;
+                let (source, module) = spirv_stage(&bytes, &entry.shader, &entry_point)?;
+                (source, Some(before), module)
+            } else {
+                let code =
+                    fs::read_to_string(&path).map_err(|e| format!("{}: {e}", entry.shader))?;
+                let source = format!("{before}{code}");
+                let module = validate(
+                    &source,
+                    before.lines().count() as u32,
+                    &entry.shader,
+                    &entry_point,
+                )?;
+                (source, None, module)
+            };
+            let constants = stage_constants(&module, &options);
             stages.push(Stage {
                 kind,
                 file: entry.shader,
                 source,
                 entry: entry_point,
                 scale,
+                target,
+                vertex,
+                constants,
             });
         }
         Ok(Self {
@@ -283,6 +646,11 @@ impl ShaderPack {
             info: manifest.pack,
             stages,
             options,
+            targets,
+            textures,
+            shadow,
+            gbuffer,
+            materials,
             java: None,
             dir: dir.to_path_buf(),
             stamp,
@@ -310,6 +678,11 @@ impl ShaderPack {
             id,
             stages: Vec::new(),
             options: Vec::new(),
+            targets: Vec::new(),
+            textures: Vec::new(),
+            shadow: None,
+            gbuffer: None,
+            materials: Vec::new(),
             java: Some(java),
             dir: path.to_path_buf(),
             stamp,
@@ -372,6 +745,7 @@ fn option(
         .unwrap_or(default);
     Ok(PackOption {
         label: entry.label.unwrap_or_else(|| key.clone()),
+        id: entry.id,
         key,
         kind,
         values: values_list,
@@ -380,10 +754,15 @@ fn option(
     })
 }
 
-/// naga parses and validates the stage (prelude included) and checks its
-/// fragment entry point; errors point into the pack's own file.
-fn validate(source: &str, file: &str, entry: &str) -> Result<(), String> {
-    let prelude_lines = PRELUDE.lines().count() as u32 + 1;
+/// naga parses and validates the stage (the `prelude_lines` before the
+/// pack's code included) and checks its fragment entry point; errors point
+/// into the pack's own file.
+fn validate(
+    source: &str,
+    prelude_lines: u32,
+    file: &str,
+    entry: &str,
+) -> Result<naga::Module, String> {
     let at = |location: Option<naga::SourceLocation>| match location {
         Some(l) if l.line_number > prelude_lines => {
             format!(
@@ -409,7 +788,273 @@ fn validate(source: &str, file: &str, entry: &str) -> Result<(), String> {
     {
         return Err(format!("{file}: no fragment entry point `{entry}`"));
     }
-    Ok(())
+    Ok(module)
+}
+
+/// A compiled stage (SPIR-V, from rust-gpu): parsed and validated by naga,
+/// with its fragment entry point, and written back as WGSL for wgpu.
+fn spirv_stage(bytes: &[u8], file: &str, entry: &str) -> Result<(String, naga::Module), String> {
+    let module = naga::front::spv::parse_u8_slice(bytes, &Default::default())
+        .map_err(|e| format!("{file}: {e}"))?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map_err(|e| format!("{file}: {}", e.as_inner()))?;
+    if !module
+        .entry_points
+        .iter()
+        .any(|e| e.name == entry && e.stage == naga::ShaderStage::Fragment)
+    {
+        return Err(format!("{file}: no fragment entry point `{entry}`"));
+    }
+    let wgsl =
+        naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+            .map_err(|e| format!("{file}: {e}"))?;
+    Ok((wgsl, module))
+}
+
+/// The option values a stage's module declares an override for: by name,
+/// or by specialization constant id (compiled stages, which get every value
+/// as the bits of an `f32`).
+fn stage_constants(module: &naga::Module, options: &[PackOption]) -> Vec<(String, f64)> {
+    let mut out = Vec::new();
+    for (_, o) in module.overrides.iter() {
+        let by_name = o
+            .name
+            .as_deref()
+            .and_then(|n| options.iter().find(|p| p.key == n));
+        if let Some(p) = by_name {
+            out.push((p.key.clone(), p.value));
+        } else if let Some(id) = o.id
+            && let Some(p) = options.iter().find(|p| p.id == Some(u32::from(id)))
+        {
+            out.push((id.to_string(), f64::from((p.value as f32).to_bits())));
+        }
+    }
+    out
+}
+
+/// `file` inside the pack folder `dir`.
+fn inside(dir: &Path, file: &str) -> Result<PathBuf, String> {
+    let path = dir.join(file);
+    if !path.starts_with(dir) || file.contains("..") || Path::new(file).is_absolute() {
+        return Err(format!("pack.toml: {file} is outside the pack"));
+    }
+    Ok(path)
+}
+
+/// `code` defines the function `name`.
+fn defines(code: &str, name: &str) -> bool {
+    code.match_indices("fn").any(|(i, _)| {
+        let before = code[..i].chars().next_back();
+        let rest = code[i + 2..].trim_start();
+        before.is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            && code[i + 2..].starts_with(char::is_whitespace)
+            && rest
+                .strip_prefix(name)
+                .is_some_and(|r| r.trim_start().starts_with('('))
+    })
+}
+
+/// The pack's world hooks, with Horizon's defaults (vanilla's look) for the
+/// ones it leaves out.
+fn hooks(code: &str) -> String {
+    let mut out = code.to_string();
+    for (name, default) in [
+        (
+            "surface_vertex",
+            "fn surface_vertex(v: SurfaceVertex) -> vec3<f32> { return v.world; }",
+        ),
+        (
+            "surface_color",
+            "fn surface_color(s: Surface) -> vec4<f32> { return s.vanilla; }",
+        ),
+        (
+            "surface_normal",
+            "fn surface_normal(s: Surface) -> vec3<f32> { return s.normal; }",
+        ),
+        (
+            "sky_color",
+            "fn sky_color(p: SkyPixel) -> vec4<f32> { return p.vanilla; }",
+        ),
+    ] {
+        if !defines(code, name) {
+            out.push('\n');
+            out.push_str(default);
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// terrain.wgsl with the default hooks and the pack entry points: the shadow
+/// pass of a pack without `[gbuffer]`.
+pub fn shadow_only_terrain() -> String {
+    format!(
+        "{}\n{COMMON}\n{WORLD}\n{}\n{TERRAIN_ENTRIES}",
+        include_str!("terrain.wgsl"),
+        hooks("")
+    )
+}
+
+/// What a full-screen stage reads in group 1: every pack target (and its
+/// history), then every texture, in that order.
+pub fn resources(targets: &[Target], textures: &[Texture]) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for t in targets {
+        out.push((t.name.clone(), t.format.filterable()));
+        if t.history {
+            out.push((format!("{}_history", t.name), t.format.filterable()));
+        }
+    }
+    out.extend(textures.iter().map(|t| (t.name.clone(), true)));
+    out
+}
+fn declarations(targets: &[Target], textures: &[Texture]) -> String {
+    resources(targets, textures)
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| format!("@group(1) @binding({i}) var {name}: texture_2d<f32>;\n"))
+        .collect()
+}
+
+/// A sprite's material (MATERIAL_* in shader_pack_common.wgsl) by name: the
+/// pack's patterns first, then Horizon's own sorting.
+pub fn material(name: &str, pack: &[(u8, Vec<String>)]) -> u8 {
+    let path = name.strip_prefix("minecraft:").unwrap_or(name);
+    if let Some((id, _)) = pack
+        .iter()
+        .find(|(_, patterns)| patterns.iter().any(|p| glob(p, path)))
+    {
+        return *id;
+    }
+    let Some(n) = path.strip_prefix("block/") else {
+        return 1;
+    };
+    const PLANTS: &[&str] = &[
+        "short_grass",
+        "tall_grass_*",
+        "fern",
+        "large_fern_*",
+        "dead_bush",
+        "bush",
+        "firefly_bush",
+        "short_dry_grass",
+        "tall_dry_grass",
+        "*_sapling",
+        "dandelion",
+        "poppy",
+        "blue_orchid",
+        "allium",
+        "azure_bluet",
+        "*_tulip",
+        "oxeye_daisy",
+        "cornflower",
+        "lily_of_the_valley",
+        "wither_rose",
+        "torchflower",
+        "*_eyeblossom",
+        "sunflower_*",
+        "lilac_*",
+        "rose_bush_*",
+        "peony_*",
+        "pitcher_plant_*",
+        "wheat_stage*",
+        "carrots_stage*",
+        "potatoes_stage*",
+        "beetroots_stage*",
+        "sugar_cane",
+        "sweet_berry_bush_stage*",
+        "seagrass",
+        "tall_seagrass_*",
+        "kelp",
+        "kelp_plant",
+        "vine",
+        "pink_petals",
+        "wildflowers",
+        "crimson_roots",
+        "warped_roots",
+        "nether_sprouts",
+        "hanging_roots",
+    ];
+    const EMISSIVE: &[&str] = &[
+        "glowstone",
+        "sea_lantern",
+        "shroomlight",
+        "jack_o_lantern",
+        "redstone_lamp_on",
+        "torch",
+        "soul_torch",
+        "redstone_torch",
+        "lantern",
+        "soul_lantern",
+        "end_rod",
+        "beacon",
+        "magma",
+        "*campfire_fire",
+        "fire_*",
+        "soul_fire_*",
+        "*_froglight_*",
+        "glow_lichen",
+        "crying_obsidian",
+        "sea_pickle",
+        "cave_vines*_lit",
+        "copper_bulb_lit*",
+        "*_copper_bulb_lit*",
+        "respawn_anchor_top",
+        "conduit",
+    ];
+    const GLASS: &[&str] = &[
+        "glass",
+        "*_stained_glass",
+        "*glass_pane_top",
+        "tinted_glass",
+        "ice",
+        "slime_block",
+        "honey_block_*",
+        "nether_portal",
+    ];
+    if matches!(n, "water_still" | "water_flow" | "water_overlay") {
+        4
+    } else if matches!(n, "lava_still" | "lava_flow") {
+        5
+    } else if n.ends_with("_leaves") {
+        2
+    } else if PLANTS.iter().any(|p| glob(p, n)) {
+        3
+    } else if GLASS.iter().any(|p| glob(p, n)) {
+        6
+    } else if EMISSIVE.iter().any(|p| glob(p, n)) {
+        7
+    } else {
+        1
+    }
+}
+/// `*` matches any run of characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, tail)) => {
+            text.starts_with(head)
+                && (0..=text.len() - head.len()).any(|i| {
+                    text.is_char_boundary(head.len() + i) && glob(tail, &text[head.len() + i..])
+                })
+        }
+    }
+}
+/// The material of every sprite layer, four to a word, as the world hooks'
+/// `materials` buffer holds them.
+pub fn material_table(layers: &BTreeMap<String, u32>, pack: &[(u8, Vec<String>)]) -> Vec<u32> {
+    let count = layers.values().max().map_or(0, |&m| m as usize + 1);
+    let mut words = vec![0x0101_0101u32; count.div_ceil(4).max(1)];
+    for (name, &layer) in layers {
+        let shift = (layer % 4) * 8;
+        let word = &mut words[layer as usize / 4];
+        *word = (*word & !(0xff << shift)) | (u32::from(material(name, pack)) << shift);
+    }
+    words
 }
 
 /// The option values saved for a pack (`shaderpacks/<id>.txt`, `key=value`).
@@ -490,6 +1135,232 @@ override mode: i32 = 1;
         assert!(!pack.changed());
     }
 
+    /// Every module of a pack, composed as the game composes it, translates
+    /// to MSL (Metal), HLSL (DirectX 12) and SPIR-V (Vulkan), entry point by
+    /// entry point, with the pack's option values as pipeline constants.
+    fn translates_everywhere(pack: &ShaderPack) {
+        // Each module with the constants wgpu gives it: a stage's own (by
+        // name, or by id for a compiled stage), the hooks every option they
+        // declare. A compiled stage's vertex shader is checked too.
+        let named = |source: &str| -> Vec<(String, f64)> {
+            let module = naga::front::wgsl::parse_str(source).expect("hooks parse");
+            let declared: std::collections::HashSet<_> = module
+                .overrides
+                .iter()
+                .filter_map(|(_, o)| o.name.clone())
+                .collect();
+            pack.constants()
+                .into_iter()
+                .filter(|(k, _)| declared.contains(*k))
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        let mut modules: Vec<(&str, &str, Vec<(String, f64)>)> = Vec::new();
+        for s in &pack.stages {
+            modules.push((s.file.as_str(), s.source.as_str(), s.constants.clone()));
+            if let Some(v) = &s.vertex {
+                modules.push(("stage vertex", v.as_str(), Vec::new()));
+            }
+        }
+        let shadow_terrain = shadow_only_terrain();
+        match &pack.gbuffer {
+            Some(g) => {
+                modules.push(("terrain hooks", &g.terrain, named(&g.terrain)));
+                modules.push(("entity hooks", &g.entity, named(&g.entity)));
+            }
+            None if pack.shadow.is_some() => modules.push(("shadow", &shadow_terrain, Vec::new())),
+            None => {}
+        }
+        for (name, source, constants) in modules {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::default(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            let constants: naga::back::PipelineConstants = constants.into_iter().collect();
+            for entry in &module.entry_points {
+                let (module, info) = naga::back::pipeline_constants::process_overrides(
+                    &module,
+                    &info,
+                    Some((entry.stage, &entry.name)),
+                    &constants,
+                )
+                .unwrap_or_else(|e| panic!("{name} {}: {e}", entry.name));
+                let at = |what: &str| format!("{name} {}: {what}", entry.name);
+                let mut hlsl = String::new();
+                naga::back::hlsl::Writer::new(
+                    &mut hlsl,
+                    &naga::back::hlsl::Options::default(),
+                    &naga::back::hlsl::PipelineOptions {
+                        entry_point: Some((entry.stage, entry.name.clone())),
+                    },
+                )
+                .write(&module, &info, None)
+                .unwrap_or_else(|e| panic!("{}", at(&format!("HLSL: {e}"))));
+                naga::back::msl::write_string(
+                    &module,
+                    &info,
+                    &naga::back::msl::Options::default(),
+                    &naga::back::msl::PipelineOptions {
+                        entry_point: Some((entry.stage, entry.name.clone())),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{}", at(&format!("MSL: {e}"))));
+                naga::back::spv::write_vec(
+                    &module,
+                    &info,
+                    &naga::back::spv::Options::default(),
+                    Some(&naga::back::spv::PipelineOptions {
+                        shader_stage: entry.stage,
+                        entry_point: entry.name.clone(),
+                    }),
+                )
+                .unwrap_or_else(|e| panic!("{}", at(&format!("SPIR-V: {e}"))));
+            }
+        }
+    }
+
+    #[test]
+    fn every_example_pack_loads_and_translates_for_metal_directx_and_vulkan() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/shaderpacks");
+        let mut seen = 0;
+        for entry in fs::read_dir(&root).unwrap().flatten() {
+            if !entry.path().join("pack.toml").is_file() {
+                continue;
+            }
+            let pack = ShaderPack::load(&entry.path(), &BTreeMap::new())
+                .unwrap_or_else(|e| panic!("{}: {e}", entry.path().display()));
+            translates_everywhere(&pack);
+            seen += 1;
+        }
+        assert!(seen >= 1, "{seen} example packs");
+    }
+
+    #[test]
+    fn api_2_reads_targets_textures_shadow_and_hooks() {
+        let manifest = r#"
+[pack]
+name = "Two"
+api = 2
+
+[shadow]
+resolution = 1024
+distance = 64.0
+
+[gbuffer]
+shader = "shaders/world.wgsl"
+clouds = false
+
+[[target]]
+name = "glow"
+format = "rgba16float"
+scale = 0.5
+history = true
+
+[[texture]]
+name = "noise"
+path = "textures/noise.png"
+filter = "nearest"
+
+[materials]
+20 = ["block/*_ore"]
+
+[[stage]]
+kind = "deferred"
+shader = "shaders/light.wgsl"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/glow.wgsl"
+target = "glow"
+"#;
+        let stage = "@fragment fn fs_main(in: StageIn) -> @location(0) vec4<f32> {\n    let g = gbuffer_at(in.uv);\n    let n = textureSampleLevel(noise, repeat_sampler, in.uv, 0.0);\n    let h = textureSampleLevel(glow_history, linear_sampler, in.uv, 0.0);\n    return vec4(g.normal * shadow_lit(vec3(0.0), g.normal), 1.0) + n + h;\n}\n";
+        let world = "fn surface_color(s: Surface) -> vec4<f32> { return s.albedo * shadow_lit(s.world, s.normal); }\n";
+        let dir = pack(&[
+            ("pack.toml", manifest),
+            ("shaders/world.wgsl", world),
+            ("shaders/light.wgsl", stage),
+            ("shaders/glow.wgsl", stage),
+        ]);
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255; 16])
+                .unwrap();
+        }
+        fs::create_dir_all(dir.join("textures")).unwrap();
+        fs::write(dir.join("textures/noise.png"), png).unwrap();
+        let pack = ShaderPack::load(&dir, &BTreeMap::new()).unwrap();
+        assert_eq!(pack.shadow.unwrap().resolution, 1024);
+        assert_eq!(pack.targets[0].format, TargetFormat::Rgba16Float);
+        assert!(pack.targets[0].history);
+        assert_eq!(pack.textures[0].size, [2, 2]);
+        assert!(!pack.textures[0].linear && pack.textures[0].repeat);
+        let g = pack.gbuffer.as_ref().unwrap();
+        assert!(!g.clouds && g.sun_moon && !g.sky);
+        assert_eq!(pack.stages[0].kind, StageKind::Deferred);
+        assert_eq!(pack.stages[1].target, Some(0));
+        assert_eq!(
+            resources(&pack.targets, &pack.textures),
+            [
+                ("glow".to_string(), true),
+                ("glow_history".to_string(), true),
+                ("noise".to_string(), true)
+            ]
+        );
+        assert_eq!(material("minecraft:block/iron_ore", &pack.materials), 20);
+        translates_everywhere(&pack);
+        // A broken hook points into its file.
+        fs::write(
+            dir.join("shaders/world.wgsl"),
+            "\nfn surface_color(s: Surface) -> vec4<f32> { return nope; }\n",
+        )
+        .unwrap();
+        let error = ShaderPack::load(&dir, &BTreeMap::new()).err().unwrap();
+        assert!(error.starts_with("shaders/world.wgsl:2:"), "{error}");
+        // Deferred stages need the split world pass of `[gbuffer]`.
+        let no_gbuffer = manifest.replace(
+            "[gbuffer]\nshader = \"shaders/world.wgsl\"\nclouds = false\n",
+            "",
+        );
+        fs::write(dir.join("pack.toml"), no_gbuffer).unwrap();
+        let error = ShaderPack::load(&dir, &BTreeMap::new()).err().unwrap();
+        assert!(error.contains("needs `[gbuffer]`"), "{error}");
+    }
+
+    #[test]
+    fn sprites_are_sorted_into_materials() {
+        for (name, id) in [
+            ("minecraft:block/water_still", 4),
+            ("minecraft:block/oak_leaves", 2),
+            ("minecraft:block/short_grass", 3),
+            ("minecraft:block/tall_grass_top", 3),
+            ("minecraft:block/red_tulip", 3),
+            ("minecraft:block/glowstone", 7),
+            ("minecraft:block/lava_flow", 5),
+            ("minecraft:block/white_stained_glass", 6),
+            ("minecraft:block/stone", 1),
+            ("minecraft:block/torchflower_crop_stage0", 1),
+        ] {
+            assert_eq!(material(name, &[]), id, "{name}");
+        }
+        let layers = BTreeMap::from([
+            ("minecraft:block/stone".to_string(), 0),
+            ("minecraft:block/water_still".to_string(), 5),
+        ]);
+        assert_eq!(material_table(&layers, &[]), [0x0101_0101, 0x0101_0401]);
+        assert!(glob("a*c*e", "abcde") && !glob("a*c", "abd"));
+    }
+
     #[test]
     fn options_take_saved_values_within_their_range() {
         let dir = pack(&[("pack.toml", MANIFEST), ("shaders/grade.wgsl", GRADE)]);
@@ -529,8 +1400,8 @@ override mode: i32 = 1;
     fn manifests_are_checked() {
         for (manifest, expected) in [
             (
-                MANIFEST.replace("api = 1", "api = 2"),
-                "needs shader pack api 2",
+                MANIFEST.replace("api = 1", "api = 3"),
+                "needs shader pack api 3",
             ),
             (
                 MANIFEST.replace("\"composite\"", "\"shadow\""),

@@ -14,7 +14,7 @@ Both are off by default. With no pack selected the renderer draws exactly what i
 | --- | --- |
 | Renderer layout (below) | today's code |
 | Horizon shader packs: `composite` stage, uniforms, hot reload, Shader Packs page | done (the page: list, pick, open the folder) |
-| Horizon shader packs: `deferred`, `gbuffer`, `shadow` stages, custom textures | planned |
+| Horizon shaders v1 (`api = 2`): `shadow`, world hooks + G-buffer, `deferred`, targets, textures, materials, stages in Rust | done (below); `final` stage planned |
 | Java shader packs: preprocessing + GLSL parse coverage | spike done: 450 of 470 programs reach valid WGSL (below) |
 | Java shader packs: preprocessor (`crates/horizon-shaderpack`: includes, options, Iris's macros, JCPP's `#if` and `#define` rules) | done: every program of the three test packs preprocesses; ten packs tested (Compatibility, below) |
 | Java shader packs: GLSL → WGSL (`horizon_shaderpack::translate`: syntax-tree legaliser, naga) | done: the 464 programs the three test packs enable by default translate (below) |
@@ -194,10 +194,214 @@ too.
 
 ### Safety
 
-A Horizon shader pack is WGSL only: it runs on the GPU, can't read files, the network or game memory, and naga
-validates it before wgpu sees it. A shader can still be slow or loop for long enough to make the GPU driver reset;
+A Horizon shader pack is WGSL, or SPIR-V that naga turns into WGSL: it runs on the GPU, can't read files, the
+network or game memory, and naga validates it before wgpu sees it. A shader can still be slow or loop for long enough to make the GPU driver reset;
 that costs a frame or a device loss, which the renderer already handles. Limits: 16 stages, 64 options, stage
-targets at most the screen size times 2.
+targets at most the screen size times 2, 8 render targets, 8 textures.
+
+## Horizon shaders v1
+
+`api = 2` in `pack.toml`. Version 1 of Horizon's own format adds what the well-known Java packs are made of:
+shadow maps, world hooks with a G-buffer, `deferred` stages, render targets, textures and materials. Stages can
+also be written in Rust. `examples/shaderpacks/daybreak` uses all of it: sunlight with soft shadows, waving plants,
+water with waves, reflections and glints, a painted sky, fog, light shafts, ambient occlusion, bloom and a
+filmic tonemap.
+
+### Rust or WGSL: the decision
+
+Full-screen stages can be written in **Rust**, compiled with [rust-gpu](https://github.com/Rust-GPU/rust-gpu), or in
+WGSL as before. World hooks stay WGSL for now.
+
+- **It runs everywhere.** rust-gpu emits SPIR-V. The game doesn't hand that to the driver: naga parses it
+  (`spv-in`), validates it, and writes it out as WGSL, so wgpu treats it like any other stage and it reaches
+  Metal, Vulkan and DirectX 12 the same way. A test translates every example stage to MSL, HLSL and SPIR-V.
+- **Players need nothing.** A pack ships the compiled `.spv` next to its `pack.toml`. The game reads it with the
+  naga it already has.
+- **Authors run one command.** `cargo horizon-shader build` in the pack folder (`crates/cargo-horizon-shader`)
+  runs rust-gpu's `cargo gpu build`, which installs its own pinned nightly toolchain the first time (about 12
+  minutes on an M4 Pro; later builds take 2 to 4 seconds). It then checks every module as the game will and
+  copies it into `shaders/`. `cargo horizon-shader check` runs only the checks.
+- **Why not Rust everywhere.** rust-gpu builds entry points, and a world hook is a function that Horizon composes
+  into its own terrain, entity and sky shaders. Making Rust hooks needs a pass that lifts functions out of the
+  compiled module (naga IR); that is listed in FEATURES.md. WGSL hooks are short (Daybreak's are 160 lines).
+- **Costs.** Option names don't survive rust-gpu (specialization constants have only numbers), so an option
+  that a Rust stage reads gives its number as `id` in `pack.toml`. Images and samplers can't sit in structs in
+  SPIR-V, so the SDK passes them to helpers one by one.
+
+Install the builder once: `cargo install --git https://github.com/Rust-GPU/rust-gpu --tag v0.11.0 cargo-gpu`, then
+`cargo install --git https://github.com/ludovic111/horizon cargo-horizon-shader`.
+
+### Layout of a v1 pack
+
+```
+daybreak/
+  pack.toml
+  Cargo.toml          # the Rust stages' crate (not needed by players)
+  src/lib.rs          # the Rust stages
+  shaders/
+    world.wgsl        # the world hooks
+    daybreak.spv      # built by `cargo horizon-shader build`
+  LICENSE
+```
+
+```toml
+[pack]
+name = "Daybreak"
+api = 2
+
+[shadow]                       # a shadow map from the sun (the moon at night)
+resolution = 2048              # a power of two, 512 to 8192
+distance = 112.0               # blocks around the player, 16 to 512
+distortion = 0.85              # more texels near the player, 0 to 0.95
+
+[gbuffer]
+shader = "shaders/world.wgsl"  # the world hooks
+sun_moon = true                # draw vanilla's sun and moon (default true)
+stars = true
+clouds = true
+
+[[target]]                     # a render target the stages can write and read
+name = "bloom"
+format = "rgba16float"         # rgba8unorm, rgba16float, rgba32float, r16float, rg16float, r32float
+scale = 0.5                    # of the world's size
+history = false                # true: `bloom_history` is last frame's (for TAA and the like)
+
+[[texture]]                    # a PNG the stages and hooks read
+name = "noise"
+path = "textures/noise.png"    # up to 4096 x 4096
+filter = "linear"              # or nearest
+wrap = "repeat"                # or clamp
+
+[materials]                    # the pack's own material ids, 16 to 255, by sprite name
+20 = ["block/*_ore", "block/amethyst_*"]
+
+[[stage]]
+kind = "deferred"              # needs [gbuffer]
+shader = "shaders/daybreak.spv"
+entry = "ambient_occlusion"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/daybreak.spv"
+entry = "bloom_bright"
+target = "bloom"               # writes the target instead of the colour chain
+
+[options.fog_density]
+label = "Fog"
+default = 1.0
+min = 0.0
+max = 3.0
+id = 1                         # the specialization constant id a Rust stage reads it by
+```
+
+### Stages in v1
+
+| Stage | Runs | Reads | Writes |
+| --- | --- | --- | --- |
+| `shadow` (from `[shadow]`) | before the world, from the sun or moon | terrain in `distance`, alpha-tested | shadow depth (`Depth32Float`, reversed) |
+| world hooks (`[gbuffer]`) | inside Horizon's terrain, entity and sky shaders | vertex data, atlas, shadow map, `Frame` | colour + the G-buffer |
+| `deferred` | after opaque terrain and entities, before translucent ones | opaque colour, depth, G-buffer | opaque colour |
+| `composite` | after the world pass, before the hand | scene colour and depth, G-buffer, opaque depth, shadow map, targets | the colour chain or a target |
+| `final` | after the hand | | | planned |
+
+The G-buffer is one `Rgba16Uint` target written beside colour by the opaque and translucent world passes: the
+normal (octahedral, two 16-bit values), block light << 8 | sky light, and the material id. Translucent
+surfaces overwrite it, so `composite` stages see water's normal and material.
+
+Materials Horizon sorts sprites into, by name (`MATERIAL_*` in WGSL and in the SDK): 0 none (sky), 1 terrain,
+2 leaves, 3 plants, 4 water, 5 lava, 6 glass, 7 emissive, 8 entity. A pack's `[materials]` ids (16 to 255) come
+first.
+
+### World hooks
+
+`[gbuffer].shader` holds WGSL functions. Horizon composes them into its own terrain, entity and sky shaders, so
+the geometry, the atlas, animations, fog and lighting inputs stay the game's; any hook a pack leaves out keeps
+vanilla's behaviour.
+
+| Hook | Called with | Returns |
+| --- | --- | --- |
+| `surface_vertex(v: SurfaceVertex) -> vec3<f32>` | camera-relative position, uv, material, block and sky light | the moved position (waving plants, waves) |
+| `surface_normal(s: Surface) -> vec3<f32>` | the surface | the normal written to the G-buffer (water waves) |
+| `surface_color(s: Surface) -> vec4<f32>` | albedo, vanilla's lit colour, world position, normal, light, material, screen position, translucent | the colour |
+| `sky_color(p: SkyPixel) -> vec4<f32>` | the view direction, vanilla's sky colour | the sky |
+
+Hooks see `frame`, the shadow map (`shadow_lit(world, normal)`, 4 filtered taps) and `repeat_sampler`; the
+pack's textures reach stages only, for now. Entities go through `surface_color` with `MATERIAL_ENTITY`.
+
+### Bindings and `Frame` in v1
+
+Stages get group 0 bindings 0 to 5 as in api 1, then:
+
+| Binding | WGSL | What |
+| --- | --- | --- |
+| 6 | `gbuffer: texture_2d<u32>` | the G-buffer (`gbuffer_at(uv)` decodes it) |
+| 7 | `opaque_depth: texture_depth_2d` | depth before translucent surfaces (`opaque_depth_at(uv)`) |
+| 8 | `shadow_map: texture_depth_2d` | the shadow map |
+| 9 | `shadow_sampler: sampler_comparison` | for `shadow_lit` |
+| 10 | `repeat_sampler: sampler` | linear, repeating (noise textures) |
+
+Group 1 holds the pack's targets in `pack.toml` order (each `history` target followed by `<name>_history`), then its
+textures. `Frame` gains, after the api 1 fields:
+
+```wgsl
+    previous_view_projection: mat4x4<f32>,  // last frame's, for reprojection (`previous_uv(world)`)
+    shadow_view_projection: mat4x4<f32>,    // camera-relative world to shadow clip space (before distortion)
+    camera_delta: vec4<f32>,                // xyz: how far the eye moved since last frame
+    shadow: vec4<f32>,                      // resolution, distance, distortion, 1 if the pack has shadows
+    shadow_light: vec4<f32>,                // xyz: direction to the light casting shadows; w: 1 sun, 0 moon
+    world: vec4<f32>,                       // the world's size: width, height, 1/width, 1/height
+```
+
+### Rust stages (`crates/horizon-shader-sdk`)
+
+The SDK mirrors the WGSL prelude: `Frame` with its methods (`linear_depth`, `view_position`, `world_offset`,
+`project`, `previous_uv`), `sample`, `depth`, `is_sky`, `gbuffer_at`, `shadow_lit`, `luminance`, `srgb_to_linear`,
+`linear_to_srgb`, `decode_normal`, `hash`, `smoothstep`, `saturate`, the `MATERIAL_*` ids, and glam's vectors.
+`stage!` writes the entry point and its bindings; the stage names them, then the targets and textures it reads
+(group 1 binding) and its options (ids):
+
+```rust
+stage! {
+    fn grade(px, frame, scene_color, scene_depth, previous, linear, nearest,
+        gbuffer, opaque_depth, shadow_map, shadow_sampler, repeat;
+        textures [bloom = 1]; options [bloom_strength = 4]) {
+        let c = sample(previous, linear, px.uv) + sample(bloom, linear, px.uv) * bloom_strength;
+        c.truncate().clamp(Vec3::ZERO, Vec3::ONE).extend(1.0)
+    }
+}
+```
+
+The pack crate is a `dylib` with `[package.metadata.rust-gpu.build]` (see Daybreak's `Cargo.toml`); it isn't part of
+the game's workspace.
+
+### Performance
+
+With no pack nothing above exists, and the frame is the same frame. With a pack:
+
+- The shadow pass draws each section within `distance` once, with the opaque terrain's vertex data and an
+  alpha test, into one depth texture. Sections come from the same visibility pass as the camera's, with the
+  light's frustum.
+- The world pass is split in three only when the pack has `[gbuffer]` (opaque with the G-buffer, `deferred`,
+  translucent). Without a G-buffer, hooks and `deferred`, a v1 pack costs what an api 1 pack does.
+- Stages draw at their `scale`; targets are made once per size.
+- Rust stages cost the same as WGSL ones: what reaches wgpu is WGSL either way.
+
+### Licences of the well-known packs
+
+A port copies a pack's code, so its licence decides. Where it forbids modified copies, the Horizon pack is
+written from scratch and only takes the look ("inspired by"): no code, constants or textures.
+
+| Pack | Licence | What Horizon does |
+| --- | --- | --- |
+| BSL (Capt Tatsu) | all rights reserved | inspired by: Daybreak |
+| Complementary Reimagined/Unbound | Complementary License 1.7: edits only under its conditions (no other licence, must look different) | inspired by |
+| Sildur's Vibrant | all rights reserved | inspired by |
+| Solas | custom, no modified redistribution | inspired by |
+| Bliss | © Chocapic13, all rights reserved | inspired by |
+| Chocapic13 | Chocapic13's rules: edits may be shared only as "<name> (Chocapic13' Shaders edit)", under the same rules, with credit | inspired by; a port needs Ludovic's OK (it can't be MIT) |
+| SEUS | SEUS EULA: no redistribution, as is or modified, and no code in other work | inspired by |
+| Photon | custom: modified copies allowed with the licence, never on monetized platforms or for money | a port needs Ludovic's OK (it can't be MIT) |
+| MakeUp Ultra Fast | LGPL-3.0 | can be ported; its files stay LGPL-3.0 with credit |
 
 ## Java shader packs (OptiFine/Iris)
 

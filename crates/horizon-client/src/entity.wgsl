@@ -159,6 +159,10 @@ fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
     return (d - start) / (end - start);
 }
 @fragment fn fs_entity(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return entity_color(in, front);
+}
+// fs_entity's colour, also given to a shader pack's hooks.
+fn entity_color(in: Out, front: bool) -> vec4<f32> {
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
     if in.overlay == 11u || in.overlay == 12u {

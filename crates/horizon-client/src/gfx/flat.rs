@@ -466,6 +466,10 @@ impl Flat {
     }
     /// Draws `calls` with a flat pipeline set and `vertices` giving each
     /// page's vertex buffer.
+    /// Group 1 of the flat terrain pipelines (a shader pack's twins share it).
+    pub fn draw_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.draw_layout
+    }
     pub fn draw<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

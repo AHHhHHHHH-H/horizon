@@ -68,8 +68,9 @@ impl Game<'_> {
                 Err(e) => return self.shader_pack_error(&id, &e),
             }
         };
+        let materials = self.shader_pack_materials(pack.as_ref());
         if let Some(r) = self.renderer.as_mut()
-            && let Err(e) = r.set_shader_pack(pack.as_ref())
+            && let Err(e) = r.set_shader_pack(pack.as_ref(), &materials)
         {
             return self.shader_pack_error(&id, &e.to_string());
         }
@@ -78,9 +79,19 @@ impl Game<'_> {
     }
     /// Give the loaded pack to the renderer (also after it is rebuilt).
     pub(super) fn apply_shader_pack(&mut self) -> horizon_client::Result<()> {
+        let materials = self.shader_pack_materials(self.shader_packs.pack.as_ref());
         match self.renderer.as_mut() {
-            Some(r) => r.set_shader_pack(self.shader_packs.pack.as_ref()),
+            Some(r) => r.set_shader_pack(self.shader_packs.pack.as_ref(), &materials),
             None => Ok(()),
+        }
+    }
+    /// The material of every block sprite for a Horizon pack's world hooks.
+    fn shader_pack_materials(&self, pack: Option<&ShaderPack>) -> Vec<u32> {
+        match pack {
+            Some(p) if p.gbuffer.is_some() || p.shadow.is_some() => {
+                shader_pack::material_table(&self.pack.render.sprite_layers, &p.materials)
+            }
+            _ => Vec::new(),
         }
     }
     /// Every frame: a new selection or edited pack files load it again.

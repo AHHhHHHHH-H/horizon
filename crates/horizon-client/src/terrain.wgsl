@@ -228,7 +228,11 @@ fn sunrise_weight(d: vec3<f32>) -> f32 {
     return best;
 }
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
-    let d = view_ray(in.ndc);
+    return sky_pixel(in.ndc);
+}
+// fs_sky's colour, also given to a shader pack's sky hook.
+fn sky_pixel(ndc: vec2<f32>) -> vec4<f32> {
+    let d = view_ray(ndc);
     var color = globals.fog_color.rgb;
     let dist = disc_distance(d, 16.0);
     if dist.x >= 0.0 {

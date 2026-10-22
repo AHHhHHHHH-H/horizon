@@ -27,6 +27,11 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
     wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
 
+/// The section origin (`vs_terrain`'s instance attribute).
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![5=>Float32x4];
+/// `Vertex` for `vs_entity`: position, UV, overlay, colour, light, normal.
+const ENTITY_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint8x4,5=>Snorm8x4];
+
 /// entity.wgsl after the OverlayTexture constants it reads.
 fn entity_shader() -> String {
     crate::overlay::wgsl_constants() + include_str!("entity.wgsl")
@@ -66,6 +71,7 @@ mod java_stages;
 mod lod;
 mod occlusion;
 mod pack_stages;
+mod pack_world;
 pub mod panorama;
 mod resident;
 mod stars;
@@ -369,6 +375,10 @@ pub struct Renderer {
     /// The mipmap levels sampled (the Mipmap Levels option), at most `mip_levels - 1`.
     mipmaps: u32,
     terrain_layout: wgpu::BindGroupLayout,
+    /// Group 0 of the entity pipelines (a shader pack's twins share it).
+    entity_bind_layout: wgpu::BindGroupLayout,
+    /// The sprite arrays' pipeline constants (`SPRITE_ARRAYS`, `SPRITE_SPLIT`).
+    sprite_constants: [(&'static str, f64); 2],
     sprite_sampler: wgpu::Sampler,
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
@@ -414,6 +424,11 @@ pub struct Renderer {
     pub multi_draw: bool,
     /// Per-frame scratch, kept to avoid allocating every frame.
     visible: Vec<resident::Visible>,
+    /// A shader pack's shadow pass: its sections, origins and draws.
+    shadow_visible: Vec<resident::Visible>,
+    shadow_origins: Vec<[f32; 4]>,
+    shadow_draws: Vec<[u32; 5]>,
+    shadow_pages: Vec<(u32, Option<u32>)>,
     visible_lods: Vec<lod::Visible>,
     translucent_draws: Vec<(u64, usize, [u32; 5], (u32, Option<u32>))>,
     origins: Vec<[f32; 4]>,
@@ -1051,7 +1066,6 @@ impl Renderer {
             bind_group_layouts: &[Some(&bindings)],
             ..Default::default()
         });
-        let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
         let terrain_buffers = [
             Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TerrainVertex>() as u64,
@@ -1061,7 +1075,7 @@ impl Renderer {
             Some(wgpu::VertexBufferLayout {
                 array_stride: 16,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &instance_attributes,
+                attributes: &INSTANCE_ATTRIBUTES,
             }),
         ];
         let line_attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3];
@@ -1543,11 +1557,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let entity_attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint8x4,5=>Snorm8x4];
         let entity_vertex = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &entity_attributes,
+            attributes: &ENTITY_ATTRIBUTES,
         })];
         #[allow(clippy::too_many_arguments)]
         let entity_pipeline_with = |label,
@@ -2137,6 +2150,8 @@ impl Renderer {
             mip_levels,
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
+            entity_bind_layout: entity_bindings,
+            sprite_constants,
             sprite_sampler,
             lightmap_view,
             lightmap_sampler,
@@ -2168,6 +2183,10 @@ impl Renderer {
             indirect_capacity: 1024,
             multi_draw,
             visible: Vec::new(),
+            shadow_visible: Vec::new(),
+            shadow_origins: Vec::new(),
+            shadow_draws: Vec::new(),
+            shadow_pages: Vec::new(),
             visible_lods: Vec::new(),
             translucent_draws: Vec::new(),
             origins: Vec::new(),
@@ -2484,10 +2503,33 @@ impl Renderer {
         first: u32,
         count: u32,
     ) {
+        self.draw_list(
+            pass,
+            indirect,
+            &self.draws,
+            &self.draw_pages,
+            base,
+            first,
+            count,
+        );
+    }
+    /// `draws[first..first + count]` (with their arena `pages`), `indirect`
+    /// holding them from `draws[base]` on.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_list(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        draws: &[[u32; 5]],
+        pages: &[(u32, Option<u32>)],
+        base: u32,
+        first: u32,
+        count: u32,
+    ) {
         let (mut i, end) = (first as usize, (first + count) as usize);
         while i < end {
-            let (page, index_page) = self.draw_pages[i];
-            let run = self.draw_pages[i..end]
+            let (page, index_page) = pages[i];
+            let run = pages[i..end]
                 .iter()
                 .take_while(|&&p| p == (page, index_page))
                 .count();
@@ -2498,12 +2540,126 @@ impl Renderer {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
-                for d in &self.draws[i..i + run] {
+                for d in &draws[i..i + run] {
                     pass.draw_indexed(d[2]..d[2] + d[0], d[3] as i32, d[4]..d[4] + 1);
                 }
             }
             i += run;
         }
+    }
+    /// A shader pack's `[shadow]` pass: the solid and cutout sections within
+    /// its distance, seen from the sun or moon, into its shadow map.
+    fn draw_pack_shadow(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera: DVec3,
+        shadow_view_projection: Mat4,
+    ) {
+        let Some(Pack::Horizon(stages)) = &mut self.pack else {
+            return;
+        };
+        let Some(world) = &mut stages.world else {
+            return;
+        };
+        let Some(distance) = world.shadow.as_ref().map(|s| s.settings.distance) else {
+            return;
+        };
+        let light = Frustum {
+            planes: frustum(shadow_view_projection),
+        };
+        let mut visible = std::mem::take(&mut self.shadow_visible);
+        visible.clear();
+        self.sections.visible(
+            camera,
+            (distance / 16.0).ceil() as i32 + 1,
+            &light,
+            |_| true,
+            |_, _| false,
+            &mut visible,
+        );
+        self.shadow_origins.clear();
+        self.shadow_draws.clear();
+        self.shadow_pages.clear();
+        for v in &visible {
+            let s = self.sections.get(v.slot);
+            if s.solid == 0 {
+                continue;
+            }
+            let instance = self.shadow_origins.len() as u32;
+            self.shadow_origins.push(section_instance(v.origin));
+            self.shadow_draws
+                .push([s.solid * 6, 1, 0, s.start as u32, instance]);
+            self.shadow_pages.push((s.page, None));
+        }
+        self.shadow_visible = visible;
+        let count = self.shadow_draws.len() as u64;
+        // The map from an earlier frame is still right: same view, same
+        // casters, no terrain uploaded since.
+        let mut key = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&world.shadow_now, &mut key);
+        std::hash::Hash::hash(&self.shadow_draws, &mut key);
+        std::hash::Hash::hash(
+            bytemuck::cast_slice::<_, u8>(&self.shadow_origins),
+            &mut key,
+        );
+        std::hash::Hash::hash(&self.uploaded_bytes, &mut key);
+        let key = std::hash::Hasher::finish(&key);
+        if world.shadow_drawn == Some(key) {
+            return;
+        }
+        world.shadow_drawn = Some(key);
+        if count > world.shadow_capacity {
+            world.grow_shadow(&self.device, count.next_power_of_two());
+        }
+        if count > 0 {
+            self.uploads.buffer(
+                encoder,
+                &world.shadow_instances,
+                0,
+                bytemuck::cast_slice(&self.shadow_origins),
+            );
+            self.uploads.buffer(
+                encoder,
+                &world.shadow_indirect,
+                0,
+                bytemuck::cast_slice(&self.shadow_draws),
+            );
+        }
+        let (Some(Pack::Horizon(stages)), true) = (&self.pack, true) else {
+            return;
+        };
+        let Some(world) = &stages.world else { return };
+        let Some(shadow) = &world.shadow else { return };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Shader pack shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &shadow.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        if count == 0 {
+            return;
+        }
+        pass.set_pipeline(&shadow.pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.set_bind_group(1, &world.empty_group, &[]);
+        pass.set_bind_group(2, &world.shadow_group, &[]);
+        pass.set_vertex_buffer(1, world.shadow_instances.slice(..));
+        self.draw_list(
+            &mut pass,
+            &world.shadow_indirect,
+            &self.shadow_draws,
+            &self.shadow_pages,
+            0,
+            0,
+            count as u32,
+        );
     }
     fn release_section(&mut self, key: SectionKey) {
         if let Some(s) = self.sections.remove(key) {
@@ -2588,8 +2744,14 @@ impl Renderer {
         }
     }
     /// Run `pack`'s stages over the world from now on (`None`: no pack, the
-    /// vanilla frame). On error the previous pack stays.
-    pub fn set_shader_pack(&mut self, pack: Option<&crate::shader_pack::ShaderPack>) -> Result<()> {
+    /// vanilla frame). `materials`: the material of every sprite layer
+    /// (`shader_pack::material_table`), for its world hooks. On error the
+    /// previous pack stays.
+    pub fn set_shader_pack(
+        &mut self,
+        pack: Option<&crate::shader_pack::ShaderPack>,
+        materials: &[u32],
+    ) -> Result<()> {
         let format = self.config.format.remove_srgb_suffix();
         self.pack = match pack {
             Some(pack) => Some(match &pack.java {
@@ -2600,7 +2762,47 @@ impl Renderer {
                     &pack.id,
                     java,
                 )?),
-                None => Pack::Horizon(pack_stages::PackStages::new(&self.device, format, pack)?),
+                None => {
+                    let terrain = [
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &TERRAIN_ATTRIBUTES,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: 16,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &INSTANCE_ATTRIBUTES,
+                        }),
+                    ];
+                    let entity = [Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &ENTITY_ATTRIBUTES,
+                    })];
+                    let world = pack_world::PackWorld::new(
+                        &self.device,
+                        pack,
+                        &pack_world::WorldLayouts {
+                            terrain: &self.terrain_layout,
+                            flat: self.flat.as_ref().map(|f| f.draw_layout()),
+                            entity: &self.entity_bind_layout,
+                            sprite_constants: &self.sprite_constants,
+                            terrain_buffers: &terrain,
+                            flat_buffers: &terrain[..1],
+                            entity_buffers: &entity,
+                            color: format,
+                        },
+                        materials,
+                    )?;
+                    Pack::Horizon(pack_stages::PackStages::new(
+                        &self.device,
+                        &self.queue,
+                        format,
+                        pack,
+                        world,
+                    )?)
+                }
             }),
             None => None,
         };
@@ -2927,7 +3129,7 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
-        let pack_uniform = shader_pack_uniform(
+        let mut pack_uniform = shader_pack_uniform(
             frame,
             view,
             world_projection(frame.fov_degrees, aspect, frame.depth_far) * frame.bob,
@@ -3451,10 +3653,38 @@ impl Renderer {
         let scaled =
             self.world_post
                 .prepare(&self.device, [self.config.width, self.config.height], pack);
+        // A Horizon pack's world resources: this frame's shadow matrix and
+        // history, the G-buffer at the world's size, the shadow pass.
+        if let (true, Some(Pack::Horizon(stages)), Some(size)) =
+            (pack, self.pack.as_mut(), self.world_post.size())
+            && let Some(world) = &mut stages.world
+        {
+            world.prepare(&self.device, size);
+            world.frame(
+                &self.queue,
+                &mut pack_uniform,
+                frame.camera,
+                view_proj,
+                size,
+            );
+        }
+        if pack {
+            self.draw_pack_shadow(
+                &mut encoder,
+                frame.camera,
+                Mat4::from_cols_array_2d(&pack_uniform.shadow_view_projection),
+            );
+        }
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
         };
+        let pack_world = match &self.pack {
+            Some(Pack::Horizon(stages)) if pack => stages.world.as_ref(),
+            _ => None,
+        };
+        let gbuffer = pack_world.and_then(|w| Some((w, w.gbuffer.as_ref()?, w.gbuffer_view()?)));
+        let split = gbuffer.is_some();
         let cull = self.cull.as_ref().filter(|_| culling && solid_draws > 0);
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -3502,15 +3732,23 @@ impl Renderer {
                 Some(f) => f.sky_end > 2.0,
                 None => !frame.underwater,
             };
+            let pack_sky = gbuffer.map(|(world, g, _)| (world, g));
             if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
                 if !frame.title && frame.skybox {
-                    pass.set_pipeline(&self.sky);
+                    match pack_sky.and_then(|(w, g)| Some((w, g.sky.as_ref()?))) {
+                        Some((world, sky)) => {
+                            pass.set_pipeline(sky);
+                            pass.set_bind_group(1, &world.empty_group, &[]);
+                            pass.set_bind_group(2, &world.group, &[]);
+                        }
+                        None => pass.set_pipeline(&self.sky),
+                    }
                     pass.draw(0..3, 0..1);
                 }
                 if frame.title {
                     self.panorama.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
-                } else if celestial_vertices > 0 {
+                } else if celestial_vertices > 0 && pack_sky.is_none_or(|(_, g)| g.sun_moon) {
                     pass.set_pipeline(&self.celestial_pipeline);
                     pass.set_bind_group(0, &self.entity_group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -3518,7 +3756,7 @@ impl Renderer {
                     pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
-                if !frame.title && frame.stars.is_some() {
+                if !frame.title && frame.stars.is_some() && pack_sky.is_none_or(|(_, g)| g.stars) {
                     self.stars.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
@@ -3527,17 +3765,39 @@ impl Renderer {
                     pass.draw(0..3, 0..1);
                 }
             }
+            // A pack's G-buffer: opaque terrain and entities in a pass that
+            // also writes it, through the pack's twins of their pipelines.
+            if let Some((world, _, view)) = gbuffer {
+                drop(pass);
+                pass = world_pass(
+                    &mut encoder,
+                    "Horizon world, opaque (shader pack)",
+                    world_view,
+                    world_depth,
+                    Some((view, true)),
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.set_bind_group(1, &world.empty_group, &[]);
+                pass.set_bind_group(2, &world.group, &[]);
+            }
             match self.flat.as_ref().filter(|_| flat_frame) {
                 Some(flat) => {
-                    pass.set_pipeline(&flat.solid);
+                    pass.set_pipeline(
+                        gbuffer
+                            .and_then(|(_, g, _)| g.flat_solid.as_ref())
+                            .unwrap_or(&flat.solid),
+                    );
                     flat.draw(&mut pass, &flat.calls[..flat.solid_calls], |p| {
                         self.arena.buffer(p)
                     });
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if let Some((world, _, _)) = gbuffer {
+                        pass.set_bind_group(1, &world.empty_group, &[]);
+                    }
                 }
                 None => {
-                    pass.set_pipeline(&self.solid);
+                    pass.set_pipeline(gbuffer.map_or(&self.solid, |(_, g, _)| &g.solid));
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -3546,38 +3806,53 @@ impl Renderer {
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
                             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
-                            cull.test(&mut pass);
+                            cull.test(&mut pass, split);
                             drop(pass);
-                            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                                view: world_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })];
-                            pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Horizon world, after culling"),
-                                color_attachments: &attachments,
-                                depth_stencil_attachment: Some(
-                                    wgpu::RenderPassDepthStencilAttachment {
-                                        view: world_depth,
-                                        depth_ops: Some(wgpu::Operations {
+                            match gbuffer {
+                                Some((world, _, view)) => {
+                                    pass = world_pass(
+                                        &mut encoder,
+                                        "Horizon world, after culling (shader pack)",
+                                        world_view,
+                                        world_depth,
+                                        Some((view, false)),
+                                    );
+                                    pass.set_bind_group(1, &world.empty_group, &[]);
+                                    pass.set_bind_group(2, &world.group, &[]);
+                                }
+                                None => {
+                                    let attachments = [Some(wgpu::RenderPassColorAttachment {
+                                        view: world_view,
+                                        resolve_target: None,
+                                        depth_slice: None,
+                                        ops: wgpu::Operations {
                                             load: wgpu::LoadOp::Load,
-                                            store: if pack {
-                                                wgpu::StoreOp::Store
-                                            } else {
-                                                wgpu::StoreOp::Discard
+                                            store: wgpu::StoreOp::Store,
+                                        },
+                                    })];
+                                    pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                        label: Some("Horizon world, after culling"),
+                                        color_attachments: &attachments,
+                                        depth_stencil_attachment: Some(
+                                            wgpu::RenderPassDepthStencilAttachment {
+                                                view: world_depth,
+                                                depth_ops: Some(wgpu::Operations {
+                                                    load: wgpu::LoadOp::Load,
+                                                    store: if pack {
+                                                        wgpu::StoreOp::Store
+                                                    } else {
+                                                        wgpu::StoreOp::Discard
+                                                    },
+                                                }),
+                                                stencil_ops: None,
                                             },
-                                        }),
-                                        stencil_ops: None,
-                                    },
-                                ),
-                                ..Default::default()
-                            });
+                                        ),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
                             pass.set_bind_group(0, &self.group, &[]);
-                            pass.set_pipeline(&self.solid);
+                            pass.set_pipeline(gbuffer.map_or(&self.solid, |(_, g, _)| &g.solid));
                             pass.set_index_buffer(
                                 self.indices.slice(..),
                                 wgpu::IndexFormat::Uint32,
@@ -3596,12 +3871,52 @@ impl Renderer {
                 }
             }
             if entity_quads > 0 {
-                pass.set_pipeline(&self.entity_pipeline);
+                pass.set_pipeline(gbuffer.map_or(&self.entity_pipeline, |(_, g, _)| &g.entity));
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // The opaque world is done: the pack's deferred stages, the opaque
+            // depth for its composite stages, then the rest in colour-only passes.
+            if split {
+                drop(pass);
+                if let (Some(Pack::Horizon(stages)), Some(size)) =
+                    (self.pack.as_mut(), self.world_post.size())
+                {
+                    let views = pack_stages::WorldViews {
+                        color: world_view,
+                        depth: world_depth,
+                        size,
+                    };
+                    stages.run_deferred(
+                        &self.device,
+                        &self.queue,
+                        &mut encoder,
+                        &views,
+                        &self.world_post,
+                        pack_uniform,
+                    );
+                    if let Some(world) = &stages.world {
+                        world.copy_opaque_depth(&mut encoder, world_depth);
+                    }
+                }
+                pass = world_pass(
+                    &mut encoder,
+                    "Horizon world, after opaque (shader pack)",
+                    world_view,
+                    world_depth,
+                    None,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            let gbuffer = match &self.pack {
+                Some(Pack::Horizon(stages)) if split => stages
+                    .world
+                    .as_ref()
+                    .and_then(|w| Some((w, w.gbuffer.as_ref()?, w.gbuffer_view()?))),
+                _ => None,
+            };
             if crumbling_quads > 0 {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
@@ -3644,9 +3959,26 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
                 pass.draw(0..4, debug_depth..debug_depth + debug_top);
             }
+            if let Some((world, _, view)) = gbuffer {
+                drop(pass);
+                pass = world_pass(
+                    &mut encoder,
+                    "Horizon world, translucent (shader pack)",
+                    world_view,
+                    world_depth,
+                    Some((view, false)),
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.set_bind_group(1, &world.empty_group, &[]);
+                pass.set_bind_group(2, &world.group, &[]);
+            }
             match self.flat.as_ref().filter(|_| flat_frame) {
                 Some(flat) => {
-                    pass.set_pipeline(&flat.translucent);
+                    pass.set_pipeline(
+                        gbuffer
+                            .and_then(|(_, g, _)| g.flat_translucent.as_ref())
+                            .unwrap_or(&flat.translucent),
+                    );
                     flat.draw(&mut pass, &flat.calls[flat.solid_calls..], |p| {
                         self.arena.buffer(p)
                     });
@@ -3654,7 +3986,9 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(&self.translucent);
+                    pass.set_pipeline(
+                        gbuffer.map_or(&self.translucent, |(_, g, _)| &g.translucent),
+                    );
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     self.draw_sections(
@@ -3665,6 +3999,17 @@ impl Renderer {
                         translucent_draws,
                     );
                 }
+            }
+            if gbuffer.is_some() {
+                drop(pass);
+                pass = world_pass(
+                    &mut encoder,
+                    "Horizon world, after translucent (shader pack)",
+                    world_view,
+                    world_depth,
+                    None,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
             }
             // LevelRenderer.executeClassicTransparency: translucent targets'
             // outlines follow terrain, so its blending cannot wash them out.
@@ -3696,7 +4041,7 @@ impl Renderer {
                     0..1,
                 );
             }
-            if cloud_quads > 0 {
+            if cloud_quads > 0 && gbuffer.is_none_or(|(_, g, _)| g.clouds) {
                 pass.set_pipeline(&self.cloud_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_bind_group(1, &self.cloud_group, &[]);
@@ -3723,13 +4068,11 @@ impl Renderer {
                     &self.device,
                     &self.queue,
                     &mut encoder,
-                    color,
-                    depth,
-                    size,
+                    &pack_stages::WorldViews { color, depth, size },
                     &self.world_post,
                     pack_uniform,
                 ),
-                Pack::Java(stages) => stages.run(
+                Pack::Java(stages) => Some(stages.run(
                     &self.device,
                     &self.queue,
                     &mut encoder,
@@ -3743,10 +4086,14 @@ impl Renderer {
                         sun_angle: frame.sky.sun_angle,
                         moon_angle: frame.sky.moon_angle,
                     },
-                ),
+                )),
             };
-            self.world_post
-                .finish_with(&mut encoder, &view_target, output);
+            match output {
+                Some(output) => self
+                    .world_post
+                    .finish_with(&mut encoder, &view_target, output),
+                None => self.world_post.finish(&mut encoder, &view_target),
+            }
         } else if scaled.is_some() {
             self.world_post.finish(&mut encoder, &view_target);
         }
@@ -4132,6 +4479,55 @@ fn camera_section(camera: DVec3) -> SectionKey {
     )
 }
 
+/// A world pass that goes on drawing into `color` and `depth` (and a shader
+/// pack's G-buffer, cleared when `.1`).
+fn world_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    label: &str,
+    color: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    gbuffer: Option<(&wgpu::TextureView, bool)>,
+) -> wgpu::RenderPass<'e> {
+    let load = wgpu::Operations {
+        load: wgpu::LoadOp::Load,
+        store: wgpu::StoreOp::Store,
+    };
+    let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
+        view: color,
+        resolve_target: None,
+        depth_slice: None,
+        ops: load,
+    })];
+    if let Some((view, clear)) = gbuffer {
+        attachments.push(Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: if clear {
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                } else {
+                    wgpu::LoadOp::Load
+                },
+                store: wgpu::StoreOp::Store,
+            },
+        }));
+    }
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &attachments,
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    })
+}
+
 fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, 0.05)
 }
@@ -4256,7 +4652,11 @@ mod tests {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
                     wgsl_files(&path, out);
-                } else if path.extension().is_some_and(|e| e == "wgsl") {
+                } else if path.extension().is_some_and(|e| e == "wgsl")
+                    // Shader pack preludes only exist composed with a pack
+                    // (shader_pack's tests translate those).
+                    && !path.file_name().unwrap().to_string_lossy().starts_with("shader_pack_")
+                {
                     out.push(path);
                 }
             }

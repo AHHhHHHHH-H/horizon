@@ -76,6 +76,7 @@ struct Group {
 
 pub struct Cull {
     pipeline: wgpu::RenderPipeline,
+    pack_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     group: Option<Group>,
     params: wgpu::Buffer,
@@ -187,43 +188,18 @@ impl Cull {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Section culling"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_box"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            // The world pass's reversed depth test, without writes.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_box"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::empty(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = box_pipeline(device, &module, &pipeline_layout, &[color]);
+        // A shader pack's opaque pass also writes its G-buffer: the same
+        // test with that target too (the boxes write neither).
+        let pack_pipeline = box_pipeline(
+            device,
+            &module,
+            &pipeline_layout,
+            &[color, super::pack_world::GBUFFER_FORMAT],
+        );
         Self {
             pipeline,
+            pack_pipeline,
             layout,
             group: None,
             params: buffer(
@@ -401,14 +377,19 @@ impl Cull {
 
     /// In the world pass after phase 1: draw the tested boxes against its
     /// depth. Leaves the pass's pipeline and group 0 changed.
-    pub fn test(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// `gbuffer`: the pass also writes a shader pack's G-buffer.
+    pub fn test(&self, pass: &mut wgpu::RenderPass<'_>, gbuffer: bool) {
         let Some(Group { group, .. }) = &self.group else {
             return;
         };
         if self.test_data.is_empty() {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if gbuffer {
+            &self.pack_pipeline
+        } else {
+            &self.pipeline
+        });
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..36, 0..self.test_data.len() as u32);
     }
@@ -496,6 +477,56 @@ impl Cull {
             group,
         }
     }
+}
+
+/// The boxes' pipeline for a pass with colour targets `formats`: the world
+/// pass's reversed depth test, no writes.
+fn box_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    formats: &[wgpu::TextureFormat],
+) -> wgpu::RenderPipeline {
+    let targets: Vec<_> = formats
+        .iter()
+        .map(|&format| {
+            Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::empty(),
+            })
+        })
+        .collect();
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Section culling"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_box"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_box"),
+            compilation_options: Default::default(),
+            targets: &targets,
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 #[cfg(test)]

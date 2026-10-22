@@ -2196,6 +2196,7 @@ dependencies = [
  "naga-types",
  "num-traits",
  "once_cell",
+ "petgraph 0.8.3",
  "pp-rs",
  "rustc-hash 1.1.0",
  "spirv",
