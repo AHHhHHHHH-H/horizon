@@ -33,6 +33,13 @@ SOFTWARE.
 ## wgpu-hal
 
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs
-developers, with one upstream fix applied
-([gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124)). It is licensed under MIT or
-Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
+developers, with two changes:
+
+- one upstream fix applied ([gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124));
+- Horizon's own change to the Metal backend: indirect multi-draws run from Metal indirect
+  command buffers generated on the GPU (`src/metal/icb.rs`), the approach upstream has proposed
+  in [gfx-rs/wgpu#9640](https://github.com/gfx-rs/wgpu/pull/9640). The vendored README lists
+  the files it touches.
+
+It is licensed under MIT or Apache-2.0; both licenses are in that folder (`LICENSE.MIT`,
+`LICENSE.APACHE`), and Horizon's changes to it are under the same terms.

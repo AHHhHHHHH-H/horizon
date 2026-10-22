@@ -439,12 +439,21 @@ impl super::Device {
     ) -> super::Device {
         let capabilities_query = super::CapabilitiesQuery::new(&raw);
         let shared = super::AdapterShared::new(raw, &capabilities_query);
+        let icb = super::icb::Icbs::new(&shared.device, shared.private_caps.msl_version);
         super::Device {
             shared: Arc::new(shared),
             features,
             counters: Default::default(),
             limits: limits.clone(),
+            icb,
         }
+    }
+
+    /// Horizon patch: whether multi-draws of pipelines whose layout binds no
+    /// texture or sampler directly to the vertex or fragment stage go
+    /// through indirect command buffers (see `icb`).
+    pub fn multi_draws_use_icbs(&self) -> bool {
+        self.icb.as_ref().is_some_and(|icbs| icbs.ready())
     }
 
     pub unsafe fn buffer_from_raw(
@@ -776,6 +785,10 @@ impl crate::Device for super::Device {
             state: super::CommandState::default(),
             temp: super::Temp::default(),
             counters: Arc::clone(&self.counters),
+            icb: self.icb.clone(),
+            icb_leases: Vec::new(),
+            icb_pending: Vec::new(),
+            icb_carry: Vec::new(),
         })
     }
 
@@ -949,6 +962,10 @@ impl crate::Device for super::Device {
             }
         }
 
+        let icb_compatible = [&stage_data.vs, &stage_data.fs]
+            .iter()
+            .all(|info| info.counters.textures == 0 && info.counters.samplers == 0);
+
         let immediates_infos = stage_data.map_ref(|info| {
             info.pc_buffer.map(|buffer_index| super::ImmediateDataInfo {
                 count: info.pc_limit,
@@ -974,6 +991,7 @@ impl crate::Device for super::Device {
             total_immediates: desc.immediate_size,
             per_stage_map,
             binding_array_length_map,
+            icb_compatible,
         })
     }
 
@@ -1743,13 +1761,40 @@ impl crate::Device for super::Device {
                 };
             }
 
+            // Horizon patch: pipelines that can run from an indirect command
+            // buffer get its multi-draws lowered to one (see `icb`). Metal
+            // rejects some (fragment functions with direct textures, which
+            // the layout check rules out); those are created again without.
+            let mut icb = desc.multiview_mask.is_none()
+                && desc.layout.icb_compatible
+                && matches!(descriptor, MetalGenericRenderPipelineDescriptor::Standard(_))
+                && self.icb.as_ref().is_some_and(|icbs| icbs.ready());
+            let icb_raw = match descriptor {
+                MetalGenericRenderPipelineDescriptor::Standard(ref d) if icb => {
+                    d.setSupportIndirectCommandBuffers(true);
+                    let raw = self.shared.device.newRenderPipelineStateWithDescriptor_error(d);
+                    if let Err(ref e) = raw {
+                        log::debug!(
+                            "Metal rejected an ICB-capable {:?}, so its multi-draws use the \
+                             per-draw loop: {e:?}",
+                            desc.label
+                        );
+                        d.setSupportIndirectCommandBuffers(false);
+                        icb = false;
+                    }
+                    raw.ok()
+                }
+                _ => None,
+            };
+
             // Create the pipeline from descriptor
-            let raw = match descriptor {
-                MetalGenericRenderPipelineDescriptor::Standard(d) => self
+            let raw = match (icb_raw, descriptor) {
+                (Some(raw), _) => Ok(raw),
+                (None, MetalGenericRenderPipelineDescriptor::Standard(d)) => self
                     .shared
                     .device
                     .newRenderPipelineStateWithDescriptor_error(&d),
-                MetalGenericRenderPipelineDescriptor::Mesh(d) => self
+                (None, MetalGenericRenderPipelineDescriptor::Mesh(d)) => self
                     .shared
                     .device
                     .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
@@ -1787,6 +1832,7 @@ impl crate::Device for super::Device {
                     None
                 },
                 depth_stencil,
+                icb,
             })
         })
     }

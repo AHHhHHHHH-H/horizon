@@ -43,6 +43,8 @@ impl Default for super::CommandState {
             vertex_buffer_size_map: Default::default(),
             immediates: Vec::new(),
             pending_timer_queries: Vec::new(),
+            icb_pipeline: false,
+            icb_index_used: None,
         }
     }
 }
@@ -155,6 +157,63 @@ impl Encoder<'_> {
 impl super::CommandEncoder {
     pub fn raw_command_buffer(&self) -> Option<&ProtocolObject<dyn MTLCommandBuffer>> {
         self.raw_cmd_buf.as_deref()
+    }
+
+    /// Horizon patch: encodes a multi-draw as one execution of an indirect
+    /// command buffer range, whose commands are generated before the pass
+    /// (see `icb`). Returns false, encoding nothing, where it doesn't apply.
+    unsafe fn draw_through_icb(
+        &mut self,
+        buffer: &super::Buffer,
+        offset: wgt::BufferAddress,
+        draw_count: u32,
+        indexed: bool,
+    ) -> bool {
+        if draw_count < super::icb::MIN_DRAWS || !self.state.icb_pipeline {
+            return false;
+        }
+        let Some(icbs) = &self.icb else {
+            return false;
+        };
+        let index = match (indexed, &self.state.index) {
+            (false, _) => None,
+            (true, Some(index)) => Some((
+                // SAFETY: the index buffer outlives the command buffer.
+                unsafe { Retained::retain(index.buffer_ptr.as_ptr()) }.unwrap(),
+                index.offset,
+                index.raw_type,
+            )),
+            (true, None) => return false,
+        };
+        let index_buffer = index.as_ref().map(|(buffer, _, _)| Retained::as_ptr(buffer));
+        let Some(slot) = super::icb::lower(
+            icbs,
+            &mut self.icb_leases,
+            &mut self.icb_pending,
+            buffer,
+            offset,
+            draw_count,
+            index,
+            self.state.raw_primitive_type,
+        ) else {
+            return false;
+        };
+        // The index buffer, reached only through the commands, is declared
+        // once per pass.
+        let declare = index_buffer.filter(|&ptr| self.state.icb_index_used != Some(ptr));
+        if declare.is_some() {
+            self.state.icb_index_used = declare;
+        }
+        let encoder = self.state.render.as_ref().unwrap();
+        unsafe {
+            super::icb::execute(
+                encoder,
+                &slot,
+                draw_count,
+                declare.map(|ptr| &*ptr),
+            )
+        };
+        true
     }
 
     fn enter_blit(&mut self) -> Retained<ProtocolObject<dyn MTLBlitCommandEncoder>> {
@@ -520,6 +579,13 @@ impl crate::CommandEncoder for super::CommandEncoder {
             cmd_buf_ref.to_owned()
         });
 
+        // Horizon patch: a command buffer that follows one with ICB
+        // executions is its render pass's pre-pass (see `icb`).
+        debug_assert!(
+            self.icb_carry.is_empty() || label.is_none_or(|l| l.contains("Pre Pass")),
+            "ICB generation would land in {label:?}, not in the pass's pre-pass"
+        );
+
         // Queries should either be closed out, or cleared in `discard_encoding`.
         // This assertion is here mainly to facilitate comparison with the other
         // backends, which clear in `begin_encoding` rather than `discard_encoding`.
@@ -542,6 +608,9 @@ impl crate::CommandEncoder for super::CommandEncoder {
             encoder.endEncoding();
         }
         self.state.pending_timer_queries.clear();
+        self.icb_leases.clear();
+        self.icb_pending.clear();
+        self.icb_carry.clear();
         let had_command_buffer = self.raw_cmd_buf.is_some();
         // Clear the Option first so the underlying `metal::CommandBuffer` is
         // dropped before we update the counter.
@@ -566,9 +635,20 @@ impl crate::CommandEncoder for super::CommandEncoder {
         debug_assert!(self.state.compute.is_none());
         debug_assert!(self.state.pending_timer_queries.is_empty());
 
+        let raw = self.raw_cmd_buf.take().unwrap();
+        // Horizon patch: the previous command buffer held render passes with
+        // multi-draws lowered to ICBs: this one is their pre-pass (see `icb`),
+        // so their commands are generated here, after everything else in it.
+        if let (Some(icbs), false) = (&self.icb, self.icb_carry.is_empty()) {
+            super::icb::encode(icbs, &raw, &self.icb_carry);
+        }
+        self.icb_carry.clear();
+        core::mem::swap(&mut self.icb_carry, &mut self.icb_pending);
+
         Ok(super::CommandBuffer {
-            raw: self.raw_cmd_buf.take().unwrap(),
+            raw,
             queue_shared: Arc::clone(&self.queue_shared),
+            _icb_leases: core::mem::take(&mut self.icb_leases),
         })
     }
 
@@ -576,7 +656,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
     where
         I: Iterator<Item = super::CommandBuffer>,
     {
-        //do nothing
+        self.icb_carry.clear();
     }
 
     unsafe fn transition_buffers<'a, T>(&mut self, _barriers: T)
@@ -896,6 +976,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
     ) -> Result<(), crate::DeviceError> {
         self.begin_pass();
         self.state.index = None;
+        self.state.icb_index_used = None;
 
         assert!(self.state.blit.is_none());
         assert!(self.state.compute.is_none());
@@ -1274,6 +1355,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
 
     unsafe fn set_render_pipeline(&mut self, pipeline: &super::RenderPipeline) {
         self.state.raw_primitive_type = pipeline.raw_primitive_type;
+        self.state.icb_pipeline = pipeline.icb;
         match pipeline.vs_info {
             Some(ref info) => self.state.stage_infos.vs.assign_from(info),
             None => self.state.stage_infos.vs.clear(),
@@ -1592,6 +1674,9 @@ impl crate::CommandEncoder for super::CommandEncoder {
         mut offset: wgt::BufferAddress,
         draw_count: u32,
     ) {
+        if unsafe { self.draw_through_icb(buffer, offset, draw_count, false) } {
+            return;
+        }
         let encoder = self.state.render.as_ref().unwrap();
         for _ in 0..draw_count {
             unsafe {
@@ -1611,6 +1696,9 @@ impl crate::CommandEncoder for super::CommandEncoder {
         mut offset: wgt::BufferAddress,
         draw_count: u32,
     ) {
+        if unsafe { self.draw_through_icb(buffer, offset, draw_count, true) } {
+            return;
+        }
         let encoder = self.state.render.as_ref().unwrap();
         let index = self.state.index.as_ref().unwrap();
         for _ in 0..draw_count {

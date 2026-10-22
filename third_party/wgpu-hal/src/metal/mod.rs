@@ -24,6 +24,8 @@ mod adapter;
 mod command;
 mod conv;
 mod device;
+// Horizon patch: multi-draws through indirect command buffers.
+mod icb;
 mod library_from_metallib;
 mod surface;
 mod time;
@@ -637,6 +639,9 @@ pub struct Device {
     features: wgt::Features,
     counters: Arc<wgt::HalCounters>,
     limits: wgt::Limits,
+    /// Horizon patch: multi-draws through indirect command buffers, where
+    /// supported.
+    icb: Option<Arc<icb::Icbs>>,
 }
 
 #[derive(Debug)]
@@ -1029,6 +1034,10 @@ pub struct PipelineLayout {
     total_immediates: u32,
     per_stage_map: MultiStageResources,
     binding_array_length_map: FastHashMap<naga::ResourceBinding, u32>,
+    /// Horizon patch: no texture or sampler bound directly to the vertex or
+    /// fragment stage, which Metal requires of pipelines run from an indirect
+    /// command buffer.
+    icb_compatible: bool,
 }
 
 impl crate::DynPipelineLayout for PipelineLayout {}
@@ -1214,6 +1223,9 @@ pub struct RenderPipeline {
         Retained<ProtocolObject<dyn MTLDepthStencilState>>,
         wgt::DepthBiasState,
     )>,
+    /// Horizon patch: created with `supportIndirectCommandBuffers`, so its
+    /// multi-draws go through indirect command buffers.
+    icb: bool,
 }
 
 #[cfg(send_sync)]
@@ -1346,6 +1358,13 @@ struct CommandState {
 
     /// Timer query that should be executed when the next pass starts.
     pending_timer_queries: Vec<(QuerySet, u32)>,
+
+    /// Horizon patch: the current render pipeline can run from an indirect
+    /// command buffer.
+    icb_pipeline: bool,
+    /// Horizon patch: the index buffer the render pass last declared for
+    /// commands of an indirect command buffer.
+    icb_index_used: Option<*const ProtocolObject<dyn MTLBuffer>>,
 }
 
 // Any state in this struct that may be dirty after an abandoned encoding must
@@ -1357,6 +1376,16 @@ pub struct CommandEncoder {
     state: CommandState,
     temp: Temp,
     counters: Arc<wgt::HalCounters>,
+    /// Horizon patch: multi-draws through indirect command buffers.
+    icb: Option<Arc<icb::Icbs>>,
+    /// The ICBs the open command buffer's passes execute.
+    icb_leases: Vec<icb::Lease>,
+    /// Commands the open command buffer's passes execute, to generate in the
+    /// buffer that follows it (see `icb`).
+    icb_pending: Vec<icb::Generation>,
+    /// Commands of the previous command buffer, generated at the end of the
+    /// open one.
+    icb_carry: Vec<icb::Generation>,
 }
 
 impl fmt::Debug for CommandEncoder {
@@ -1374,6 +1403,8 @@ unsafe impl Sync for CommandEncoder {}
 pub struct CommandBuffer {
     raw: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     queue_shared: Arc<QueueShared>,
+    /// Horizon patch: kept until the GPU is done with this command buffer.
+    _icb_leases: Vec<icb::Lease>,
 }
 
 impl crate::DynCommandBuffer for CommandBuffer {}

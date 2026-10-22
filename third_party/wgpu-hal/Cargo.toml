@@ -449,6 +449,8 @@ features = [
     "MTLAccelerationStructureTypes",
     "MTLAccelerationStructureCommandEncoder",
     "MTLResidencySet",
+    "MTLArgumentEncoder",
+    "MTLIndirectCommandBuffer",
 ]
 optional = true
 default-features = false

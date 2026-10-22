@@ -1,3 +1,24 @@
+# Horizon's copy of wgpu-hal 30.0.1
+
+This is wgpu-hal 30.0.1 from crates.io, patched into the build with `[patch.crates-io]` in the
+workspace `Cargo.toml`. Changes from the release:
+
+1. **Vulkan descriptor pool** (`src/vulkan/descriptor.rs`): the upstream fix
+   [gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124) for Intel's Windows driver
+   crashing at device creation (#746).
+2. **Metal multi-draw through indirect command buffers** (`src/metal/icb.rs`, plus hooks in
+   `src/metal/{adapter,command,device,mod}.rs` marked "Horizon patch", and the
+   `MTLArgumentEncoder` and `MTLIndirectCommandBuffer` features of `objc2-metal` in
+   `Cargo.toml`). The release encodes one draw call per entry of an indirect multi-draw; on Apple
+   GPUs (M1 and later) a multi-draw of 16 or more entries under a pipeline whose layout binds no
+   texture or sampler directly is now one `executeCommandsInBuffer`, with the commands written on
+   the GPU from the indirect arguments before the pass. `WGPU_METAL_ICB=0` turns it off. Upstream
+   proposes the same in [gfx-rs/wgpu#9640](https://github.com/gfx-rs/wgpu/pull/9640), with a
+   wgpu-core hook where this copy relies on wgpu-core 30 encoding each render pass's pre-pass
+   right after it (see the comment at the top of `icb.rs`).
+
+Drop each change once a wgpu release has it, and the folder once none is left.
+
 # `wgpu_hal`: a cross-platform unsafe graphics abstraction
 
 This crate defines a set of traits abstracting over modern graphics APIs,

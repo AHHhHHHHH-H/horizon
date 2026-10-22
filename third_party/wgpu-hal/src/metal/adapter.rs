@@ -110,6 +110,11 @@ impl crate::Adapter for super::Adapter {
                     features,
                     counters: Default::default(),
                     limits: limits.clone(),
+                    // Horizon patch: multi-draws through indirect command buffers.
+                    icb: super::icb::Icbs::new(
+                        &self.shared.device,
+                        self.shared.private_caps.msl_version,
+                    ),
                 },
                 queue: super::Queue {
                     shared: Arc::new(QueueShared {
