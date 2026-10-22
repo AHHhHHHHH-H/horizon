@@ -103,6 +103,48 @@ pub struct PackOption {
     pub value: f64,
 }
 
+impl PackOption {
+    /// A slider at `v` (0..1): the value there, on the option's steps.
+    pub fn set_fraction(&mut self, v: f32) {
+        if let OptionKind::Float { min, max, step } = self.kind {
+            let mut value = min + f64::from(v.clamp(0.0, 1.0)) * (max - min);
+            if step > 0.0 {
+                value = min + ((value - min) / step).round() * step;
+            }
+            self.value = value.clamp(min, max);
+        }
+    }
+    /// A click: a switch flips, a choice moves on (back with `back`), a
+    /// slider moves one step and wraps.
+    pub fn cycle(&mut self, back: bool) {
+        match self.kind {
+            OptionKind::Bool => self.value = if self.value != 0.0 { 0.0 } else { 1.0 },
+            OptionKind::Int if !self.values.is_empty() => {
+                let n = self.values.len();
+                let i = self
+                    .values
+                    .iter()
+                    .position(|&v| v as f64 == self.value)
+                    .unwrap_or(0);
+                let i = if back { (i + n - 1) % n } else { (i + 1) % n };
+                self.value = self.values[i] as f64;
+            }
+            OptionKind::Int => {}
+            OptionKind::Float { min, max, step } => {
+                let step = if step > 0.0 { step } else { (max - min) / 20.0 };
+                let next = self.value + if back { -step } else { step };
+                self.value = if next > max + 1e-9 {
+                    min
+                } else if next < min - 1e-9 {
+                    max
+                } else {
+                    next
+                };
+            }
+        }
+    }
+}
+
 pub struct ShaderPack {
     /// The pack's folder name.
     pub id: String,
@@ -120,6 +162,15 @@ pub struct ShaderPack {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stamp(Vec<(PathBuf, u64, Option<SystemTime>)>);
 impl Stamp {
+    /// Pack `id` in `shaderpacks/` and its saved option values.
+    pub fn of_pack(folder: &Path, id: &str) -> Self {
+        let mut stamp = Self::of(&folder.join(id));
+        let values = folder.join(format!("{id}.txt"));
+        if let Ok(meta) = fs::metadata(&values) {
+            stamp.0.push((values, meta.len(), meta.modified().ok()));
+        }
+        stamp
+    }
     pub fn of(dir: &Path) -> Self {
         let mut files = Vec::new();
         if let Ok(meta) = fs::metadata(dir)
@@ -184,6 +235,8 @@ pub fn folder() -> PathBuf {
 pub struct Folder {
     pub dir: PathBuf,
     pub packs: Vec<(String, Result<Info, String>)>,
+    /// Each Horizon pack's options with their saved values.
+    pub options: BTreeMap<String, Vec<PackOption>>,
     read: Option<std::time::Instant>,
 }
 
@@ -196,6 +249,15 @@ impl Folder {
             return;
         }
         self.packs = list(&dir);
+        self.options = self
+            .packs
+            .iter()
+            .filter(|(id, info)| info.is_ok() && dir.join(id).join("pack.toml").is_file())
+            .filter_map(|(id, _)| {
+                let options = pack_options(&dir.join(id), &load_values(&dir, id)).ok()?;
+                Some((id.clone(), options))
+            })
+            .collect();
         self.dir = dir;
         self.read = Some(std::time::Instant::now());
     }
@@ -412,6 +474,37 @@ fn validate(source: &str, file: &str, entry: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A Horizon pack's options with `values` (the Shader Packs page's rows).
+pub fn pack_options(
+    dir: &Path,
+    values: &BTreeMap<String, String>,
+) -> Result<Vec<PackOption>, String> {
+    manifest(dir)?
+        .options
+        .into_iter()
+        .map(|(key, entry)| option(key, entry, values))
+        .collect()
+}
+
+/// An option's value as `shaderpacks/<id>.txt` keeps it.
+pub fn option_text(o: &PackOption) -> String {
+    match o.kind {
+        OptionKind::Bool => (o.value != 0.0).to_string(),
+        OptionKind::Int => (o.value as i64).to_string(),
+        OptionKind::Float { .. } => format!("{}", o.value as f32),
+    }
+}
+
+/// Save a pack's option values; the game sees the file change and loads the
+/// pack again with them.
+pub fn save_values(dir: &Path, id: &str, options: &[PackOption]) -> std::io::Result<()> {
+    let text: String = options
+        .iter()
+        .map(|o| format!("{}={}\n", o.key, option_text(o)))
+        .collect();
+    fs::write(dir.join(format!("{id}.txt")), text)
+}
+
 /// The option values saved for a pack (`shaderpacks/<id>.txt`, `key=value`).
 pub fn load_values(dir: &Path, id: &str) -> BTreeMap<String, String> {
     fs::read_to_string(dir.join(format!("{id}.txt")))
@@ -575,6 +668,17 @@ override mode: i32 = 1;
         assert_eq!(listed[0].0, "broken");
         assert!(listed[0].1.is_err());
         assert_eq!(listed[1].1.as_ref().unwrap().name, "Test");
+    }
+
+    #[test]
+    fn saved_option_values_change_the_pack_stamp() {
+        let dir = scratch();
+        fs::create_dir_all(dir.join("p")).unwrap();
+        fs::write(dir.join("p/pack.toml"), "").unwrap();
+        let before = Stamp::of_pack(&dir, "p");
+        fs::write(dir.join("p.txt"), "a=1\n").unwrap();
+        assert!(Stamp::of_pack(&dir, "p") != before);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

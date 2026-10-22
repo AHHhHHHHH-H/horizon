@@ -67,6 +67,9 @@ The lightmap, fog and sky colours are computed on the CPU (`environment.rs`, `fo
   second while the page is open, so a pack dropped into the folder shows up.
 - The choice is kept in `horizon-graphics.txt` (`shaderPack:<folder or zip name>`, empty = off). A pack's option
   values are kept in `shaderpacks/<pack>.txt`, as Iris does.
+- In the Horizon menus, the picked Horizon pack's options show under its row: a switch for `true`/`false`, a
+  button cycling through `values`, a slider for numbers (a click beside it moves one `step`). A change is saved
+  to `shaderpacks/<pack>.txt` at once, and the pack loads again with it (the file counts as one of the pack's).
 - A pack that fails to load or compile leaves the vanilla picture (or the last pack that worked) on and says why on
   its row ("Failed", with the error), in chat and in the log. Nothing a pack does can stop the game from starting.
 - Benchmarks (`--benchmark`) and the parity harnesses never load a pack.

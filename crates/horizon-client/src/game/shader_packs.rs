@@ -53,7 +53,7 @@ impl Game<'_> {
             state.stamp = Stamp::default();
             None
         } else {
-            state.stamp = Stamp::of(&dir.join(&id));
+            state.stamp = Stamp::of_pack(&dir, &id);
             // Java packs are told which GPU they run on.
             let (vendor, renderer) = self.renderer.as_ref().map_or(("Unknown", ""), |r| {
                 let name = r.info.name.as_str();
@@ -97,7 +97,7 @@ impl Game<'_> {
             return;
         }
         state.checked = Some(Instant::now());
-        if Stamp::of(&dir().join(&state.selected)) != state.stamp {
+        if Stamp::of_pack(&dir(), &state.selected) != state.stamp {
             self.load_shader_pack();
         }
     }

@@ -42,6 +42,8 @@ pub enum HRow {
     ShaderPackFolder,
     /// Shader pack `i` of `OptionsUi::shader_packs` and its switch.
     ShaderPack(usize),
+    /// Option `i` of the selected Horizon shader pack.
+    ShaderPackOption(usize),
 }
 
 /// The sidebar section listing the shader packs.
@@ -298,6 +300,8 @@ enum Target {
     Search,
     Row(usize),
     Slider(Item, f32),
+    /// The selected shader pack's option `i`, a slider at `v`.
+    PackSlider(usize, f32),
     Style(usize),
     Level(usize),
 }
@@ -315,6 +319,8 @@ impl HorizonScrollbar {
 }
 struct HorizonLayout {
     sliders: Vec<(Item, f32, f32)>,
+    /// The selected shader pack's option sliders: option, x, width.
+    pack_sliders: Vec<(usize, f32, f32)>,
     scrollbar: Option<HorizonScrollbar>,
 }
 fn horizon_batch(framebuffer: [i32; 2]) -> HudBatch {
@@ -329,7 +335,15 @@ impl OptionsUi {
                     "No shader packs: put a pack's folder or .zip in this folder",
                 ));
             }
-            rows.extend((0..self.shader_packs.packs.len()).map(HRow::ShaderPack));
+            for (p, (id, _)) in self.shader_packs.packs.iter().enumerate() {
+                rows.push(HRow::ShaderPack(p));
+                // The selected pack's options, under its row.
+                if *id == s.horizon.shader_pack
+                    && let Some(options) = self.shader_packs.options.get(id)
+                {
+                    rows.extend((0..options.len()).map(HRow::ShaderPackOption));
+                }
+            }
         }
         let query = self.settings_search.value.to_lowercase();
         if query.is_empty() || !searchable_section(section) {
@@ -412,6 +426,7 @@ impl OptionsUi {
         let hstart = ui.hits.len();
         let tstart = crate::widgets::targets_mark();
         let mut sliders = Vec::new();
+        let mut pack_sliders = Vec::new();
         ui.divider(x, y, cw);
         let control_x = x + cw;
         for (i, row) in rows.iter().enumerate() {
@@ -564,6 +579,39 @@ impl OptionsUi {
                     let on = s.horizon.shader_pack == *id;
                     ui.switch(ROW + i as u64, control_x, y + ROW_H / 2.0, on);
                 }
+                HRow::ShaderPackOption(k) => {
+                    let Some(o) = self.pack_option(s, k) else {
+                        continue;
+                    };
+                    let id = ROW + i as u64;
+                    let cy = y + ROW_H / 2.0;
+                    let value = crate::shader_pack::option_text(o);
+                    match o.kind {
+                        crate::shader_pack::OptionKind::Bool => {
+                            ui.row(x, y, &o.label, "", 0.0);
+                            ui.switch(id, control_x, cy, o.value != 0.0);
+                        }
+                        crate::shader_pack::OptionKind::Int => {
+                            ui.row(x, y, &o.label, "", 0.0);
+                            let bw = ui.button_width(&value, false).max(96.0);
+                            ui.button(
+                                id,
+                                [control_x - bw, y + 12.0, bw, CONTROL],
+                                &value,
+                                Button::Secondary,
+                                true,
+                            );
+                        }
+                        crate::shader_pack::OptionKind::Float { min, max, .. } => {
+                            let sw = 220.0_f32.min(cw - ROW_LABEL - 200.0).max(80.0);
+                            ui.row(x, y, &o.label, &value, cw - ROW_LABEL - 16.0 - sw - 24.0);
+                            let sx = control_x - sw - 8.0;
+                            let v = ((o.value - min) / (max - min).max(1e-9)) as f32;
+                            ui.slider(id, sx, cy, sw, v);
+                            pack_sliders.push((k, sx, sw));
+                        }
+                    }
+                }
                 HRow::OpenModFolder => {
                     ui.row(x, y, "Mod folder", "", 0.0);
                     let label = "Open Folder";
@@ -664,7 +712,11 @@ impl OptionsUi {
         let _ = ox;
         ui.opacity = 1.0;
         ui.offset = (0.0, 0.0);
-        HorizonLayout { sliders, scrollbar }
+        HorizonLayout {
+            sliders,
+            pack_sliders,
+            scrollbar,
+        }
     }
     pub(crate) fn draw_horizon(
         &mut self,
@@ -734,6 +786,12 @@ impl OptionsUi {
             let v = t::slider_value(&ui, sx, sw, x);
             return (Some(Target::Slider(item, v)), scrollbar, cursor);
         }
+        if let Some(HRow::ShaderPackOption(k)) = rows.get(i)
+            && let Some(&(_, sx, sw)) = layout.pack_sliders.iter().find(|(o, ..)| o == k)
+        {
+            let v = t::slider_value(&ui, sx, sw, x);
+            return (Some(Target::PackSlider(*k, v)), scrollbar, cursor);
+        }
         (
             (i < rows.len()).then_some(Target::Row(i)),
             scrollbar,
@@ -785,6 +843,12 @@ impl OptionsUi {
                 set_item_slider(item, s, t::slider_value(&ui, sx, sw, x));
                 events.push(Event::Changed);
             }
+            if let Some(k) = self.hdragging_pack
+                && let Some(&(_, sx, sw)) = layout.pack_sliders.iter().find(|(o, ..)| *o == k)
+            {
+                let v = t::slider_value(&ui, sx, sw, x);
+                self.set_pack_option(s, k, |o| o.set_fraction(v));
+            }
             return events;
         }
         // Rebinding consumes the click before sidebar or widget actions.
@@ -835,6 +899,10 @@ impl OptionsUi {
                 set_item_slider(item, s, v);
                 events.push(Event::Changed);
             }
+            Some(Target::PackSlider(k, v)) => {
+                self.hdragging_pack = Some(k);
+                self.set_pack_option(s, k, |o| o.set_fraction(v));
+            }
             Some(Target::Row(i)) => {
                 let section = self.section.min(SECTIONS.len() - 1);
                 match self.horizon_rows(s, section).get(i) {
@@ -877,12 +945,45 @@ impl OptionsUi {
                         self.toggle_shader_pack(s, *p);
                         events.push(Event::Changed);
                     }
+                    Some(HRow::ShaderPackOption(k)) => {
+                        events.push(Event::ButtonClick);
+                        self.set_pack_option(s, *k, |o| o.cycle(right));
+                    }
                     _ => {}
                 }
             }
             None => {}
         }
         events
+    }
+    /// The selected shader pack's option `k`.
+    fn pack_option(&self, s: &Settings, k: usize) -> Option<&crate::shader_pack::PackOption> {
+        self.shader_packs
+            .options
+            .get(&s.horizon.shader_pack)?
+            .get(k)
+    }
+    /// Change the selected pack's option `k` and save the pack's values; the
+    /// game sees the file change and loads the pack again with them.
+    fn set_pack_option(
+        &mut self,
+        s: &Settings,
+        k: usize,
+        change: impl FnOnce(&mut crate::shader_pack::PackOption),
+    ) {
+        let id = &s.horizon.shader_pack;
+        let folder = &mut self.shader_packs;
+        let Some(options) = folder.options.get_mut(id) else {
+            return;
+        };
+        let Some(o) = options.get_mut(k) else { return };
+        let before = o.value;
+        change(o);
+        if o.value != before
+            && let Err(e) = crate::shader_pack::save_values(&folder.dir, id, options)
+        {
+            log::warn!("Horizon: shader pack {id}: saving its options: {e}");
+        }
     }
     fn select_section(&mut self, i: usize) {
         if searchable_section(self.section) || searchable_section(i) {
@@ -1186,6 +1287,37 @@ mod tests {
         assert_eq!(settings.horizon.shader_pack, "Pack.zip");
         click(&mut options, &mut settings, ROW + 1);
         assert_eq!(settings.horizon.shader_pack, "");
+
+        // A Horizon pack's options show under it once it's picked, and a
+        // change is saved where the game reads it.
+        std::fs::create_dir_all(dir.join("Mine")).unwrap();
+        std::fs::write(
+            dir.join("Mine/pack.toml"),
+            "[pack]\nname = \"Mine\"\napi = 1\n\n[[stage]]\nkind = \"composite\"\nshader = \"a.wgsl\"\n\n\
+             [options.vignette]\nlabel = \"Vignette\"\ndefault = true\n\n\
+             [options.strength]\nlabel = \"Strength\"\ndefault = 0.5\nmin = 0.0\nmax = 1.0\nstep = 0.25\n",
+        )
+        .unwrap();
+        options.shader_packs = Default::default();
+        options.shader_packs.poll(dir.clone());
+        click(&mut options, &mut settings, ROW + 1);
+        assert_eq!(settings.horizon.shader_pack, "Mine");
+        assert!(matches!(
+            options.horizon_rows(&settings, options.section)[..],
+            [
+                HRow::ShaderPackFolder,
+                HRow::ShaderPack(0),
+                HRow::ShaderPackOption(0),
+                HRow::ShaderPackOption(1),
+                HRow::ShaderPack(1)
+            ]
+        ));
+        click(&mut options, &mut settings, ROW + 3);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Mine.txt")).unwrap(),
+            "strength=0.5\nvignette=false\n"
+        );
+        click(&mut options, &mut settings, ROW + 1);
 
         let mut options = section_ui("Video");
         settings.horizon.advanced = true;

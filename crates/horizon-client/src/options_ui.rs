@@ -977,6 +977,8 @@ pub struct OptionsUi {
     pub(crate) hscroll: f32,
     /// The slider being dragged on the Horizon options shell.
     pub(crate) hdragging: Option<crate::graphics_ui::Item>,
+    /// The selected shader pack's option slider being dragged.
+    pub(crate) hdragging_pack: Option<usize>,
     /// Key Binds: the mapping waiting for a key.
     pub selected_key: Option<&'static str>,
     /// Controller Binds: the action waiting for a pad button.
@@ -1021,6 +1023,7 @@ impl Default for OptionsUi {
             section_shown: None,
             hscroll: 0.0,
             hdragging: None,
+            hdragging_pack: None,
             selected_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
@@ -2541,6 +2544,7 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         self.hdragging = None;
+        self.hdragging_pack = None;
         let graphics_slider = self.graphics.release();
         if slider || graphics_slider {
             vec![Event::ButtonClick]
