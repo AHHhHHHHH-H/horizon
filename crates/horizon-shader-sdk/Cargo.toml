@@ -1,0 +1,18 @@
+# Write Horizon shader pack stages in Rust (docs/shader-packs.md, "Horizon
+# shaders v1"): rust-gpu compiles them to SPIR-V, which the pack ships;
+# `cargo horizon-shader build` does it. Not a workspace member: it builds with
+# rust-gpu's own nightly toolchain.
+[package]
+name = "horizon-shader-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Horizon shader pack stages in Rust (rust-gpu)"
+
+[dependencies]
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", tag = "v0.11.0" }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_arch, values("spirv"))'] }
+
+[workspace]

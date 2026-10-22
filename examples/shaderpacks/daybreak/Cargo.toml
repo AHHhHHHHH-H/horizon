@@ -1,0 +1,28 @@
+# Daybreak's full-screen stages in Rust. `cargo horizon-shader build` (or
+# `cargo gpu build`) compiles them to shaders/daybreak.spv with rust-gpu; the
+# pack ships that file, so players need no toolchain. Not a workspace member.
+[package]
+name = "daybreak"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["dylib", "lib"]
+
+[dependencies]
+horizon-shader-sdk = { path = "../../../crates/horizon-shader-sdk" }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_arch, values("spirv"))'] }
+
+[package.metadata.rust-gpu.build]
+output-dir = "./target/horizon-shader"
+target = "spirv-unknown-vulkan1.2"
+release = true
+multimodule = false
+
+[package.metadata.rust-gpu.install]
+auto-install-rust-toolchain = true
+
+[workspace]

@@ -1,0 +1,128 @@
+# Daybreak: an example Horizon shader pack (docs/shader-packs.md, "Horizon
+# shaders v1"). Warm sunlight with soft shadows, a cool sky light, waving
+# plants, water with waves, reflections and sun glints, a painted sky, distance
+# fog with light shafts, bloom and a filmic tonemap. Its look is inspired by
+# BSL Shaders (Capt Tatsu); BSL's licence doesn't allow modified copies, so
+# none of its code, constants or textures are used here: everything is written
+# from scratch for Horizon.
+[pack]
+name = "Daybreak"
+description = "Sunlight and shadows, waving plants, reflective water, a painted sky, bloom. Inspired by BSL."
+authors = ["Horizon contributors"]
+version = "1.0.0"
+license = "MIT"
+api = 2
+
+[shadow]
+resolution = 2048
+distance = 112.0
+distortion = 0.85
+
+[gbuffer]
+shader = "shaders/world.wgsl"
+
+[[target]]
+name = "bloom_wide"
+format = "rgba16float"
+scale = 0.5
+
+[[target]]
+name = "bloom"
+format = "rgba16float"
+scale = 0.5
+
+# The stages after the world are Rust (src/lib.rs), built with
+# `cargo horizon-shader build` into shaders/daybreak.spv.
+[[stage]]
+kind = "deferred"
+shader = "shaders/daybreak.spv"
+entry = "ambient_occlusion"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/daybreak.spv"
+entry = "atmosphere"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/daybreak.spv"
+entry = "bloom_bright"
+target = "bloom_wide"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/daybreak.spv"
+entry = "bloom_blur"
+target = "bloom"
+
+[[stage]]
+kind = "composite"
+shader = "shaders/daybreak.spv"
+entry = "grade"
+
+[options.sun_strength]
+label = "Sunlight"
+default = 1.0
+min = 0.0
+max = 2.0
+step = 0.05
+
+[options.shadow_softness]
+label = "Shadow softness"
+default = 1.0
+min = 0.0
+max = 3.0
+step = 0.25
+
+[options.waving]
+label = "Waving plants"
+default = true
+
+[options.water_waves]
+label = "Water waves"
+default = 1.0
+min = 0.0
+max = 2.0
+step = 0.1
+
+[options.fog_density]
+id = 1
+label = "Fog"
+default = 1.0
+min = 0.0
+max = 3.0
+step = 0.1
+
+[options.light_shafts]
+id = 2
+label = "Light shafts"
+default = true
+
+[options.ambient_occlusion]
+id = 0
+label = "Ambient occlusion"
+default = true
+
+[options.bloom_strength]
+id = 4
+label = "Bloom"
+default = 0.35
+min = 0.0
+max = 1.0
+step = 0.05
+
+[options.exposure]
+id = 3
+label = "Exposure"
+default = 1.0
+min = 0.25
+max = 3.0
+step = 0.05
+
+[options.saturation]
+id = 5
+label = "Saturation"
+default = 1.1
+min = 0.0
+max = 2.0
+step = 0.05

@@ -1237,7 +1237,25 @@ override mode: i32 = 1;
             translates_everywhere(&pack);
             seen += 1;
         }
-        assert!(seen >= 1, "{seen} example packs");
+        assert!(seen >= 2, "{seen} example packs");
+    }
+
+    #[test]
+    fn compiled_stages_get_their_options_by_id() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/shaderpacks/daybreak");
+        let saved = BTreeMap::from([("fog_density".to_string(), "2".to_string())]);
+        let pack = ShaderPack::load(&dir, &saved).unwrap();
+        let atmosphere = pack
+            .stages
+            .iter()
+            .find(|s| s.entry == "atmosphere")
+            .unwrap();
+        assert!(atmosphere.vertex.is_some());
+        assert!(atmosphere.source.contains("fn atmosphere"));
+        let fog = atmosphere.constants.iter().find(|(k, _)| k == "1").unwrap();
+        assert_eq!(fog.1, f64::from(2.0f32.to_bits()));
+        // The module holds every entry point, so every option with an id.
+        assert_eq!(atmosphere.constants.len(), 6);
     }
 
     #[test]

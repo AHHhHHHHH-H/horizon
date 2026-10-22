@@ -31,3 +31,5 @@
 /.horizon-cache/
 /crash-reports/
 /debug/
+/crates/horizon-shader-sdk/target/
+/examples/shaderpacks/*/target/
