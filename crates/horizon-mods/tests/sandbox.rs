@@ -1,7 +1,8 @@
 //! Loads real mods built with the SDK: the coords-hud example and a guest
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
-    Clock, Corner, Mods, Output, Package, Player, Snapshot, Status, manifest::componentize,
+    BlockEntityView, Clock, CookingKind, CookingRecipe, Corner, ItemFacts, Mods, Output, Package,
+    Player, Property, Snapshot, Stack, Status, manifest::componentize,
 };
 use std::{
     path::{Path, PathBuf},
@@ -18,7 +19,16 @@ api = "0.1"
 capabilities = ["chat", "storage"]
 "#;
 
-/// Builds both mods once and writes their `.hmod` files; returns the folder.
+const MACHINE_MANIFEST: &str = r#"
+id = "test_machine"
+name = "Test Machine"
+version = "0.1.0"
+api = "0.4"
+side = "both"
+capabilities = ["block-entities"]
+"#;
+
+/// Builds the mods once and writes their `.hmod` files; returns the folder.
 fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -32,6 +42,8 @@ fn mods_dir() -> &'static Path {
                 "coords-hud",
                 "-p",
                 "horizon-mods-test-guest",
+                "-p",
+                "horizon-mods-test-machine",
                 "--target-dir",
             ])
             .arg(&target)
@@ -48,6 +60,7 @@ fn mods_dir() -> &'static Path {
         let mods = [
             ("coords_hud", std::fs::read_to_string(example).unwrap()),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
+            ("horizon_mods_test_machine", MACHINE_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
@@ -395,4 +408,178 @@ capabilities = ["registries"]
     assert!(matches!(&mods.entries()[1].status, Status::Failed(e) if e.contains("own namespace")));
     // Content has no hooks: the game's per-tick mod work stays skipped.
     assert!(!mods.is_running());
+}
+
+/// Raw iron smelts into iron ingots in 3 ticks; `test:ghost` is a recipe
+/// output no item table knows.
+struct Facts;
+impl ItemFacts for Facts {
+    fn max_stack_size(&self, id: &str) -> u32 {
+        if id == "test:ghost" { 0 } else { 64 }
+    }
+    fn burn_time(&self, _id: &str) -> u32 {
+        0
+    }
+    fn remainder(&self, _id: &str) -> Option<String> {
+        None
+    }
+    fn cooking_recipe(&self, kind: CookingKind, input: &str) -> Option<CookingRecipe> {
+        let output = match (kind, input) {
+            (CookingKind::Smelting, "minecraft:raw_iron") => "minecraft:iron_ingot",
+            (CookingKind::Smelting, "test:haunted") => "test:ghost",
+            _ => return None,
+        };
+        Some(CookingRecipe {
+            output: stack(output, 1),
+            cooking_time: 3,
+            experience: 0.7,
+        })
+    }
+}
+
+fn stack(id: &str, count: u32) -> Stack {
+    Stack {
+        id: id.into(),
+        count,
+    }
+}
+
+fn smelter(handle: u32, input: Option<Stack>) -> BlockEntityView {
+    BlockEntityView {
+        handle,
+        slots: vec![input, None],
+        properties: vec![Property {
+            name: "lit".into(),
+            value: "false".into(),
+            values: vec!["false".into(), "true".into()],
+        }],
+        changed: false,
+    }
+}
+
+fn machines() -> Mods {
+    let mut mods = load("horizon_mods_test_machine.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_item_facts(std::sync::Arc::new(Facts));
+    mods
+}
+
+#[test]
+fn block_entities_tick_save_and_load() {
+    let mut mods = machines();
+    let types: Vec<(&str, u32, bool)> = mods
+        .block_entity_types()
+        .map(|t| (t.block.as_str(), t.slots, t.ticks))
+        .collect();
+    assert_eq!(
+        types,
+        [
+            ("test_machine:smelter", 2, true),
+            ("test_machine:crate", 4, false)
+        ]
+    );
+    assert_eq!(mods.create_block_entity("minecraft:furnace", &[]), None);
+    let (h, slots) = mods
+        .create_block_entity("test_machine:smelter", &[])
+        .unwrap();
+    assert_eq!(slots, 2);
+    let mut views = [smelter(h, Some(stack("minecraft:raw_iron", 2)))];
+    mods.tick_block_entities(&mut views);
+    assert!(views[0].changed, "lit turned on");
+    assert_eq!(views[0].properties[0].value, "true");
+    assert_eq!(mods.block_entity_data(h), [1]);
+    views[0].changed = false;
+    mods.tick_block_entities(&mut views);
+    assert!(!views[0].changed, "nothing the game keeps changed");
+    mods.tick_block_entities(&mut views);
+    assert_eq!(
+        views[0].slots,
+        [
+            Some(stack("minecraft:raw_iron", 1)),
+            Some(stack("minecraft:iron_ingot", 1))
+        ]
+    );
+    mods.tick_block_entities(&mut views);
+    assert_eq!(mods.block_entity_data(h), [1]);
+
+    // Saved and loaded again (a chunk unloads and comes back).
+    let saved = mods.save_block_entity(h).unwrap();
+    mods.remove_block_entity(h);
+    assert_eq!(mods.block_entity_data(h), Vec::<i32>::new());
+    let (again, _) = mods
+        .create_block_entity("test_machine:smelter", &saved)
+        .unwrap();
+    assert_ne!(again, h);
+    assert_eq!(mods.block_entity_data(again), [1]);
+    assert!(mods.drain().is_empty());
+}
+
+#[test]
+fn block_entities_see_only_their_own() {
+    let mut mods = machines();
+    let (h, _) = mods
+        .create_block_entity("test_machine:smelter", &[])
+        .unwrap();
+    // A view with a handle the mod never got, and an output no table knows:
+    // the stranger is not lent, and the ghost item is refused.
+    let mut views = [
+        smelter(h + 100, Some(stack("minecraft:raw_iron", 1))),
+        smelter(h, Some(stack("test:haunted", 1))),
+    ];
+    for _ in 0..3 {
+        mods.tick_block_entities(&mut views);
+    }
+    assert_eq!(
+        views[0],
+        smelter(h + 100, Some(stack("minecraft:raw_iron", 1)))
+    );
+    assert_eq!(views[1].slots, [Some(stack("test:haunted", 1)), None]);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+#[test]
+fn block_entities_need_their_capability_and_blocks() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_machine.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let cases = [
+        (
+            MACHINE_MANIFEST.replace("\"block-entities\"", ""),
+            "uses capability block-entities, missing from horizon-mod.toml",
+        ),
+        (
+            MACHINE_MANIFEST.replace("id = \"test_machine\"", "id = \"other\""),
+            "declares a block entity for test_machine:smelter, which is not one of its blocks",
+        ),
+    ];
+    for (n, (manifest, why)) in cases.into_iter().enumerate() {
+        let dir = mods_dir().join(format!("machine-refused-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
+        std::fs::write(dir.join("mod.wasm"), &wasm).unwrap();
+        let mods = Mods::load(&[dir], |_| true, |_| false);
+        assert_eq!(mods.entries()[0].status, Status::Failed(why.into()));
+        assert_eq!(mods.block_entity_types().count(), 0);
+    }
+}
+
+#[test]
+fn a_block_entity_that_traps_gives_its_slots_back() {
+    let mut mods = machines();
+    let (h, _) = mods
+        .create_block_entity("test_machine:smelter", &[])
+        .unwrap();
+    let mut views = [smelter(h, Some(stack("minecraft:tnt", 3)))];
+    mods.tick_block_entities(&mut views);
+    assert!(matches!(mods.entries()[0].status, Status::Failed(_)));
+    assert!(matches!(mods.drain()[..], [Output::Stopped { .. }]));
+    // Its slots are back, with what it wrote before it stopped.
+    assert_eq!(views[0].handle, h);
+    assert_eq!(views[0].slots, [Some(stack("minecraft:tnt", 3)), None]);
+    assert_eq!(views[0].properties[0].value, "true");
+    // A stopped mod's block entities are left alone after that.
+    mods.tick_block_entities(&mut views);
+    assert_eq!(views[0].slots, [Some(stack("minecraft:tnt", 3)), None]);
+    assert_eq!(mods.save_block_entity(h), None);
 }

@@ -1,0 +1,333 @@
+mod_id,name,class,tier,licence,modrinth_downloads,notice,gaps,requires
+ae2,Applied Energistics 2,content,deep,custom,6316000,3,CDIMNRTV,
+allthemodium,Allthemodium,content,deep,unknown,,3,BIWX,
+alltheores,AllTheOres,content,data,unknown,,3,J,
+apotheosis,Apotheosis,content,deep,permissive,373000,3,DEHIMRTX,
+ars_nouveau,Ars Nouveau,content,deep,all-rights-reserved,4014000,3,BDHIMNRTVX,
+create,Create,content,deep,custom,27867000,3,BCDHINRTVX,
+farmersdelight,Farmer's Delight,content,machines,permissive,25505000,3,BDIMRTV,
+ftbquests,FTB Quests,content,machines,unknown,,3,EIMNU,
+irons_spellbooks,Iron's Spells 'n Spellbooks,content,deep,unknown,,3,ADEIMNRTX,
+jade,Jade 🔍,client-ui,client,restricted,72845000,3,NU,
+jei,Just Enough Items (JEI),client-ui,client,permissive,84344000,3,NU,
+journeymap,JourneyMap,client-ui,client,all-rights-reserved,15400000,3,NU,
+mekanism,Mekanism,content,deep,permissive,3906000,3,BCDIMNRTVX,
+mysticalagriculture,Mystical Agriculture,content,machines,permissive,1303000,3,BDIMNRTV,
+refinedstorage,Refined Storage,content,deep,unknown,,3,CDMNRTV,
+sophisticatedbackpacks,Sophisticated Backpacks,content,deep,unknown,,3,ADIMNV,
+sophisticatedstorage,Sophisticated Storage,content,machines,unknown,,3,DMNTV,
+supplementaries,Supplementaries,content,deep,custom,29039000,3,BDHINTX,
+twilightforest,The Twilight Forest,content,deep,unknown,,3,BDHIMTVWX,
+waystones,Waystones,content,machines,all-rights-reserved,27351000,3,BDEMNT,
+actuallyadditions,Actually Additions,content,machines,permissive,246000,2,BCDIMNRTV,
+ad_astra,Ad Astra,content,deep,custom,5985000,2,CDEIMNTVWX,
+ae2wtlib,Applied Energistics 2 Wireless Terminals,content,machines,permissive,3149000,2,AIMN,ae2
+aether,The Aether,content,deep,unknown,,2,BDHIMWX,
+allthecompressed,AllTheCompressed,content,data,unknown,,2,J,
+allthetweaks,AllTheTweaks,content,logic,unknown,,2,BI,
+amendments,Amendments,content,deep,custom,20004000,2,BDHTX,
+apothic_enchanting,Apothic-Enchanting,content,machines,permissive,128000,2,EHIMTV,
+appleskin,AppleSkin,client-ui,client,permissive,97093000,2,NU,
+aquaculture,Aquaculture 2,content,deep,all-rights-reserved,1214000,2,BDIMTVX,
+artifacts,Artifacts,content,deep,permissive,14143000,2,ADEIX,
+astralsorcery,Astral Sorcery,content,deep,unknown,,2,BDIMNRTVX,
+bigreactors,Extreme Reactors,content,machines,unknown,,2,CDMNRTV,
+biomeswevegone,Oh The Biomes We've Gone,content,deep,all-rights-reserved,11969000,2,BDWX,
+botanypots,Botany Pots,content,machines,copyleft,2167000,2,DMNRTV,
+buildinggadgets2,Building Gadgets 2,content,deep,unknown,,2,DIMN,
+cataclysm,L_Ender's Cataclysm,content,deep,restricted,19343000,2,BDIWX,
+chisel,Chisel Reborn,content,machines,custom,1538000,2,IMNTV,
+compactmachines,Compact Machines,content,deep,unknown,,2,CDMNTVW,
+computercraft,CC: Tweaked,content,deep,custom,5344000,2,DMNSTUV,
+cookingforblockheads,Cooking for Blockheads,content,machines,unknown,,2,BDMNTV,
+craftingtweaks,Crafting Tweaks,client-ui,client,all-rights-reserved,10529000,2,NU,
+createaddition,Create Crafts & Additions,content,deep,permissive,11314000,2,CDNRTV,create
+creeperoverhaul,Creeper Overhaul,content,deep,all-rights-reserved,10880000,2,DX,
+deeperdarker,Deeper and Darker,content,deep,copyleft,16319000,2,BDIWX,
+draconicevolution,Draconic Evolution,content,deep,custom,926000,2,ACDEIMNTVX,
+easy_villagers,Easy Villagers,content,deep,all-rights-reserved,1681000,2,DMNTVX,
+elevatorid,ElevatorMod,content,logic,permissive,2338000,2,BMN,
+enchdesc,Enchantment Descriptions,client-ui,client,copyleft,39608000,2,U,
+enderio,Ender IO,content,deep,permissive,1004000,2,BCDIMNRTV,
+endermanoverhaul,Enderman Overhaul,content,deep,all-rights-reserved,8223000,2,DX,
+enderstorage,Ender Storage,content,machines,permissive,691000,2,CDMNTV,
+explorerscompass,Explorer's Compass,content,machines,restricted,12346000,2,IMN,
+extendedae,ExtendedAE,content,machines,unknown,,2,CDMNTV,ae2
+fluxnetworks,Flux Networks,content,machines,unknown,,2,CDMNT,
+framedblocks,FramedBlocks,content,deep,copyleft,2265000,2,BDNT,
+ftbchunks,FTB Chunks,server-only,deep,unknown,,2,ENU,
+ftbteams,FTB Teams,server-only,logic,unknown,,2,ENU,
+ftbultimine,FTB Ultimine,content,logic,unknown,,2,DEIN,
+functionalstorage,Functional Storage,content,machines,unknown,,2,DMNTV,
+handcrafted,Handcrafted,content,machines,custom,27534000,2,BDMTVX,
+iceandfire,IceAndFire Community Edition,content,deep,copyleft,2208000,2,BDIMTWX,
+immersiveengineering,Immersive Engineering,content,deep,custom,3691000,2,BCDIMNRTVX,
+industrialforegoing,Industrial Foregoing,content,machines,permissive,978000,2,CDIMNRTVX,
+ironfurnaces,Iron Furnaces,content,machines,permissive,10092000,2,MNTV,
+ironjetpacks,Iron Jetpacks,content,logic,permissive,641000,2,ADEIN,
+justdirethings,Just Dire Things,content,deep,unknown,,2,CDIMNTVX,
+laserio,LaserIO,content,machines,unknown,,2,CDMNTV,
+lootr,Lootr,content,machines,permissive,23796000,2,DEMNTV,
+mcwfurnitures,Macaw's Furniture,content,machines,all-rights-reserved,7371000,2,BMTVX,
+mcwwindows,Macaw's Windows,content,logic,all-rights-reserved,11637000,2,B,
+mekanismgenerators,Mekanism Generators,content,deep,permissive,2656000,2,CDMNTV,mekanism
+minecolonies,MineColonies,content,deep,unknown,,2,BDEIMNTVWX,
+mininggadgets,Mining Gadgets,content,deep,unknown,,2,DIMNT,
+modern_industrialization,Modern Industrialization,content,deep,permissive,2060000,2,CDMNRTV,
+mousetweaks,Mouse Tweaks,client-ui,client,permissive,63400000,2,U,
+naturescompass,Nature's Compass,content,machines,restricted,27185000,2,IMN,
+notenoughanimations,Not Enough Animations,client-ui,client,custom,93276000,2,DU,
+occultism,Occultism,content,deep,permissive,893000,2,DIMNRTVX,
+oritech,Oritech,content,deep,permissive,1271000,2,CDMNRTV,
+pamhc2crops,Pam's HarvestCraft - Crops,content,data,unknown,,2,J,
+pamhc2foodcore,Pam's HarvestCraft - Food Core,content,data,unknown,,2,J,
+pipez,Pipez,content,machines,all-rights-reserved,565000,2,CDMNTV,
+pneumaticcraft,PneumaticCraft: Repressurized,content,deep,copyleft,811000,2,BCDIMNRTVX,
+powah,Powah!,content,machines,copyleft,2573000,2,CDMNTV,
+productivebees,Productive Bees,content,deep,unknown,,2,BDMNRTVX,
+rechiseled,Rechiseled,content,machines,all-rights-reserved,8991000,2,DIMN,
+refurbished_furniture,MrCrayfish's Furniture Mod: Refurbished,content,deep,unknown,,2,BDMNTVX,
+relics,Relics,content,deep,all-rights-reserved,3258000,2,ADEIN,
+sawmill,Sawmill,content,machines,all-rights-reserved,6447000,2,MNR,
+securitycraft,SecurityCraft,content,deep,permissive,5921000,2,BDEMNTVX,
+silentgear,Silent Gear,content,deep,permissive,501000,2,DIMNRT,
+the_bumblezone,The Bumblezone - NeoForge/Forge,content,deep,all-rights-reserved,4273000,2,BDHIWX,
+tiab,Time in a bottle,content,logic,permissive,332000,2,EHI,
+tombstone,Corail Tombstone,content,deep,all-rights-reserved,344000,2,DEIMTVX,
+toolbelt,Tool Belt,content,machines,unknown,,2,ADIMN,
+torchmaster,TorchMaster,content,logic,permissive,3360000,2,BEH,
+trashcans,Trash Cans,content,machines,all-rights-reserved,2185000,2,CMNTV,
+undergarden,The Undergarden,content,deep,all-rights-reserved,3075000,2,BDIWX,
+accelerateddecay,Accelerated Decay,content,logic,copyleft,1187000,1,BH,
+ad_astra_giselle_addon,Ad Astra: Giselle Addon,integration,machines,unknown,,1,CMNRTV,ad_astra mekanism
+additional_lights,Additional Lights,unknown,none,unknown,,1,B,
+advanced_ae,AdvancedAE,content,machines,copyleft,651000,1,MNTV,ae2
+advancedperipherals,Advanced Peripherals,integration,machines,unknown,,1,CSTV,computercraft
+ae2ct,AE2:Crafting Tree,client-ui,client,unknown,,1,U,ae2
+ae2importexportcard,AE2 Import Export Card,content,machines,permissive,320000,1,MNTV,ae2
+ae2jeiintegration,AE2 JEI Integration,integration,client,unknown,,1,U,ae2 jei
+ae2netanalyser,AE2NetworkAnalyzer,content,machines,unknown,,1,DIN,ae2
+aeinfinitybooster,AEInfinityBooster,content,logic,copyleft,220000,1,I,ae2
+akashictome,Akashic Tome,content,logic,restricted,454000,1,IN,
+allthearcanistgear,All The Arcanist Gear,content,logic,unknown,,1,I,ars_nouveau
+allthewizardgear,All the Wizard Gear,content,logic,unknown,,1,I,irons_spellbooks
+apothic_spawners,Apothic-Spawners,content,logic,permissive,105000,1,HT,
+appflux,AppliedFlux,content,machines,unknown,,1,CMNTV,ae2
+appmek,Applied Mekanistics,integration,machines,copyleft,847000,1,CTV,ae2 mekanism
+ars_additions,Ars Additions,content,logic,copyleft,388000,1,BI,ars_nouveau
+ars_controle,Ars Controle,content,logic,copyleft,92000,1,BI,ars_nouveau
+ars_creo,Ars Creo,integration,logic,all-rights-reserved,352000,1,BI,ars_nouveau create
+ars_elemancy,Ars Elemancy,content,logic,unknown,,1,BIX,ars_nouveau
+ars_elemental,Ars Elemental,content,deep,unknown,,1,BDITX,ars_nouveau
+ars_ocultas,Ars Ocultas,content,logic,copyleft,422000,1,BI,ars_nouveau
+ars_polymorphia,Ars Polymorphia,content,logic,copyleft,75000,1,BI,ars_nouveau
+ars_technica,Ars Technica,content,machines,unknown,,1,CDMNRTV,ars_nouveau create
+ars_unification,Ars Unification,integration,data,copyleft,61000,1,J,ars_nouveau
+arseng,Ars Énergistique,integration,machines,copyleft,413000,1,CTV,ae2 ars_nouveau
+atmcompat,ATM: Compat,integration,data,unknown,,1,J,
+auroral,Auroral,content,deep,permissive,9000,1,DIX,
+auroras,Auroras,client-ui,client,permissive,262000,1,DU,
+bellsandwhistles,Create: Bells & Whistles,content,deep,copyleft,5037000,1,DT,create
+betteradvancedtooltips,Better Advanced Tooltips,client-ui,client,permissive,104000,1,U,
+betteradvancements,Better Advancements,client-ui,client,custom,27359000,1,U,
+bhc,Baubley Heart Canisters,content,logic,unknown,,1,AEI,
+bibliobiomes,Bibliobiomes Legacy,integration,data,permissive,69000,1,J,
+bibliocraft,Bibliocraft Legacy,content,machines,permissive,132000,1,BDMNTV,
+bibliowoods,Bibliowoods Legacy,integration,data,permissive,84000,1,J,
+blueflame,Blue Flame Burning,content,logic,all-rights-reserved,69000,1,EH,
+botanypotsmystical,Botany Pots - Mystical Agriculture Compat,integration,data,copyleft,64000,1,J,botanypots mysticalagriculture
+botanytrees,Botany Trees,integration,data,copyleft,802000,1,J,botanypots
+bridgingmod,Bridging Mod,content,logic,permissive,6843000,1,EHN,
+bwncr,Bad Wither No Cookie - Reloaded,server-only,logic,permissive,14196000,1,E,
+byzantine,Byzantine,unknown,none,unknown,,1,B,
+cabletiers,Cable Tiers,content,machines,permissive,206000,1,MNTV,refinedstorage
+camol,Camol,unknown,none,unknown,,1,B,
+catjammies,CatJammies,unknown,none,unknown,,1,DH,
+charginggadgets,Charging Gadgets,content,machines,unknown,,1,CMNTV,
+chromacarvings,Chroma Carvings,unknown,none,unknown,,1,J,
+cleanswing,Clean Swing,unknown,none,unknown,,1,EH,
+cloudglass,Cloud Glass,content,data,unknown,,1,J,
+cobblegengalore,Cobblegen Galore,unknown,none,unknown,,1,MTV,
+colorfulhearts,Colorful Hearts,client-ui,client,permissive,4640000,1,U,
+comforts,Comforts,content,logic,copyleft,24012000,1,BEH,
+constructionstick,Construction Sticks,content,logic,unknown,,1,DIN,
+controlling,Controlling,client-ui,client,permissive,41821000,1,U,
+copycats,Create: Copycats+,content,deep,all-rights-reserved,10946000,1,DT,create
+cosmeticarmorreworked,CosmeticArmorReworked,content,machines,unknown,,1,DEMN,
+crafting_on_a_stick,Crafting on a Stick,content,logic,all-rights-reserved,416000,1,IM,
+crashutilities,Crash Utilities,server-only,logic,unknown,,1,E,
+create_aquatic_ambitions,Create: Aquatic Ambitions,content,deep,permissive,620000,1,BDTX,create
+create_dragons_plus,Create: Dragons Plus,content,deep,copyleft,3448000,1,DTX,create
+create_enchantment_industry,Create: Enchantment Industry,content,deep,copyleft,6160000,1,CDRTV,create
+create_hypertube,Create: Hypertubes,content,deep,permissive,1219000,1,DNTX,create
+crystalix,Crystalix,content,data,unknown,,1,J,
+darkmodeeverywhere,Dark Mode Everywhere,client-ui,client,permissive,375000,1,U,
+dimstorage,DimStorage,content,machines,copyleft,105000,1,CMNTV,
+disenchanting_table,Dis-Enchanting Table,content,machines,all-rights-reserved,1293000,1,MTV,
+domum_ornamentum,Domum Ornamentum,content,deep,unknown,,1,BDMNT,
+drippyloadingscreen,Drippy Loading Screen,client-ui,client,custom,23220000,1,U,
+dummmmmmy,MmmMmmMmmMmm,content,deep,permissive,13223000,1,DX,
+dungeoncrawl,Dungeon Crawl,content,deep,copyleft,664000,1,W,
+dyenamics,Dyenamics,content,logic,unknown,,1,BHI,
+dyenamicsandfriends,Dyenamics and Friends,integration,data,unknown,,1,J,dyenamics
+dysoncubeproject,Dyson Cube Project,content,deep,unknown,,1,CDMNTV,
+enderdrives,Ender Drives,content,machines,unknown,,1,MNTV,ae2
+energymeter,Energy Meter,content,machines,all-rights-reserved,78000,1,CDMNT,
+entangled,Entangled,content,machines,all-rights-reserved,309000,1,CDTV,
+eternal_starlight,Eternal Starlight,content,deep,permissive,744000,1,BDIWX,
+everythingcopper,Everything is Copper,content,data,unknown,,1,J,
+evilcraft,EvilCraft,content,deep,unknown,,1,CDIMNRTVX,
+expandedae,Expanded AE,content,machines,unknown,,1,MNTV,ae2
+extended_industrialization,Extended Industrialization,content,machines,permissive,562000,1,CDMNRTV,modern_industrialization
+extradisks,Extra Disks,content,machines,permissive,312000,1,MNTV,refinedstorage
+extrastorage,ExtraStorage,content,machines,copyleft,220000,1,MNTV,refinedstorage
+extremesoundmuffler,Extreme sound muffler,client-ui,client,copyleft,5131000,1,U,
+factory_blocks,Factory Blocks,content,data,unknown,,1,J,
+fancymenu,FancyMenu,client-ui,client,custom,69939000,1,U,
+farmingforblockheads,Farming for Blockheads,content,machines,all-rights-reserved,551000,1,MNTV,
+fireproofboats,Fireproof Boats,content,deep,unknown,,1,IX,
+forbidden_arcanus,Forbidden and Arcanus ,content,deep,all-rights-reserved,541000,1,BDIMRTVX,
+ftbessentials,FTB Essentials,server-only,logic,unknown,,1,E,
+ftbjeiextras,FTB Jei Extras,integration,client,unknown,,1,U,jei
+ftbranks,FTB Ranks,server-only,logic,unknown,,1,E,
+ftbxmodcompat,FTB XMod Compat,integration,logic,unknown,,1,E,ftbquests
+fuelgoeshere,Fuel Goes Here,content,logic,all-rights-reserved,138000,1,H,
+gateways,Gateways To Eternity,content,deep,unknown,,1,DINTX,
+generatorgalore,Generator Galore,content,machines,unknown,,1,CMNTV,
+gmut,Gravitational Modulating Additional Unit,integration,logic,unknown,,1,EI,mekanism
+hardenedarmadillos,Hardened Armadillos,unknown,none,unknown,,1,HX,
+herbsandharvest,Mama's Herbs and Harvest,content,data,unknown,,1,J,
+heyberryshutup,Hey Berry! SHUT UP,content,logic,all-rights-reserved,108000,1,H,
+hostilenetworks,Hostile Neural Networks,content,machines,permissive,55000,1,CDMNTV,
+illagerwarship,Illager Warship,content,deep,all-rights-reserved,291000,1,DWX,
+imfast,I'm Fast,content,logic,permissive,1436000,1,H,
+immeng,Immersive Energistics,integration,machines,copyleft,89000,1,CTV,ae2 immersiveengineering
+incontrol,In Control!,server-only,logic,permissive,4035000,1,EH,
+industrialforegoingsouls,Industrial Foregoing: Souls,content,machines,permissive,178000,1,CDMNTV,industrialforegoing
+industrialization_overdrive,Industrialization Overdrive,content,machines,permissive,70000,1,CDMNRTV,modern_industrialization
+integratedcrafting,IntegratedCrafting,content,deep,unknown,,1,CDMNRSTV,integrateddynamics
+integrateddynamics,IntegratedDynamics,content,deep,unknown,,1,CDMNRSTV,
+integratedscripting,IntegratedScripting,content,deep,unknown,,1,CDMNRSTV,integrateddynamics
+integratedterminals,IntegratedTerminals,content,deep,unknown,,1,CDMNRSTV,integrateddynamics
+integratedtunnels,IntegratedTunnels,content,deep,unknown,,1,CDMNRSTV,integrateddynamics
+interdimensionalwirelesstransmitter,Interdimensional Wireless Transmitter,content,machines,permissive,106000,1,CMNTV,
+invtweaks,Inventory Tweaks Refoxed,client-ui,client,unknown,,1,NU,
+irons_jewelry,Iron's Gems 'n Jewelry,content,machines,all-rights-reserved,19000,1,AIMTV,irons_spellbooks
+itemcollectors,Item Collectors,content,machines,all-rights-reserved,571000,1,DMNTV,
+jearchaeology,Just Enough Archaeology,integration,client,unknown,,1,U,jei
+jei_mekanism_multiblocks,Just Enough Mekanism Multiblocks,integration,client,unknown,,1,U,jei mekanism
+jeistuff,Just Enough Stuff,integration,client,unknown,,1,U,jei
+jumpboat,Jumpy Boats,content,logic,all-rights-reserved,179000,1,HX,
+justenoughbreeding,Just Enough Breeding (JEBr),integration,client,permissive,8335000,1,U,jei
+justenoughprofessions,Just Enough Professions (JEP),integration,client,unknown,,1,U,jei
+keybindbundles,KeyBind Bundles,client-ui,client,unknown,,1,U,
+keybindspurger,KeybindsPurger,client-ui,client,permissive,159000,1,U,
+kotlinforforge-5.12.0-all,,unknown,none,unknown,,1,L,
+laserbridges,Laser Bridges & Doors,content,machines,permissive,240000,1,BDMNT,
+little_big_redstone,Little Big Redstone,content,deep,permissive,77000,1,DMNT,
+livingthings,LivingThings,content,deep,restricted,586000,1,DX,
+logisticsnetworks,LogisticsNetworks,unknown,none,unknown,,1,MNTV,
+mahoutsukai,Mahou Tsukai,content,deep,unknown,,1,DEINX,
+mcwlights,Macaw's Lights and Lamps,content,logic,all-rights-reserved,4128000,1,B,
+measurements,Measurements,content,logic,unknown,,1,DIN,
+megacells,MEGA Cells,content,machines,unknown,,1,MNTV,ae2
+mekanismcovers,Mekanism Covers,integration,machines,copyleft,134000,1,DT,mekanism
+mekanisticrouters,Mekanistic Routers,integration,machines,unknown,,1,CTV,mekanism modularrouters
+mekmm,Mekanism:More Machine,content,machines,permissive,166000,1,CDMNRTV,mekanism
+merequester,ME Requester,content,machines,copyleft,1781000,1,MNTV,ae2
+merrymaking,Mama's MerryMaking,content,logic,unknown,,1,BI,
+mffs,Modular Force Field System,content,deep,unknown,,1,CDEMNT,
+mifa,More Industrial Foregoing Addons (MIFA),content,machines,permissive,98000,1,CDMNTV,industrialforegoing
+mob_grinding_utils,Mob Grinding Utils,content,machines,unknown,,1,CDMNTVX,
+moderndynamics,Modern Dynamics,content,machines,copyleft,184000,1,CDNTV,
+modularbees,ModularBees,content,machines,unknown,,1,MNTV,productivebees
+modularrouters,Modular Routers,content,machines,permissive,291000,1,DIMNTV,
+moredragoneggs,More Dragon Eggs,content,logic,unknown,,1,B,
+moreoverlays,More Overlays Updated,client-ui,client,permissive,2194000,1,U,
+morered,More Red,content,logic,unknown,,1,BDT,
+moreredxcctcompat,More Red x CC:Tweaked Compat,integration,logic,unknown,,1,T,morered computercraft
+multipiston,Multi-Piston,content,logic,unknown,,1,BT,
+mysticalagradditions,Mystical Agradditions,content,logic,permissive,707000,1,BI,mysticalagriculture
+naturesaura,Nature's Aura,content,deep,permissive,154000,1,BDIRTVX,
+neovitae,Neo Vitae,content,deep,permissive,24000,1,DITX,
+netherportalfix,NetherPortalFix,server-only,logic,unknown,,1,EH,
+not_enough_glyphs,Not Enough Glyphs,content,logic,copyleft,109000,1,BIX,ars_nouveau
+novillagerdm,No Villager Death Messages,server-only,logic,permissive,114000,1,E,
+overlapless,Overlapless,unknown,none,unknown,,1,U,
+overloadedarmorbar,OverloadedArmorBar,client-ui,client,unknown,,1,U,
+pamhc2trees,Pam's HarvestCraft - Trees,content,data,unknown,,1,J,
+pocketstorage,Pocket Storage,content,machines,unknown,,1,IMN,
+polyeng,Polymorphic Energistics,integration,machines,copyleft,2035000,1,MNTV,ae2
+polymorph,Polymorph,client-ui,client,copyleft,26223000,1,MNU,
+potionsmaster,PotionsMaster,unknown,none,unknown,,1,MRTV,
+productivemetalworks,Productive Metalworks,content,machines,unknown,,1,CDMRTV,
+productivetrees,Productive Trees,content,logic,unknown,,1,BRT,
+pylons,Pylons,content,machines,all-rights-reserved,167000,1,EMNTV,
+quarryplus,Additional Enchanted Miner,content,machines,copyleft,538000,1,CDMNTV,
+railcraft,Railcraft Reborn,content,deep,custom,165000,1,BCDMNRTVX,
+rangedpumps,Ranged Pumps,content,machines,unknown,,1,CMT,
+rechiseled_chipped,Rechiseled: Chipped,integration,data,all-rights-reserved,338000,1,J,rechiseled
+rechiseledcreate,Rechiseled: Create,integration,data,all-rights-reserved,2978000,1,J,rechiseled create
+redstonepen,Redstone Pen,content,logic,permissive,365000,1,BDNT,
+refinedfluidsubstitution,Refined Fluid Substitution,integration,logic,permissive,0000,1,T,refinedstorage
+refinedstorage_curios_integration,Refined Storage - Curios Integration,integration,machines,unknown,,1,AN,refinedstorage
+refinedstorage_jei_integration,Refined Storage - JEI Integration,integration,client,unknown,,1,U,refinedstorage jei
+refinedstorage_mekanism_integration,Refined Storage - Mekanism Integration,integration,machines,unknown,,1,CTV,refinedstorage mekanism
+refinedstorage_quartz_arsenal,Refined Storage - Quartz Arsenal,content,logic,unknown,,1,I,refinedstorage
+refinedtypes,Refined Types,content,machines,permissive,51000,1,MTV,refinedstorage
+reliquary,Reliquary Reincarnations,content,deep,unknown,,1,BDEITX,
+reliquified_artifacts,Reliquified Artifacts,integration,logic,all-rights-reserved,633000,1,AEI,artifacts relics
+repeatable_trial_vaults,Repeatable Trial Vaults,content,logic,permissive,158000,1,H,
+restrictions,Restrictions,content,logic,unknown,,1,E,
+rftoolsbase,RFTools Base,content,machines,permissive,382000,1,CDMNTV,
+rftoolsbuilder,RFTools Builder,content,deep,permissive,309000,1,CDMNTVW,rftoolsbase
+rftoolspower,RFTools Power,content,machines,permissive,148000,1,CDMNTV,rftoolsbase
+rftoolsstorage,RFTools Storage,content,machines,permissive,91000,1,CDMNTV,rftoolsbase
+rftoolsutility,RFTools Utility,content,machines,permissive,327000,1,CDMNTV,rftoolsbase
+rootsclassic,Roots Classic,content,deep,unknown,,1,DIMRTVX,
+rsinsertexportupgrade,Refined Wireless Upgrades,content,machines,permissive,52000,1,MNTV,refinedstorage
+sawmill.zip-(datapack),,other,data,unknown,,1,J,
+sfm,Super Factory Manager,content,deep,copyleft,381000,1,DMNSTV,
+sgearmetalworks,Silent Gear Metalworks,integration,logic,unknown,,1,I,silentgear
+shiny,Shiny!,unknown,none,unknown,,1,DH,
+shrink,Shrink,content,deep,unknown,,1,DEHN,
+silentgems,Silent's Gems,content,logic,permissive,118000,1,BI,
+simple_weather,Simple Weather,unknown,none,unknown,,1,DU,
+simplebackups,Simple Backups,server-only,logic,permissive,1023000,1,E,
+simplemagnets,Simple Magnets,content,logic,all-rights-reserved,558000,1,EIN,
+simplylight,Simply Light,content,data,unknown,,1,J,
+smithingtemplateviewer,Smithing Template Viewer,client-ui,client,permissive,120000,1,U,
+solcarrot,Spice of Life: Carrot Edition,content,logic,unknown,,1,ENU,
+sophisticatedbackpackscreateintegration,Sophisticated Backpacks Create Integration,integration,deep,unknown,,1,TX,sophisticatedbackpacks create
+sophisticatedstoragecreateintegration,Sophisticated Storage Create Integration,integration,deep,unknown,,1,TX,sophisticatedstorage create
+sophisticatedstorageinmotion,Sophisticated Storage In Motion,integration,deep,unknown,,1,TVX,sophisticatedstorage create
+soulplied_energistics,Soulplied Energistics,integration,machines,unknown,,1,MNTV,ae2
+starbunclemania,Starbunclemania,content,logic,unknown,,1,X,ars_nouveau
+stepcrafter,Step Crafter,content,machines,permissive,9000,1,MNTV,
+stevescarts,StevesCarts2,content,deep,unknown,,1,DMNTVX,
+storagedelight,Storage Delight,integration,machines,permissive,2117000,1,DMTV,farmersdelight
+stylecolonies,Stylecolonies,integration,data,unknown,,1,J,minecolonies
+sushigocrafting,Sushi Go Crafting,content,machines,permissive,132000,1,BMTV,
+sussysniffers,Sussy Sniffers,unknown,none,unknown,,1,HX,
+tempad,Tempad,content,deep,custom,471000,1,DEIMN,
+theurgy,Theurgy,content,deep,permissive,224000,1,DRTV,
+toastcontrol,Toast Control,client-ui,client,unknown,,1,U,
+towntalk,Towntalk,unknown,none,unknown,,1,HX,
+transfer_labels,Transfer Labels,content,machines,permissive,69000,1,IT,
+trashslot,TrashSlot,client-ui,client,unknown,,1,MNU,
+treetap,Tree Tap,content,machines,unknown,,1,TV,
+trophymanager,Jonn's Trophies,content,machines,unknown,,1,DNT,
+underground_villages,Underground Villages Mod,unknown,none,unknown,,1,WX,
+universalgrid,Universal Grid,content,machines,permissive,290000,1,IMN,refinedstorage
+uranus,Uranus,unknown,none,unknown,,1,B,
+utilitarian,Utilitarian,content,logic,unknown,,1,BIT,
+utilityvest,Utility vest,unknown,none,unknown,,1,AIM,
+variantsandventures,Variants&Ventures,content,deep,restricted,1788000,1,DX,
+wirelesschargers,Wireless Chargers,content,machines,all-rights-reserved,242000,1,CDT,
+wits,WITS (What Is This Structure?),server-only,logic,permissive,2090000,1,EN,
+wstweaks,Wither Skeleton Tweaks,content,logic,unknown,,1,EH,
+xnet,XNet,content,machines,permissive,314000,1,CDMNTV,rftoolsbase
+xtonesreworked,XTones Reworked,content,data,unknown,,1,J,
+xycraft_machines,XyCraft Machines,content,machines,unknown,,1,CDMNTV,
+xycraft_override,XyCraft Override,unknown,none,unknown,,1,H,
+xycraft_world,XyCraft World,content,logic,unknown,,1,BDW,

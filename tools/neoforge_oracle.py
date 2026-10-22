@@ -2,11 +2,14 @@
 """Dev-only NeoForge oracle for Horizon's mod-port harnesses (docs/modpacks.md).
 
     neoforge_oracle.py export --jars DIR [--deps DIR] [--namespaces a,b] --out FACTS.json
+    neoforge_oracle.py machines --jars DIR [--deps DIR] --scenarios S.json --out TRACE.json
 
 installs a NeoForge server under .local/neoforge-oracle (once), builds the exporter mod in
 mods/horizon/src/neoforge-oracle, starts the server headless with the given mod jars, and writes every
 block, item, recipe and tag of the mods' namespaces (and the vanilla blocks, for templates) to
-FACTS.json. The jars are the user's own; nothing here is shipped or committed.
+FACTS.json. `machines` instead places each scenario's block, ticks its block entity and writes its
+slots, block state and saved fields per tick (tools/mod_machine_harness.py). The jars are the user's
+own; nothing here is shipped or committed.
 """
 import argparse
 import json
@@ -226,6 +229,23 @@ def export(args):
           f'({namespaces}); server ran {seconds:.1f} s')
 
 
+def machines(args):
+    jars = sorted(Path(args.jars).glob('*.jar'))
+    deps = sorted(Path(args.deps).glob('*.jar')) if args.deps else []
+    home = install()
+    exporter = build(home)
+    home, run = instance('machines', jars, [*deps, exporter])
+    out = Path(args.out).resolve()
+    out.unlink(missing_ok=True)
+    seconds, log = start(home, run, {'horizon.oracle.out': out,
+                                     'horizon.oracle.machines': Path(args.scenarios).resolve()})
+    if not out.exists():
+        tail = '\n'.join(log.splitlines()[-40:])
+        sys.exit(f'the oracle wrote nothing; the end of {run / "server.log"}:\n{tail}')
+    traces = json.loads(out.read_text())
+    print(f'{out}: {len(traces)} scenarios; server ran {seconds:.1f} s')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -234,8 +254,13 @@ def main():
     e.add_argument('--deps', help='their required libraries (loaded, not exported)')
     e.add_argument('--namespaces', help='comma-separated; default: the jars\' mod ids')
     e.add_argument('--out', required=True)
+    m = sub.add_parser('machines', help='trace the block entities of the scenarios in --scenarios')
+    m.add_argument('--jars', required=True, help='the mods')
+    m.add_argument('--deps', help='their required libraries')
+    m.add_argument('--scenarios', required=True)
+    m.add_argument('--out', required=True)
     args = parser.parse_args()
-    {'export': export}[args.command](args)
+    {'export': export, 'machines': machines}[args.command](args)
 
 
 if __name__ == '__main__':

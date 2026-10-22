@@ -1,6 +1,7 @@
 //! Loading and calling mods with wasmtime's component model.
-use crate::manifest::{Manifest, Package, Side};
+use crate::manifest::{Capability, Manifest, Package, Side};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -16,6 +17,15 @@ mod bindings {
         world: "horizon-mod",
     });
 }
+/// API 0.4's block entities: a second world, so mods built before it (no
+/// `block-entities` export) still instantiate as `horizon-mod`.
+mod machine_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "machine-host",
+        additional_derives: [PartialEq],
+    });
+}
 pub use bindings::horizon::mods::{
     game::{Clock, Player},
     hud::{Corner, Line},
@@ -24,6 +34,11 @@ use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
     horizon::mods::{chat, game, hud, log as mod_log, storage},
+};
+use machine_bindings::{MachineHost, horizon::mods::machine};
+pub use machine_bindings::{
+    exports::horizon::mods::block_entities::BlockEntityType,
+    horizon::mods::machine::{CookingKind, CookingRecipe, ItemStack as Stack},
 };
 
 /// A mod's linear memory cap.
@@ -52,6 +67,43 @@ const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 /// A mod's data, beside its `horizon-mods` folder (`find`'s `path.parent()`
 /// never has a manifest there, so `find` never mistakes it for a mod).
 const STORAGE_DIR: &str = ".horizon-mod-data";
+
+/// The export a block-entity mod adds (`horizon:mods/block-entities`).
+const BLOCK_ENTITIES_EXPORT: &str = "horizon:mods/block-entities@0.1.0";
+/// Slots a mod's block entity may ask the game to keep.
+const MAX_SLOTS: u32 = 256;
+
+/// The game's item and recipe facts that block entities query (`machine`):
+/// set once with [`Mods::set_item_facts`] after the data packs load.
+pub trait ItemFacts: Send + Sync {
+    /// 0 for an unknown item.
+    fn max_stack_size(&self, id: &str) -> u32;
+    /// Ticks the item burns as furnace fuel, 0 if it is no fuel.
+    fn burn_time(&self, id: &str) -> u32;
+    /// What is left once the item is used up (a bucket from a lava bucket).
+    fn remainder(&self, id: &str) -> Option<String>;
+    fn cooking_recipe(&self, kind: CookingKind, input: &str) -> Option<CookingRecipe>;
+}
+
+/// A block state property of a block entity's block, as `machine` sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Property {
+    pub name: String,
+    pub value: String,
+    /// The values the block allows for it; `set-property` refuses others.
+    pub values: Vec<String>,
+}
+
+/// What the game lends a mod's block entity during a tick: its slots and its
+/// block's properties. `changed` is set when the mod wrote either, so the
+/// game saves the chunk and updates the block and open menus.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockEntityView {
+    pub handle: u32,
+    pub slots: Vec<Option<Stack>>,
+    pub properties: Vec<Property>,
+    pub changed: bool,
+}
 
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
@@ -101,8 +153,16 @@ pub struct Entry {
 
 struct Running {
     store: Store<State>,
-    exports: HorizonMod,
+    exports: Exports,
     hooks: Registration,
+    /// Its block entity types (API 0.4), checked against its namespaces.
+    types: Vec<BlockEntityType>,
+}
+
+struct Exports {
+    events: HorizonMod,
+    /// Present when the component exports `block-entities`.
+    machine: Option<MachineHost>,
 }
 
 struct State {
@@ -119,6 +179,10 @@ struct State {
     /// needs its own budget.
     storage_budget: u64,
     limits: StoreLimits,
+    /// Capability `block-entities`: the game's facts, and the block entities
+    /// lent to the current `tick` call (none outside it).
+    facts: Option<Arc<dyn ItemFacts>>,
+    views: Vec<BlockEntityView>,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -129,6 +193,13 @@ pub struct Mods {
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
+    facts: Option<Arc<dyn ItemFacts>>,
+    /// Each live block entity's handle: the entry of the mod that owns it.
+    handles: HashMap<u32, usize>,
+    next_handle: u32,
+    /// The block entities a mod held when it stopped mid-call, saved from
+    /// its dropped store so the game gets their slots back.
+    stranded: Vec<BlockEntityView>,
 }
 
 /// The `.hmod` files and mod folders in `dir`, by name.
@@ -204,6 +275,8 @@ impl Mods {
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            MachineHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -242,6 +315,7 @@ impl Mods {
             .flat_map(|r| r.hooks.commands.iter().cloned())
             .collect();
         let snapshot = self.snapshot.clone();
+        let facts = self.facts.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -251,6 +325,9 @@ impl Mods {
             .map(|(name, _)| name.to_string())
             .collect();
         m.check_imports(imports.iter().map(String::as_str))?;
+        let has_machine = ty
+            .exports(engine)
+            .any(|(name, _)| name == BLOCK_ENTITIES_EXPORT);
         let data_dir = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -268,16 +345,38 @@ impl Mods {
                 .memory_size(MEMORY)
                 .instances(16)
                 .build(),
+            facts,
+            views: Vec::new(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-        let exports =
-            HorizonMod::instantiate(&mut store, &component, linker).map_err(|e| reason(&e))?;
-        let mut hooks = exports
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .map_err(|e| reason(&e))?;
+        let events = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
+        let machine = match has_machine {
+            true => Some(MachineHost::new(&mut store, &instance).map_err(|e| reason(&e))?),
+            false => None,
+        };
+        let mut hooks = events
             .horizon_mods_events()
             .call_init(&mut store)
             .map_err(|e| reason(&e))??;
+        let mut types = Vec::new();
+        if let Some(machine) = &machine {
+            let declared = machine
+                .horizon_mods_block_entities()
+                .call_types(&mut store)
+                .map_err(|e| reason(&e))?;
+            if !declared.is_empty() && !m.capabilities.contains(&Capability::BlockEntities) {
+                return Err(format!(
+                    "has block entities but not capability block-entities in {}",
+                    crate::manifest::MANIFEST
+                ));
+            }
+            types = check_types(m, declared)?;
+        }
         hooks.commands.retain(|c| {
             let free = !reserved(c) && !taken.contains(c);
             if !free {
@@ -288,8 +387,9 @@ impl Mods {
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
             store,
-            exports,
+            exports: Exports { events, machine },
             hooks,
+            types,
         }))
     }
 
@@ -310,7 +410,7 @@ impl Mods {
         &mut self,
         fuel: u64,
         wants: impl Fn(&Registration) -> bool,
-        mut f: impl FnMut(&HorizonMod, &mut Store<State>) -> wasmtime::Result<()>,
+        mut f: impl FnMut(&Exports, &mut Store<State>) -> wasmtime::Result<()>,
     ) {
         for i in 0..self.entries.len() {
             if self.entries[i]
@@ -328,12 +428,13 @@ impl Mods {
         &mut self,
         i: usize,
         fuel: u64,
-        f: impl FnOnce(&HorizonMod, &mut Store<State>) -> wasmtime::Result<R>,
+        f: impl FnOnce(&Exports, &mut Store<State>) -> wasmtime::Result<R>,
     ) -> Option<R> {
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        run.store.data_mut().facts = self.facts.clone();
         let started = Instant::now();
         let result = run
             .store
@@ -353,6 +454,7 @@ impl Mods {
                     reason: reason.clone(),
                 });
                 entry.status = Status::Failed(reason);
+                self.stranded = std::mem::take(&mut run.store.data_mut().views);
                 entry.run = None;
                 None
             }
@@ -364,7 +466,7 @@ impl Mods {
         self.each(
             FUEL_TICK,
             |h| h.tick,
-            |m, s| m.horizon_mods_events().call_tick(s, tick),
+            |m, s| m.events.horizon_mods_events().call_tick(s, tick),
         );
     }
     /// A rendered frame, `seconds` after the last.
@@ -372,7 +474,7 @@ impl Mods {
         self.each(
             FUEL_FRAME,
             |h| h.frame,
-            |m, s| m.horizon_mods_events().call_frame(s, seconds),
+            |m, s| m.events.horizon_mods_events().call_frame(s, seconds),
         );
     }
     /// A chat line the player received, as plain text.
@@ -380,7 +482,7 @@ impl Mods {
         self.each(
             FUEL_EVENT,
             |h| h.chat,
-            |m, s| m.horizon_mods_events().call_chat(s, text),
+            |m, s| m.events.horizon_mods_events().call_chat(s, text),
         );
     }
     /// Whether a running mod owns `/name`.
@@ -402,7 +504,7 @@ impl Mods {
             return false;
         };
         let result = self.call(i, FUEL_EVENT, |m, s| {
-            m.horizon_mods_events().call_command(s, name, args)
+            m.events.horizon_mods_events().call_command(s, name, args)
         });
         match result {
             Some(Ok(Some(text))) => self.out.push(Output::Feedback { text, error: false }),
@@ -430,6 +532,117 @@ impl Mods {
         std::mem::take(&mut self.out)
     }
 
+    /// The game's item and recipe facts, for capability `block-entities`.
+    pub fn set_item_facts(&mut self, facts: Arc<dyn ItemFacts>) {
+        self.facts = Some(facts);
+    }
+
+    /// The block entity types of the running mods (API 0.4).
+    pub fn block_entity_types(&self) -> impl Iterator<Item = &BlockEntityType> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| r.types.iter())
+    }
+
+    /// The running mod whose block entity type is `block`'s, and the type.
+    fn block_entity_type(&self, block: &str) -> Option<(usize, &BlockEntityType)> {
+        self.entries.iter().enumerate().find_map(|(i, e)| {
+            let t = e.run.as_ref()?.types.iter().find(|t| t.block == block)?;
+            Some((i, t))
+        })
+    }
+
+    /// A block entity for `block`, placed (`saved` empty) or loaded (what
+    /// [`Mods::save_block_entity`] returned): its handle, and the slots the
+    /// game must keep for it. None when no running mod has `block`, or the
+    /// mod stopped.
+    pub fn create_block_entity(&mut self, block: &str, saved: &[u8]) -> Option<(u32, u32)> {
+        let (i, ty) = self.block_entity_type(block)?;
+        let slots = ty.slots;
+        let handle = self.next_handle;
+        self.next_handle = self.next_handle.wrapping_add(1);
+        self.call(i, FUEL_EVENT, |m, s| {
+            machine_of(m)?
+                .horizon_mods_block_entities()
+                .call_create(s, handle, block, saved)
+        })?;
+        self.handles.insert(handle, i);
+        Some((handle, slots))
+    }
+
+    /// One server tick of the ticking block entities in `views`, one call
+    /// per mod. Each mod sees only its own; their slots and properties come
+    /// back changed. Views of unknown handles or stopped mods are left alone.
+    pub fn tick_block_entities(&mut self, views: &mut [BlockEntityView]) {
+        for i in 0..self.entries.len() {
+            let Some(run) = self.entries[i].run.as_ref() else {
+                continue;
+            };
+            let ticking = |v: &BlockEntityView| self.handles.get(&v.handle) == Some(&i);
+            if !run.types.iter().any(|t| t.ticks) || !views.iter().any(ticking) {
+                continue;
+            }
+            let mine: Vec<usize> = (0..views.len()).filter(|&v| ticking(&views[v])).collect();
+            let lent: Vec<BlockEntityView> = mine
+                .iter()
+                .map(|&v| std::mem::take(&mut views[v]))
+                .collect();
+            let handles: Vec<u32> = lent.iter().map(|v| v.handle).collect();
+            if let Some(run) = self.entries[i].run.as_mut() {
+                run.store.data_mut().views = lent;
+            }
+            self.call(i, FUEL_TICK, |m, s| {
+                machine_of(m)?
+                    .horizon_mods_block_entities()
+                    .call_tick(s, &handles)
+            });
+            // A mod that stopped in the call left its views in `stranded`,
+            // with what it wrote before it stopped.
+            let returned = match self.entries[i].run.as_mut() {
+                Some(run) => std::mem::take(&mut run.store.data_mut().views),
+                None => std::mem::take(&mut self.stranded),
+            };
+            for (slot, view) in mine.into_iter().zip(returned) {
+                views[slot] = view;
+            }
+        }
+    }
+
+    /// What the game saves for the block entity beside its slots.
+    pub fn save_block_entity(&mut self, handle: u32) -> Option<Vec<u8>> {
+        let i = *self.handles.get(&handle)?;
+        self.call(i, FUEL_EVENT, |m, s| {
+            machine_of(m)?
+                .horizon_mods_block_entities()
+                .call_save(s, handle)
+        })
+    }
+
+    /// The values the block entity's menu shows (progress, fuel).
+    pub fn block_entity_data(&mut self, handle: u32) -> Vec<i32> {
+        let Some(&i) = self.handles.get(&handle) else {
+            return Vec::new();
+        };
+        self.call(i, FUEL_EVENT, |m, s| {
+            machine_of(m)?
+                .horizon_mods_block_entities()
+                .call_data(s, handle)
+        })
+        .unwrap_or_default()
+    }
+
+    /// The block entity was broken or unloaded.
+    pub fn remove_block_entity(&mut self, handle: u32) {
+        if let Some(i) = self.handles.remove(&handle) {
+            self.call(i, FUEL_EVENT, |m, s| {
+                machine_of(m)?
+                    .horizon_mods_block_entities()
+                    .call_remove(s, handle)
+            });
+        }
+    }
+
     /// Restarts the mods whose file changed since they loaded (mod
     /// development: rebuild, and the game picks it up). True when any did.
     pub fn reload_changed(&mut self, reserved: impl Fn(&str) -> bool) -> bool {
@@ -444,6 +657,9 @@ impl Mods {
             any = true;
             self.entries[i].modified = now;
             self.entries[i].run = None;
+            // The new instance knows none of the old one's block entities:
+            // the game creates them again from their saves.
+            self.handles.retain(|_, owner| *owner != i);
             let path = self.entries[i].path.clone();
             let started = Package::read(&path).and_then(|p| {
                 self.entries[i].manifest = Some(p.manifest.clone());
@@ -465,6 +681,38 @@ impl Mods {
         }
         any
     }
+}
+
+/// A mod's `block-entities` export; an error (the call fails, the mod goes
+/// on) for a component without one, which then has no types to call it for.
+fn machine_of(m: &Exports) -> wasmtime::Result<&MachineHost> {
+    m.machine
+        .as_ref()
+        .ok_or_else(|| wasmtime::Error::msg("no block-entities export"))
+}
+
+/// The block entity types a mod declared, if every one is for a block in its
+/// own namespaces, declared once, with at most [`MAX_SLOTS`] slots.
+fn check_types(m: &Manifest, types: Vec<BlockEntityType>) -> Result<Vec<BlockEntityType>, String> {
+    for (n, t) in types.iter().enumerate() {
+        let owned = t
+            .block
+            .split_once(':')
+            .is_some_and(|(ns, path)| !path.is_empty() && m.owned_namespaces().any(|o| o == ns));
+        if !owned {
+            return Err(format!(
+                "declares a block entity for {}, which is not one of its blocks",
+                t.block
+            ));
+        }
+        if types[..n].iter().any(|o| o.block == t.block) {
+            return Err(format!("declares {} twice", t.block));
+        }
+        if t.slots > MAX_SLOTS {
+            return Err(format!("{} asks for over {MAX_SLOTS} slots", t.block));
+        }
+    }
+    Ok(types)
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -602,4 +850,84 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+impl State {
+    /// The block entity `handle` lent to this call.
+    fn view(&mut self, handle: u32) -> Option<&mut BlockEntityView> {
+        self.views.iter_mut().find(|v| v.handle == handle)
+    }
+}
+impl machine::Host for State {
+    fn get_slot(&mut self, handle: u32, slot: u32) -> Option<Stack> {
+        self.view(handle)?
+            .slots
+            .get(slot as usize)
+            .cloned()
+            .flatten()
+    }
+    fn set_slot(&mut self, handle: u32, slot: u32, stack: Option<Stack>) -> bool {
+        let stack = match stack {
+            Some(s) if s.count > 0 => {
+                // Unknown items are refused; with no facts set (a test host)
+                // nothing is known about items, so any id passes uncut.
+                let max = match &self.facts {
+                    Some(facts) => match facts.max_stack_size(&s.id) {
+                        0 => return false,
+                        max => max,
+                    },
+                    None => u32::MAX,
+                };
+                Some(Stack {
+                    count: s.count.min(max),
+                    id: s.id,
+                })
+            }
+            _ => None,
+        };
+        let Some(view) = self.view(handle) else {
+            return false;
+        };
+        let Some(cell) = view.slots.get_mut(slot as usize) else {
+            return false;
+        };
+        if *cell != stack {
+            *cell = stack;
+            view.changed = true;
+        }
+        true
+    }
+    fn get_property(&mut self, handle: u32, name: String) -> Option<String> {
+        let view = self.view(handle)?;
+        let p = view.properties.iter().find(|p| p.name == name)?;
+        Some(p.value.clone())
+    }
+    fn set_property(&mut self, handle: u32, name: String, value: String) -> bool {
+        let Some(view) = self.view(handle) else {
+            return false;
+        };
+        let Some(p) = view.properties.iter_mut().find(|p| p.name == name) else {
+            return false;
+        };
+        if !p.values.contains(&value) {
+            return false;
+        }
+        if p.value != value {
+            p.value = value;
+            view.changed = true;
+        }
+        true
+    }
+    fn max_stack_size(&mut self, id: String) -> u32 {
+        self.facts.as_ref().map_or(0, |f| f.max_stack_size(&id))
+    }
+    fn burn_time(&mut self, id: String) -> u32 {
+        self.facts.as_ref().map_or(0, |f| f.burn_time(&id))
+    }
+    fn remainder(&mut self, id: String) -> Option<String> {
+        self.facts.as_ref()?.remainder(&id)
+    }
+    fn cooking(&mut self, kind: CookingKind, input: String) -> Option<CookingRecipe> {
+        self.facts.as_ref()?.cooking_recipe(kind, &input)
+    }
 }

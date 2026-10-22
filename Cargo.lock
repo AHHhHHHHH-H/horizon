@@ -1511,6 +1511,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-mods-test-machine"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "horizon-port-pack"
 version = "0.1.0"
 dependencies = [

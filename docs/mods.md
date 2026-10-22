@@ -11,7 +11,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 
 | Part | Where | State |
 |---|---|---|
-| The contract (WIT) | `crates/horizon-mod-sdk/wit/horizon.wit` | 0.1: log, game-read, chat, hud, storage; tick, frame, chat and command hooks |
+| The contract (WIT) | `crates/horizon-mod-sdk/wit/horizon.wit` | 0.1: log, game-read, chat, hud, storage; tick, frame, chat and command hooks. 0.4 preview: block entities (runtime only, not in the game yet) |
 | SDK for mod authors | `crates/horizon-mod-sdk` | 0.1 |
 | Example mod | `crates/horizon-mod-sdk/examples/coords-hud` | coordinates, facing and time HUD, `/where`, `/coords` |
 | Runtime | `crates/horizon-mods` | wasmtime 36 LTS, component model |
@@ -356,6 +356,30 @@ none.
     "top": "carve", "bottom": "none", "rigid_junctions": true, "inflate": true } }
 ```
 
+### Block entities (API 0.4, preview)
+
+The first piece of the machines tier ([research/code-mods-plan.md](research/code-mods-plan.md)):
+a mod with `api = "0.4"` and capability `block-entities` gives its own blocks
+block entities whose code ticks in the sandbox. The runtime and the SDK have
+it; the game does not create, tick or save them yet (next step in the plan).
+
+| Part | What |
+|---|---|
+| export `block-entities` | `types()`: the mod's blocks with a block entity, their slot count and whether they tick; `create(handle, block, saved)`, `tick(handles)`, `save(handle)`, `remove(handle)`, `data(handle)` (the menu's values, vanilla's `ContainerData`) |
+| import `machine` | during `tick` only: `get-slot`, `set-slot` and `get-property`, `set-property` (the block state) of the block entities lent to the call; any time: `max-stack-size`, `burn-time`, `remainder`, `cooking(kind, input)` from the game's item, fuel and recipe tables |
+
+- **The game owns the slots and the block state**, so hoppers, menus, drops and
+  saves see them as they see vanilla's. The mod owns the rest and saves it as
+  bytes with `save`.
+- **One call per mod per tick** for all its ticking block entities, under the
+  tick's fuel budget. A block entity sees only the handles lent to that call; a
+  slot write of an unknown item is refused, a stack over the item's maximum is
+  cut to it, a property value the block does not allow is refused.
+- **Types are checked at start:** each for a block in the mod's own namespaces,
+  at most once, at most 256 slots. A component that exports block entities
+  without the capability does not start.
+- Components built before 0.4 (no `block-entities` export) load as before.
+
 ## Versions and compatibility
 
 - The API is the WIT package `horizon:mods@0.1.0`. New functions and
@@ -426,4 +450,6 @@ none.
 Modpacks ([modpacks.md](modpacks.md)) move data-driven `registries` first:
 API 0.2 is content-only `.hmod`s (blocks, items, recipes, loot, models and
 textures), then server hooks (0.3) and block entities, menus, capabilities and
-`net` (0.4), in the order the ATM10 inventory needs them.
+`net` (0.4), in the order the ATM10 inventory needs them. The ranking of ATM10's
+code mods by the gaps they hit, and the first block-entity piece, are in
+[research/code-mods-plan.md](research/code-mods-plan.md).

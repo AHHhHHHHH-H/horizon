@@ -21,18 +21,26 @@
 //! ```
 //!
 //! Every interface but `log` is a capability: list the ones the mod uses in
-//! `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`).
+//! `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`, and
+//! `block-entities` for [`machine`] with `api = "0.4"`).
+//!
+//! Block entities (API 0.4): a mod whose blocks are machines returns their
+//! types from [`Mod::block_entity_types`], keeps each one's state by its
+//! handle, and reads and writes its slots and block state through [`machine`]
+//! during [`Mod::tick_block_entities`]. The game owns the slots (hoppers,
+//! menus, drops and saves see them); the mod saves the rest.
 
 wit_bindgen::generate!({
     path: "wit",
-    world: "horizon-mod",
+    world: "horizon-machine-mod",
     pub_export_macro: true,
     export_macro_name: "__export_horizon_mod",
     default_bindings_module: "horizon_mod_sdk",
 });
 
+pub use exports::horizon::mods::block_entities::{BlockEntityType, Guest as __BlockEntitiesGuest};
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
-pub use horizon::mods::{chat, game, hud, log, storage};
+pub use horizon::mods::{chat, game, hud, log, machine, storage};
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.
@@ -51,6 +59,29 @@ pub trait Mod: Sized + 'static {
     }
     /// A chat line the player received, when [`Registration::chat`] is set.
     fn chat(&mut self, _text: &str) {}
+
+    /// The mod's block entity types, once after [`Mod::init`]: each for one
+    /// of its own blocks. Needs capability `block-entities`.
+    fn block_entity_types(&mut self) -> Vec<BlockEntityType> {
+        Vec::new()
+    }
+    /// A block entity was placed (`saved` empty) or loaded (`saved` is what
+    /// [`Mod::save_block_entity`] returned).
+    fn create_block_entity(&mut self, _handle: u32, _block: &str, _saved: &[u8]) {}
+    /// One server tick of every loaded ticking block entity of the mod; its
+    /// slots and block state are readable and writable through [`machine`]
+    /// during this call only.
+    fn tick_block_entities(&mut self, _handles: &[u32]) {}
+    /// Its state for the save, beside the slots the game saves.
+    fn save_block_entity(&mut self, _handle: u32) -> Vec<u8> {
+        Vec::new()
+    }
+    /// Broken or unloaded.
+    fn remove_block_entity(&mut self, _handle: u32) {}
+    /// The values its menu shows (progress bars, fuel left).
+    fn block_entity_data(&mut self, _handle: u32) -> Vec<i32> {
+        Vec::new()
+    }
 }
 
 impl Registration {
@@ -133,6 +164,32 @@ macro_rules! export_mod {
                 }
                 fn chat(text: String) {
                     with(|m| $crate::Mod::chat(m, &text))
+                }
+            }
+            impl $crate::__BlockEntitiesGuest for Export {
+                fn types() -> Vec<$crate::BlockEntityType> {
+                    let mut out = Vec::new();
+                    with(|m| out = $crate::Mod::block_entity_types(m));
+                    out
+                }
+                fn create(handle: u32, block: String, saved: Vec<u8>) {
+                    with(|m| $crate::Mod::create_block_entity(m, handle, &block, &saved))
+                }
+                fn tick(handles: Vec<u32>) {
+                    with(|m| $crate::Mod::tick_block_entities(m, &handles))
+                }
+                fn save(handle: u32) -> Vec<u8> {
+                    let mut out = Vec::new();
+                    with(|m| out = $crate::Mod::save_block_entity(m, handle));
+                    out
+                }
+                fn remove(handle: u32) {
+                    with(|m| $crate::Mod::remove_block_entity(m, handle))
+                }
+                fn data(handle: u32) -> Vec<i32> {
+                    let mut out = Vec::new();
+                    with(|m| out = $crate::Mod::block_entity_data(m, handle));
+                    out
                 }
             }
             $crate::__export_horizon_mod!(Export);

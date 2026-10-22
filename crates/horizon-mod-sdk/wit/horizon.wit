@@ -107,3 +107,89 @@ world horizon-mod {
     import storage;
     export events;
 }
+
+/// Capability `block-entities` (API 0.4): what the code of a mod's block
+/// entities may read and change while the game ticks them. A handle names one
+/// block entity and is valid only during the `block-entities` call it was
+/// passed to; slots and block state belong to the game (hoppers, menus, drops
+/// and saves see them), the mod keeps the rest of its state itself.
+interface machine {
+    /// An item and how many. Item components are not carried yet.
+    record item-stack {
+        /// `minecraft:coal`, `<mod>:<path>`, ...
+        id: string,
+        count: u32,
+    }
+    enum cooking-kind {
+        smelting,
+        blasting,
+        smoking,
+        campfire,
+    }
+    record cooking-recipe {
+        output: item-stack,
+        /// Ticks the recipe takes in its vanilla block.
+        cooking-time: u32,
+        experience: f32,
+    }
+    /// The block entity's slot, none when empty or out of range.
+    get-slot: func(handle: u32, slot: u32) -> option<item-stack>;
+    /// Empties the slot with none; a stack over the item's maximum is cut to it.
+    /// False for a slot out of range, an unknown item or a handle not in this call.
+    set-slot: func(handle: u32, slot: u32, stack: option<item-stack>) -> bool;
+    /// A property of the block entity's block state (`lit` -> `true`).
+    get-property: func(handle: u32, name: string) -> option<string>;
+    /// False when the block has no such property or value.
+    set-property: func(handle: u32, name: string, value: string) -> bool;
+    /// The most of `id` one slot holds; 0 for an unknown item.
+    max-stack-size: func(id: string) -> u32;
+    /// Ticks `id` burns as a furnace's fuel (the game's fuel values), 0 if it
+    /// is no fuel.
+    burn-time: func(id: string) -> u32;
+    /// What is left of `id` once used up as fuel or an ingredient (a bucket
+    /// from a lava bucket).
+    remainder: func(id: string) -> option<string>;
+    /// The data pack's cooking recipe of `kind` for `input`.
+    cooking: func(kind: cooking-kind, input: string) -> option<cooking-recipe>;
+}
+
+/// What the game calls on a mod's block entities (API 0.4). Only for the
+/// blocks `types` names, which must be the mod's own.
+interface block-entities {
+    record block-entity-type {
+        /// The mod's block, `<mod>:<path>`.
+        block: string,
+        /// Slots the game keeps for each of its block entities.
+        slots: u32,
+        /// Call `tick` every server tick while it is loaded.
+        ticks: bool,
+    }
+    /// Once, after `init`.
+    types: func() -> list<block-entity-type>;
+    /// A block entity was placed or loaded: `saved` is what `save` returned
+    /// for it, empty for a new one.
+    create: func(handle: u32, block: string, saved: list<u8>);
+    /// One server tick of every loaded ticking block entity of this mod.
+    tick: func(handles: list<u32>);
+    /// Its state for the save, beside the slots the game saves itself.
+    save: func(handle: u32) -> list<u8>;
+    /// Broken or unloaded: forget it.
+    remove: func(handle: u32);
+    /// The values its menu shows (vanilla's `ContainerData`: progress
+    /// bars, fuel left).
+    data: func(handle: u32) -> list<s32>;
+}
+
+/// A mod with block entities: the SDK builds every mod against this world.
+/// Mods built for `horizon-mod` alone (no `block-entities` export) still load.
+world horizon-machine-mod {
+    include horizon-mod;
+    import machine;
+    export block-entities;
+}
+
+/// The game's side of `horizon-machine-mod` beyond `horizon-mod`.
+world machine-host {
+    import machine;
+    export block-entities;
+}

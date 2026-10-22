@@ -52,7 +52,8 @@ import net.neoforged.neoforge.event.server.ServerStartedEvent;
  * Dev-only oracle for Horizon's mod ports (docs/modpacks.md): once the server has started,
  * writes every block, item, recipe and tag of the namespaces named in {@code
  * horizon.oracle.namespaces} (plus the vanilla blocks, so templates can be compared) to {@code
- * horizon.oracle.out}, then stops the server. Never shipped to players.
+ * horizon.oracle.out}, then stops the server. With {@code horizon.oracle.machines} (a scenario
+ * file) it traces block entities instead ({@link MachineTrace}). Never shipped to players.
  */
 @Mod("horizon_oracle")
 public final class FactsExporter {
@@ -68,9 +69,14 @@ public final class FactsExporter {
         Set<String> namespaces =
                 new TreeSet<>(Arrays.asList(System.getProperty("horizon.oracle.namespaces", "").split(",")));
         namespaces.remove("");
+        String machines = System.getProperty("horizon.oracle.machines", "");
         try (Writer w = Files.newBufferedWriter(out, StandardCharsets.UTF_8);
                 JsonWriter json = new JsonWriter(w)) {
-            new Export(server, namespaces, json).run();
+            if (machines.isEmpty()) {
+                new Export(server, namespaces, json).run();
+            } else {
+                MachineTrace.run(server, Path.of(machines), json);
+            }
         } catch (Throwable e) {
             e.printStackTrace();
             System.exit(3);

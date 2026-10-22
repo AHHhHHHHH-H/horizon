@@ -12,7 +12,9 @@ pub const API: &str = "0.1";
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
 /// `assets/` and `data/` in the `.hmod`, with blocks and items declared in
 /// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
-pub const APIS: [&str; 2] = [API, "0.2"];
+/// 0.4 is 0.2 plus block entities: capability `block-entities` and the
+/// `block-entities` export (docs/mods.md).
+pub const APIS: [&str; 3] = [API, "0.2", "0.4"];
 /// Namespaces no mod may claim: vanilla's, the convention tags' (mods add
 /// to those, docs/mods.md) and the game's own.
 const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
@@ -30,7 +32,8 @@ pub struct Manifest {
     pub description: String,
     #[serde(default)]
     pub authors: Vec<String>,
-    /// The API line the mod was built for: `0.1`, or `0.2` for content.
+    /// The API line the mod was built for: `0.1`, `0.2` for content, `0.4`
+    /// for block entities.
     pub api: String,
     #[serde(default)]
     pub side: Side,
@@ -68,14 +71,18 @@ pub enum Capability {
     /// New blocks and items from the mod's `data/` (API 0.2): no WIT
     /// interface, the game reads them before the world loads.
     Registries,
+    /// Block entities for the mod's own blocks (API 0.4): the `machine`
+    /// interface and the `block-entities` export.
+    BlockEntities,
 }
 impl Capability {
-    pub const ALL: [Capability; 5] = [
+    pub const ALL: [Capability; 6] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
         Capability::Storage,
         Capability::Registries,
+        Capability::BlockEntities,
     ];
     /// The WIT interface it grants, in `horizon:mods`.
     pub fn interface(self) -> &'static str {
@@ -85,6 +92,7 @@ impl Capability {
             Capability::Hud => "hud",
             Capability::Storage => "storage",
             Capability::Registries => "registries",
+            Capability::BlockEntities => "machine",
         }
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -95,6 +103,7 @@ impl Capability {
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
             Capability::Registries => "add blocks and items to your worlds",
+            Capability::BlockEntities => "run its blocks' machines in your worlds",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -125,6 +134,7 @@ impl fmt::Display for Capability {
             Capability::Hud => "hud",
             Capability::Storage => "storage",
             Capability::Registries => "registries",
+            Capability::BlockEntities => "block-entities",
         };
         f.write_str(name)
     }
@@ -153,6 +163,11 @@ impl Manifest {
         if m.capabilities.contains(&Capability::Registries) && m.api == API {
             return Err(format!(
                 "{MANIFEST}: capability registries needs api = \"0.2\""
+            ));
+        }
+        if m.capabilities.contains(&Capability::BlockEntities) && m.api != "0.4" {
+            return Err(format!(
+                "{MANIFEST}: capability block-entities needs api = \"0.4\""
             ));
         }
         if !m.namespaces.is_empty() && !m.capabilities.contains(&Capability::Registries) {
@@ -380,6 +395,20 @@ capabilities = ["game-read", "hud"]
         assert!(with("\"\"").unwrap_err().contains("is not"));
         let code = format!("{EXAMPLE}namespaces = [\"kaisyn\"]\n");
         assert!(Manifest::parse(&code).unwrap_err().contains("registries"));
+    }
+
+    #[test]
+    fn block_entities_need_api_0_4() {
+        let base = "id = \"ironfurnaces\"\nname = \"I\"\nversion = \"1\"\nside = \"both\"\n";
+        let caps = "capabilities = [\"registries\", \"block-entities\"]\n";
+        let m = Manifest::parse(&format!("{base}api = \"0.4\"\n{caps}")).unwrap();
+        assert_eq!(m.check_imports(["horizon:mods/machine@0.1.0"]), Ok(()));
+        let old = Manifest::parse(&format!("{base}api = \"0.2\"\n{caps}")).unwrap_err();
+        assert!(old.contains("needs api = \"0.4\""), "{old}");
+        let without = "capabilities = [\"registries\"]\n";
+        let m = Manifest::parse(&format!("{base}api = \"0.4\"\n{without}")).unwrap();
+        let e = m.check_imports(["horizon:mods/machine@0.1.0"]).unwrap_err();
+        assert!(e.contains("block-entities"), "{e}");
     }
 
     #[test]
