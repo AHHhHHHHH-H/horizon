@@ -12,6 +12,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Graphics](graphics.md): the Simple and Advanced graphics settings, the graphics benchmark and what it measured.
 - [Benchmark](benchmark.md): Horizon against vanilla 26.3 and vanilla with performance mods, on the same machine, world, path and settings: what is measured, how it is kept fair, how to reproduce it.
 - [Shader packs](shader-packs.md): how the renderer draws a frame, the Horizon WGSL shader pack format (stages, uniforms, `pack.toml`, hot reload), and the plan to translate OptiFine/Iris packs.
+- [Ray tracing](raytracing.md): the experimental ray-traced shadows spike (off by default): wgpu backends, measured cost on an RTX 4080 and an M4 Pro, recommendation.
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
 - [Mods](mods.md): Horizon's own mod system (Rust, sandboxed WebAssembly), how to make and install mods, and [what carries over from Java mods](research/java-mod-compat.md).
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
