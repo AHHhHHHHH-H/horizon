@@ -2,6 +2,7 @@
 //! prepared client resources and worldgen bundle (skipped when absent).
 use super::*;
 use crate::{chunk::BlockState, worldgen::generator::GeneratorData, worldgen::live::LiveFeatures};
+use horizon_core::random::RandomSource;
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -56,8 +57,16 @@ struct Level {
     biome: &'static str,
     day: i64,
     block_entities: Vec<(BlockPos, crate::nbt::Compound)>,
+    /// randomTickSpeed.
+    speed: i32,
 }
 impl LevelAccess for Level {
+    fn game_rules(&self) -> GameRules {
+        GameRules {
+            random_tick_speed: self.speed,
+            ..GameRules::default()
+        }
+    }
     fn day_time(&self) -> i64 {
         self.day
     }
@@ -109,6 +118,7 @@ impl World {
                 biome: "minecraft:plains",
                 day: 6000,
                 block_entities: Vec::new(),
+                speed: 3,
             },
             f,
             ticks,
@@ -478,4 +488,86 @@ fn sniffer_eggs_crack_twice_then_hatch_a_snifflet() {
             ..
         }
     )));
+}
+
+/// `tick_chunk_random` draws its positions a batch ahead and reads their
+/// blocks before ticking them. Against the plain loop (`ServerLevel.tickChunk`:
+/// draw a position, tick it, draw the next), on a chunk whose ticks change
+/// blocks that later positions read (grass spreading over dirt, between crops
+/// and saplings) at speeds that span several batches: the same blocks, events,
+/// level random and position generator after every tick.
+#[test]
+fn batched_random_ticks_match_ticking_each_position_as_drawn() {
+    let Some(f) = fixture() else { return };
+    let setup = || {
+        let mut w = World::new(f, 11);
+        w.floor("grass_block", 16);
+        let (dirt, farmland) = (w.id("dirt", &[]), w.id("farmland", &[]));
+        let (wheat, sapling) = (w.id("wheat", &[]), w.id("oak_sapling", &[]));
+        for x in 0..16 {
+            for z in 0..16 {
+                match (x * 7 + z * 3) % 5 {
+                    0 => w.put(BlockPos::new(x, 63, z), dirt),
+                    1 => {
+                        w.put(BlockPos::new(x, 63, z), farmland);
+                        w.put(BlockPos::new(x, 64, z), wheat);
+                    }
+                    2 if x % 4 == 0 && z % 4 == 0 => w.put(BlockPos::new(x, 64, z), sapling),
+                    _ => {}
+                }
+            }
+        }
+        w
+    };
+    let (mut batched, mut plain) = (setup(), setup());
+    let chunk = ChunkPos::new(0, 0);
+    for step in 0..400 {
+        let speed = [3, 40, 1, 97][step % 4];
+        for w in [&mut batched, &mut plain] {
+            w.level.speed = speed;
+        }
+        f.behaviours
+            .tick_chunk_random(&mut batched.level, &mut batched.ticks, chunk, [48, 64]);
+        // The loop as vanilla writes it.
+        let (level, ticks) = (&mut plain.level, &mut plain.ticks);
+        for _ in 0..speed {
+            if level.random().next_int_bound(48).unwrap_or(1) == 0 {
+                let pos = ticks.block_random_pos(0, 0, 0, 15);
+                if let Some(info) = level.precipitation(pos) {
+                    f.behaviours.sim(level, ticks).precipitation_tick(info);
+                }
+            }
+        }
+        for min_y in [48, 64] {
+            for _ in 0..speed {
+                let pos = ticks.block_random_pos(0, min_y, 0, 15);
+                f.behaviours.random_tick(level, ticks, pos);
+            }
+        }
+        assert_eq!(batched.level.blocks, plain.level.blocks, "step {step}");
+        assert_eq!(batched.level.events, plain.level.events, "step {step}");
+        assert_eq!(
+            batched.ticks.random_tick_value, plain.ticks.random_tick_value,
+            "step {step}"
+        );
+        assert_eq!(
+            batched.level.random.next_long(),
+            plain.level.random.next_long(),
+            "step {step}"
+        );
+    }
+    // The ticks changed the chunk as they went.
+    let start = setup();
+    assert!(
+        batched.count("dirt") < start.count("dirt"),
+        "no grass spread"
+    );
+    let grown = |w: &World| {
+        w.level
+            .blocks
+            .iter()
+            .filter(|(p, s)| start.level.blocks.get(p) != Some(s))
+            .count()
+    };
+    assert!(grown(&batched) > 20, "{} blocks changed", grown(&batched));
 }

@@ -14,6 +14,11 @@ use horizon_core::{
     ticks::TickTypeId,
 };
 
+/// How many random-tick positions `tick_chunk_random` draws ahead: a chunk's
+/// worth at the default speed (3) with eight ticking sections, the misses of
+/// a batch overlapping.
+const RANDOM_TICK_BATCH: usize = 24;
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn rand_int(&mut self, bound: i32) -> i32 {
         self.random().next_int_bound(bound).unwrap_or(0)
@@ -1639,11 +1644,39 @@ impl Behaviours {
                 }
             }
         }
+        // The positions are drawn a batch ahead of the ticks: `getBlockRandomPos`
+        // only steps the level's own position generator, which nothing a random
+        // tick does reads, so they come out the same and are ticked in the same
+        // order. Reading a batch's blocks before ticking them has their cache
+        // misses overlap instead of following one another; the ticks then read
+        // them again from the cache.
+        let mut batch = [BlockPos::new(0, 0, 0); RANDOM_TICK_BATCH];
+        let mut len = 0;
         for min_y in sections {
             for _ in 0..speed {
-                let pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
-                self.sim(level, ticks).random_tick_at(pos);
+                batch[len] = ticks.block_random_pos(min_x, min_y, min_z, 15);
+                len += 1;
+                if len == RANDOM_TICK_BATCH {
+                    self.random_tick_batch(level, ticks, &batch);
+                    len = 0;
+                }
             }
+        }
+        self.random_tick_batch(level, ticks, &batch[..len]);
+    }
+    /// Random-tick `positions` in order, after reading their blocks once.
+    fn random_tick_batch<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        positions: &[BlockPos],
+    ) {
+        let read = positions
+            .iter()
+            .fold(0, |seen, &pos| seen ^ level.block_state(pos).0);
+        std::hint::black_box(read);
+        for &pos in positions {
+            self.sim(level, ticks).random_tick_at(pos);
         }
     }
     /// Random-tick a single position (block then fluid), as `tickChunk` does.
