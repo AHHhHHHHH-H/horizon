@@ -79,7 +79,8 @@ impl Game<'_> {
         Some((piston.moved_state, None))
     }
     /// One `MovingBlockRenderState`: the baked model at `at` (camera-relative),
-    /// seeded by its block position and tinted like a falling block.
+    /// seeded by its block position and tinted there (`createMovingBlock`'s
+    /// `pos`), like a falling block.
     fn moving_block_vertices(
         &self,
         state: BlockStateId,
@@ -88,7 +89,9 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        let tint = self.particle_sprite(state).map(|(_, tint)| tint);
+        let tint = self
+            .particle_sprite(state, [seed.x, seed.y, seed.z])
+            .map(|(_, tint)| tint);
         let start = out.len();
         self.block_model_vertices(
             state,
