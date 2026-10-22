@@ -30,6 +30,8 @@ impl LevelAccess for Air {
         self.reads.borrow_mut().push(pos);
         BlockStateId(0)
     }
+    // The reads the ticks themselves make are the drawn positions.
+    fn prefetch_block(&self, _: BlockPos) {}
     fn set_raw(&mut self, _: BlockPos, _: BlockStateId) -> Option<BlockStateId> {
         None
     }

@@ -290,6 +290,13 @@ pub enum LevelEvent {
 pub trait LevelAccess {
     /// `getBlockState`. Unloaded or out-of-bounds positions read as air.
     fn block_state(&self, pos: BlockPos) -> BlockStateId;
+    /// Read a block ahead of `block_state` asking for it, so the memory it
+    /// lives in is cached by then (random ticks read a few at once to overlap
+    /// their cache misses). No effect on the game: a test level that records
+    /// reads can leave it out.
+    fn prefetch_block(&self, pos: BlockPos) {
+        std::hint::black_box(self.block_state(pos));
+    }
     /// Storage write (`LevelChunkSection.setBlockState`). Returns the previous
     /// state, or None when nothing could be stored (unloaded chunk).
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId>;

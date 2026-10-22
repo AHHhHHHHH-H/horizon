@@ -1658,7 +1658,7 @@ impl Behaviours {
                     *pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
                 }
                 for pos in &drawn[..n] {
-                    std::hint::black_box(level.block_state(*pos));
+                    level.prefetch_block(*pos);
                 }
                 for pos in &drawn[..n] {
                     self.sim(level, ticks).random_tick_at(*pos);
