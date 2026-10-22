@@ -16,6 +16,7 @@ import os
 import shutil
 import statistics
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -143,6 +144,10 @@ def run(args, distance, rt):
     if args.offscreen:
         command.append("--offscreen")
     env = dict(os.environ, HORIZON_NO_AUDIO="1", HORIZON_HOME=str(game_dir))
+    if sys.platform.startswith("linux"):
+        # NixOS: the window system and driver libraries, as perf_bench gives them.
+        libs = [p for p in (os.environ.get("NIX_LD_LIBRARY_PATH", ""), "/run/opengl-driver/lib") if p]
+        env["LD_LIBRARY_PATH"] = ":".join(libs + [env.get("LD_LIBRARY_PATH", "")]).strip(":")
     env.pop("HORIZON_RT_SHADOWS", None)
     if rt:
         env["HORIZON_RT_SHADOWS"] = "1"
