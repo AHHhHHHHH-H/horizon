@@ -1,0 +1,13 @@
+[package]
+name = "horizon-gpu-experimental"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.85"
+description = "The opt-in to wgpu's experimental features, which the crates that forbid unsafe code can't give"
+
+[dependencies]
+wgpu-types = { version = "30.0.1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@ pub const HELP: &[&str] = &[
     "signedit X Y Z [front|back]    open the sign editor for the sign at X Y Z",
     "section-draws [flat|indirect]  how terrain sections are drawn (A/B checks); replies the mode",
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
+    "rt-shadows [on|off|rebuild]    EXPERIMENTAL ray-traced shadows (HORIZON_RT_SHADOWS=1): A/B, rebuild every BLAS; replies figures",
 ];
 
 impl Game<'_> {

@@ -13,6 +13,8 @@ horizon-core = { path = "../horizon-core" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
+# The opt-in to wgpu's experimental ray queries (experimental ray-traced shadows, off by default).
+horizon-gpu-experimental = { path = "../horizon-gpu-experimental" }
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }

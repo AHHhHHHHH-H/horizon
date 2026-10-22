@@ -98,6 +98,10 @@ impl GpuTimer {
             self.stamp(encoder, 0);
         }
     }
+    /// Whether this frame is timed (a readback slot was free at `begin`).
+    pub fn timing(&self) -> bool {
+        self.current.is_some()
+    }
     pub fn end(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let Some(slot) = self.current else { return };
         self.stamp(encoder, 1);

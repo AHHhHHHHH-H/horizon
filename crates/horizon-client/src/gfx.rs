@@ -67,6 +67,7 @@ mod lod;
 mod occlusion;
 mod pack_stages;
 pub mod panorama;
+mod raytrace;
 mod resident;
 mod stars;
 mod timing;
@@ -128,6 +129,8 @@ struct SectionGpu {
     sorted_indices: Option<(u32, u64)>,
     /// Its id for flat draws (`flat::Flat::add`), when they are on.
     flat_id: Option<u32>,
+    /// Its solid quads for the experimental ray-traced shadows, once built (`raytrace`).
+    blas: Option<wgpu::Blas>,
 }
 /// Line segments the hit outline can hold.
 const MAX_OUTLINE_EDGES: u64 = 256;
@@ -298,6 +301,9 @@ pub struct Renderer {
     pub config: wgpu::SurfaceConfiguration,
     solid: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
+    /// EXPERIMENTAL ray-traced sun shadows (`raytrace`): only with `HORIZON_RT_SHADOWS=1` on a
+    /// GPU with ray queries.
+    ray_shadows: Option<raytrace::RayShadows>,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
     /// `flat` draws this frame's sections (off: the per-section draws).
@@ -779,7 +785,8 @@ async fn open_device(
             | cull::Cull::features(&adapter)
             | (adapter.features()
                 & (wgpu::Features::INDIRECT_FIRST_INSTANCE
-                    | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS));
+                    | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS))
+            | raytrace::features(&adapter);
         let driver = format!("{} {}", info.driver, info.driver_info);
         startup_step(format_args!(
             "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -797,6 +804,7 @@ async fn open_device(
                 label: Some("Horizon device"),
                 required_features: features,
                 required_limits: limits,
+                experimental_features: raytrace::experimental(features),
                 ..Default::default()
             })
             .await
@@ -1995,9 +2003,18 @@ impl Renderer {
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
             1 << 20,
+        )
+        .with_extra_usage(raytrace::blas_input(&device));
+        let ray_shadows = raytrace::RayShadows::new(
+            &device,
+            &queue,
+            &bindings,
+            config.format.remove_srgb_suffix(),
+            &sprite_constants,
         );
-        // Sections as one index list per frame where multi-draw is emulated.
-        let flat = flat::wanted(&adapter, &device).then(|| {
+        // Sections as one index list per frame where multi-draw is emulated (not with the
+        // ray-traced shadows' pipeline, which binds only the per-section draws' instances).
+        let flat = (ray_shadows.is_none() && flat::wanted(&adapter, &device)).then(|| {
             let buffers = [Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -2132,6 +2149,7 @@ impl Renderer {
             mip_levels,
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
+            ray_shadows,
             sprite_sampler,
             lightmap_view,
             lightmap_sampler,
@@ -2203,7 +2221,7 @@ impl Renderer {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Quad indices"),
             contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
+            usage: wgpu::BufferUsages::INDEX | raytrace::blas_input(device),
         })
     }
     fn offscreen_target(
@@ -2323,6 +2341,39 @@ impl Renderer {
         self.flat_on = on;
         Ok(())
     }
+    /// The experimental ray-traced shadows' state and figures (`None`: not running; see
+    /// `raytrace`).
+    pub fn ray_shadows(&self) -> Option<serde_json::Value> {
+        let rt = self.ray_shadows.as_ref()?;
+        let mut v = serde_json::to_value(&rt.stats).ok()?;
+        v["on"] = rt.on.into();
+        Some(v)
+    }
+    /// Draws with or without the experimental ray-traced shadows, for A/B checks (their
+    /// acceleration structures are kept up to date either way).
+    pub fn set_ray_shadows(&mut self, on: bool) -> Result<()> {
+        let rt = self.ray_shadows.as_mut().ok_or(
+            "ray-traced shadows are off: start with HORIZON_RT_SHADOWS=1 on a GPU with ray queries",
+        )?;
+        rt.on = on;
+        Ok(())
+    }
+    /// Drops every section's BLAS and builds them again over the next frames (measures the
+    /// build cost on a loaded world).
+    pub fn rebuild_ray_shadows(&mut self) -> Result<()> {
+        let rt = self
+            .ray_shadows
+            .as_mut()
+            .ok_or("ray-traced shadows are off")?;
+        let keys: Vec<SectionKey> = self.sections.entries().map(|(k, _)| *k).collect();
+        for key in keys {
+            if let Some(slot) = self.sections.slot(key) {
+                self.sections.get_mut(slot).blas = None;
+            }
+            rt.queue(key);
+        }
+        Ok(())
+    }
     /// Whether solid sections are occlusion culled (`cull`).
     pub fn section_cull(&self) -> bool {
         self.cull_on
@@ -2378,6 +2429,9 @@ impl Renderer {
         );
         if let Some(section) = section {
             self.sections.insert(key, section);
+            if let Some(rt) = &mut self.ray_shadows {
+                rt.queue(key);
+            }
         }
     }
     fn upload_mesh(&mut self, mesh: &SectionMesh) -> Option<SectionGpu> {
@@ -2457,6 +2511,7 @@ impl Renderer {
             ),
             sorted_indices,
             flat_id,
+            blas: None,
         })
     }
     /// The section copies recorded since the last submission, closed.
@@ -2498,6 +2553,17 @@ impl Renderer {
                 }
             }
             i += run;
+        }
+    }
+    /// The solid terrain pipeline: vanilla's, or the experimental ray-traced shadows' with its
+    /// TLAS bound.
+    fn set_solid(&self, pass: &mut wgpu::RenderPass<'_>) {
+        match self.ray_shadows.as_ref().filter(|rt| rt.on) {
+            Some(rt) => {
+                pass.set_pipeline(&rt.solid);
+                pass.set_bind_group(2, rt.group(), &[]);
+            }
+            None => pass.set_pipeline(&self.solid),
         }
     }
     fn release_section(&mut self, key: SectionKey) {
@@ -3020,6 +3086,22 @@ impl Renderer {
                 bytemuck::cast_slice(&self.origins),
             );
         }
+        if let Some(rt) = &mut self.ray_shadows
+            && !frame.title
+        {
+            crate::spans::time("ray shadows", || {
+                rt.prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &mut self.sections,
+                    &self.arena,
+                    &self.indices,
+                    camera,
+                    frame.sky.sun_angle.to_radians(),
+                )
+            });
+        }
         // Solid sections front to back, then translucent ones back to front,
         // as one list of indirect draws over the section arena.
         self.draws.clear();
@@ -3525,7 +3607,7 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(&self.solid);
+                    self.set_solid(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -3565,7 +3647,7 @@ impl Renderer {
                                 ..Default::default()
                             });
                             pass.set_bind_group(0, &self.group, &[]);
-                            pass.set_pipeline(&self.solid);
+                            self.set_solid(&mut pass);
                             pass.set_index_buffer(
                                 self.indices.slice(..),
                                 wgpu::IndexFormat::Uint32,
@@ -3901,6 +3983,9 @@ impl Renderer {
             self.first_frame = FirstFrame::Drawn;
         }
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
+        if let Some(rt) = &mut self.ray_shadows {
+            rt.submitted();
+        }
         if let Some(cull) = &mut self.cull {
             cull.submitted();
         }
@@ -4227,6 +4312,8 @@ mod tests {
             &mut files,
         );
         assert!(files.len() >= 10, "{files:?}");
+        // The experimental ray-traced shadows need shader model 6.5 (ray_traced_shadow_shader).
+        files.retain(|p| !p.ends_with("terrain_rt.wgsl"));
         for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             // entity.wgsl comes after the overlay's constants (entity_shader).
@@ -4260,6 +4347,44 @@ mod tests {
                 .write(&module, &info, None)
                 .unwrap_or_else(|e| panic!("{} {}: {e}", path.display(), entry.name));
                 assert!(!hlsl.is_empty());
+            }
+        }
+    }
+    /// The experimental ray-traced shadows' terrain shader validates and translates to HLSL
+    /// for DirectX 12's ray queries (shader model 6.5, which needs DXC rather than FXC).
+    #[test]
+    fn ray_traced_shadow_shader() {
+        let module = naga::front::wgsl::parse_str(&super::raytrace::shader()).unwrap();
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        for name in ["vs_terrain_rt", "fs_solid_rt"] {
+            let entry = module.entry_points.iter().find(|e| e.name == name).unwrap();
+            let (module, info) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                Some((entry.stage, &entry.name)),
+                &Default::default(),
+            )
+            .unwrap();
+            let mut hlsl = String::new();
+            naga::back::hlsl::Writer::new(
+                &mut hlsl,
+                &naga::back::hlsl::Options {
+                    shader_model: naga::back::hlsl::ShaderModel::V6_5,
+                    ..Default::default()
+                },
+                &naga::back::hlsl::PipelineOptions {
+                    entry_point: Some((entry.stage, entry.name.clone())),
+                },
+            )
+            .write(&module, &info, None)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            if name == "fs_solid_rt" {
+                assert!(hlsl.contains("RayQuery"), "{hlsl}");
             }
         }
     }

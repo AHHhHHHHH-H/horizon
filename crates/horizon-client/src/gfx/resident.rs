@@ -54,6 +54,18 @@ impl<T> Resident<T> {
     pub fn values(&self) -> impl Iterator<Item = &T> {
         self.items.iter().map(|(_, v)| v)
     }
+    /// The slot of `key`'s section.
+    pub fn slot(&self, key: SectionKey) -> Option<u32> {
+        self.slots.get(&key).copied()
+    }
+    /// The key of the section in `slot`.
+    pub fn key(&self, slot: u32) -> SectionKey {
+        self.items[slot as usize].0
+    }
+    /// Every section with its key.
+    pub fn entries(&self) -> impl Iterator<Item = (&SectionKey, &T)> {
+        self.items.iter().map(|(k, v)| (k, v))
+    }
     /// The section in `slot` (`Visible::slot`).
     pub fn get(&self, slot: u32) -> &T {
         &self.items[slot as usize].1
@@ -144,7 +156,7 @@ pub struct Visible {
 }
 
 /// The camera-relative origin of the section at `key`.
-fn origin(key: SectionKey, camera: DVec3) -> DVec3 {
+pub(super) fn origin(key: SectionKey, camera: DVec3) -> DVec3 {
     DVec3::new(
         f64::from(key.0 * 16),
         f64::from(crate::chunk::MIN_Y + key.1 * 16),

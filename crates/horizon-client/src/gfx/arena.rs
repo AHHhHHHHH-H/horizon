@@ -68,6 +68,11 @@ impl Arena {
     pub fn new(device: &wgpu::Device, stride: u64, capacity: u64) -> Self {
         Self::with_usage(device, stride, capacity, wgpu::BufferUsages::VERTEX)
     }
+    /// More usages for the pages it makes (before the first one).
+    pub fn with_extra_usage(mut self, usage: wgpu::BufferUsages) -> Self {
+        self.usage |= usage;
+        self
+    }
     /// Sorted translucent indices; `storage` when compute passes read them.
     pub fn indices(device: &wgpu::Device, capacity: u64, storage: bool) -> Self {
         let usage = if storage {
