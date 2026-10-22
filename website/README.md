@@ -6,7 +6,8 @@ A landing page and a documentation section in Horizon's design language (`docs/d
 `crates/horizon-theme` (generated into `src/tokens.css` by `cargo run -p xtask -- tokens`):
 Geist and Geist Mono, cool neutrals in a light and a dark appearance (the system's, or the
 toggle's) and one violet accent, numbered index lists with one-pixel rules, and short, eased
-motion. A headline and the download, then a scroll through what it is, the screenshots, the parity grid, the launcher, the patch
+motion. A headline and the download, then a scroll through what it is, the screenshots, the parity grid, the
+performance comparison, the launcher, the patch
 notes, the community links and the contributors. Plain HTML, CSS and JavaScript; no framework and
 no runtime dependencies.
 
@@ -38,7 +39,9 @@ shots/             (gitignored) full-page screenshots at 360–1920 px, a 1250×
 ## What comes from where
 
 - **Built in** (`build.mjs`): the parity table, its score, harness count and audit date,
-  all from `README.md`; the documentation pages (`/docs`) from `website/docs/`; the Discord and Sponsor links from
+  all from `README.md`; the Performance section from the README's `## Performance` table and the
+  paragraphs around it (hidden when the README has none); the documentation pages (`/docs`) from
+  `website/docs/`; the Discord and Sponsor links from
   `launcher/links.json`; the latest releases and the contributors (`/repos/ludovic111/horizon/contributors`,
   bots left out, the owner first), when GitHub answers; without an answer the build still succeeds and
   the Contributors block and its menu entries stay hidden until the page loads them. Locally these come from
