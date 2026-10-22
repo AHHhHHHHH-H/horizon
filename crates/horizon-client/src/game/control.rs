@@ -222,6 +222,11 @@ impl Game<'_> {
                     Some("on") => r.set_ray_shadows(true)?,
                     Some("off") => r.set_ray_shadows(false)?,
                     Some("rebuild") => r.rebuild_ray_shadows()?,
+                    Some("bench-builds") => {
+                        return Ok(Some(
+                            json!({ "ok": true, "builds": r.bench_ray_shadow_builds()? }),
+                        ));
+                    }
                     Some(other) => return Err(format!("unknown rt-shadows mode {other}").into()),
                 }
                 Ok(Some(json!({ "ok": true, "rt_shadows": r.ray_shadows() })))

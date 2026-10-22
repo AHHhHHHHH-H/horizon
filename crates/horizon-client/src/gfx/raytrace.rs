@@ -90,6 +90,7 @@ pub struct Stats {
     pub blas_triangles: u64,
     pub blas_built_total: u64,
     pub triangles_built_total: u64,
+    pub compacted_total: u64,
     pub pending: usize,
     pub tlas_instances: u32,
     pub tlas_capacity: u32,
@@ -113,6 +114,12 @@ pub struct RayShadows {
     pending: Vec<SectionKey>,
     /// `shadow_chunks`.
     reach: Option<i32>,
+    /// BLAS are compacted (`HORIZON_RT_COMPACT=0` keeps them as built).
+    compact: bool,
+    /// BLAS built this frame, to prepare for compaction after its submission.
+    to_compact: Vec<(SectionKey, wgpu::Blas)>,
+    /// BLAS waiting for the GPU to measure their compacted size.
+    compacting: Vec<(SectionKey, wgpu::Blas)>,
     timer: Option<GpuTimer>,
     /// BLAS builds of frames whose build time has not been read yet.
     timed_builds: std::collections::VecDeque<u32>,
@@ -234,6 +241,9 @@ impl RayShadows {
             solid,
             pending: Vec::new(),
             reach: shadow_chunks(),
+            compact: std::env::var("HORIZON_RT_COMPACT").as_deref() != Ok("0"),
+            to_compact: Vec::new(),
+            compacting: Vec::new(),
             timer: GpuTimer::new(device, queue),
             timed_builds: Default::default(),
             stats: Stats::default(),
@@ -325,73 +335,29 @@ impl RayShadows {
         }
 
         // New BLAS: one per section, its solid quads (translucent ones cast no shadow here).
+        self.compact_built(queue, sections);
         let take = self.pending.len().min(BUILDS_PER_FRAME);
-        let mut builds: Vec<(u32, wgpu::BlasTriangleGeometrySizeDescriptor)> = Vec::new();
+        let mut builds: Vec<Build> = Vec::new();
         for key in self.pending.drain(..take) {
             let Some(slot) = sections.slot(key) else {
                 continue;
             };
-            let s = sections.get_mut(slot);
+            let s = sections.get(slot);
             if s.solid == 0 || s.blas.is_some() || builds.iter().any(|b| b.0 == slot) {
                 continue;
             }
-            builds.push((
-                slot,
-                wgpu::BlasTriangleGeometrySizeDescriptor {
-                    vertex_format: wgpu::VertexFormat::Float32x3,
-                    vertex_count: s.solid * 4,
-                    index_format: Some(wgpu::IndexFormat::Uint32),
-                    index_count: Some(s.solid * 6),
-                    flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-                },
-            ));
+            let (size, blas) = new_blas(device, s, self.compact);
+            builds.push((slot, size, blas));
         }
-        let blases: Vec<wgpu::Blas> = builds
-            .iter()
-            .map(|(_, size)| {
-                device.create_blas(
-                    &wgpu::CreateBlasDescriptor {
-                        label: None,
-                        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-                    },
-                    wgpu::BlasGeometrySizeDescriptors::Triangles {
-                        descriptors: vec![size.clone()],
-                    },
-                )
-            })
-            .collect();
-        let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
-        let entries: Vec<wgpu::BlasBuildEntry<'_>> = builds
-            .iter()
-            .zip(&blases)
-            .map(|((slot, size), blas)| {
-                let s = sections.get(*slot);
-                wgpu::BlasBuildEntry {
-                    blas,
-                    geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
-                        wgpu::BlasTriangleGeometry {
-                            size,
-                            vertex_buffer: arena.buffer(s.page),
-                            first_vertex: s.start as u32,
-                            vertex_stride: stride,
-                            index_buffer: Some(indices),
-                            first_index: Some(0),
-                            transform_buffer: None,
-                            transform_buffer_offset: None,
-                        },
-                    ]),
-                }
-            })
-            .collect();
-        for (slot, _) in &builds {
+        let entries = build_entries(&builds, sections, arena, indices);
+        for (slot, _, _) in &builds {
             let solid = sections.get(*slot).solid;
             self.stats.triangles_built_total += u64::from(solid) * 2;
         }
         self.stats.blas_built_total += builds.len() as u64;
 
         // The TLAS: every section with a BLAS, camera-relative like the terrain's origins.
-        let built = sections.entries().filter(|(_, s)| s.blas.is_some()).count() + blases.len();
+        let built = sections.entries().filter(|(_, s)| s.blas.is_some()).count() + builds.len();
         if built > self.tlas.get().len() {
             let capacity = (built as u32).next_power_of_two();
             self.tlas = Self::create_tlas(device, capacity);
@@ -402,8 +368,7 @@ impl RayShadows {
         let mut triangles = 0u64;
         let new = builds
             .iter()
-            .zip(&blases)
-            .map(|((slot, _), blas)| (sections.key(*slot), blas, sections.get(*slot).solid));
+            .map(|(slot, _, blas)| (sections.key(*slot), blas, sections.get(*slot).solid));
         let column = (
             (camera.x.floor() as i32) >> 4,
             (camera.z.floor() as i32) >> 4,
@@ -449,11 +414,46 @@ impl RayShadows {
             timer.end(encoder);
         }
         drop(entries);
-        for ((slot, _), blas) in builds.into_iter().zip(blases) {
+        for (slot, _, blas) in builds {
+            if self.compact {
+                self.to_compact.push((sections.key(slot), blas.clone()));
+            }
             sections.get_mut(slot).blas = Some(blas);
         }
         self.stats.pending = self.pending.len();
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    /// Compacts the BLAS built on earlier frames: they are built with room to spare, and a
+    /// compacted copy (made once the GPU has measured its size) is about half as big.
+    fn compact_built(&mut self, queue: &wgpu::Queue, sections: &mut Resident<SectionGpu>) {
+        let current = |sections: &Resident<SectionGpu>, key: SectionKey, blas: &wgpu::Blas| {
+            sections
+                .slot(key)
+                .is_some_and(|slot| sections.get(slot).blas.as_ref() == Some(blas))
+        };
+        let mut i = 0;
+        while i < self.compacting.len() {
+            let (key, blas) = &self.compacting[i];
+            if !current(sections, *key, blas) {
+                self.compacting.swap_remove(i);
+            } else if blas.ready_for_compaction() {
+                let compacted = queue.compact_blas(blas);
+                let slot = sections.slot(*key).expect("current section");
+                sections.get_mut(slot).blas = Some(compacted);
+                self.stats.compacted_total += 1;
+                self.compacting.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        // Built and submitted last frame: the GPU can now report their compacted size.
+        for (key, blas) in std::mem::take(&mut self.to_compact) {
+            if current(sections, key, &blas) {
+                blas.prepare_compaction_async(|_| {});
+                self.compacting.push((key, blas));
+            }
+        }
     }
 
     /// After the frame's submission (the build timer reads back late).
@@ -461,6 +461,141 @@ impl RayShadows {
         if let Some(timer) = &mut self.timer {
             timer.submitted();
         }
+    }
+}
+
+/// A section's slot, its BLAS's size and the BLAS to build.
+type Build = (u32, wgpu::BlasTriangleGeometrySizeDescriptor, wgpu::Blas);
+
+/// A new BLAS for `s`'s solid quads, and its size.
+fn new_blas(
+    device: &wgpu::Device,
+    s: &SectionGpu,
+    compact: bool,
+) -> (wgpu::BlasTriangleGeometrySizeDescriptor, wgpu::Blas) {
+    let size = wgpu::BlasTriangleGeometrySizeDescriptor {
+        vertex_format: wgpu::VertexFormat::Float32x3,
+        vertex_count: s.solid * 4,
+        index_format: Some(wgpu::IndexFormat::Uint32),
+        index_count: Some(s.solid * 6),
+        flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+    };
+    let mut flags = wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE;
+    if compact {
+        flags |= wgpu::AccelerationStructureFlags::ALLOW_COMPACTION;
+    }
+    let blas = device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: None,
+            flags,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: vec![size.clone()],
+        },
+    );
+    (size, blas)
+}
+
+/// Build entries reading each section's vertices where the arena holds them (positions are the
+/// first field of `TerrainVertex`) with the shared quad indices.
+fn build_entries<'a>(
+    builds: &'a [Build],
+    sections: &Resident<SectionGpu>,
+    arena: &'a Arena,
+    indices: &'a wgpu::Buffer,
+) -> Vec<wgpu::BlasBuildEntry<'a>> {
+    let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
+    builds
+        .iter()
+        .map(|(slot, size, blas)| {
+            let s = sections.get(*slot);
+            wgpu::BlasBuildEntry {
+                blas,
+                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
+                    wgpu::BlasTriangleGeometry {
+                        size,
+                        vertex_buffer: arena.buffer(s.page),
+                        first_vertex: s.start as u32,
+                        vertex_stride: stride,
+                        index_buffer: Some(indices),
+                        first_index: Some(0),
+                        transform_buffer: None,
+                        transform_buffer_offset: None,
+                    },
+                ]),
+            }
+        })
+        .collect()
+}
+
+impl RayShadows {
+    /// Rebuilds every section's BLAS now, `BUILDS_PER_FRAME` per submission, waiting for each:
+    /// the wall time of a submission (less an empty one's) is the GPU's build time on every
+    /// backend, timestamps or not.
+    pub fn bench_builds(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sections: &mut Resident<SectionGpu>,
+        arena: &Arena,
+        indices: &wgpu::Buffer,
+    ) -> serde_json::Value {
+        let wait = || {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        };
+        wait();
+        let empty = Instant::now();
+        queue.submit([]);
+        wait();
+        let overhead = empty.elapsed().as_secs_f64() * 1000.0;
+        let slots: Vec<u32> = (0..sections.len() as u32)
+            .filter(|&slot| sections.get(slot).solid > 0)
+            .collect();
+        let (mut gpu_ms, mut cpu_ms, mut triangles, mut batches) = (0.0, 0.0, 0u64, Vec::new());
+        for chunk in slots.chunks(BUILDS_PER_FRAME) {
+            let cpu = Instant::now();
+            let builds: Vec<Build> = chunk
+                .iter()
+                .map(|&slot| {
+                    let (size, blas) = new_blas(device, sections.get(slot), self.compact);
+                    (slot, size, blas)
+                })
+                .collect();
+            let entries = build_entries(&builds, sections, arena, indices);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.build_acceleration_structures(entries.iter(), std::iter::empty());
+            drop(entries);
+            let commands = encoder.finish();
+            cpu_ms += cpu.elapsed().as_secs_f64() * 1000.0;
+            let gpu = Instant::now();
+            queue.submit([commands]);
+            wait();
+            let ms = (gpu.elapsed().as_secs_f64() * 1000.0 - overhead).max(0.0);
+            gpu_ms += ms;
+            batches.push(ms);
+            for (slot, _, blas) in builds {
+                triangles += u64::from(sections.get(slot).solid) * 2;
+                if self.compact {
+                    self.to_compact.push((sections.key(slot), blas.clone()));
+                }
+                sections.get_mut(slot).blas = Some(blas);
+            }
+        }
+        self.stats.blas_built_total += slots.len() as u64;
+        self.stats.triangles_built_total += triangles;
+        let n = slots.len().max(1) as f64;
+        serde_json::json!({
+            "sections": slots.len(),
+            "triangles": triangles,
+            "gpu_ms": gpu_ms,
+            "cpu_ms": cpu_ms,
+            "gpu_us_per_section": 1000.0 * gpu_ms / n,
+            "cpu_us_per_section": 1000.0 * cpu_ms / n,
+            "gpu_us_per_1k_triangles": 1e6 * gpu_ms / (triangles.max(1) as f64),
+            "batch_gpu_ms": batches,
+            "submit_overhead_ms": overhead,
+        })
     }
 }
 

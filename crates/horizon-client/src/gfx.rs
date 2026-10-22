@@ -2374,6 +2374,20 @@ impl Renderer {
         }
         Ok(())
     }
+    /// Rebuilds every section's BLAS at once, waiting for the GPU (`raytrace`'s build cost).
+    pub fn bench_ray_shadow_builds(&mut self) -> Result<serde_json::Value> {
+        let rt = self
+            .ray_shadows
+            .as_mut()
+            .ok_or("ray-traced shadows are off")?;
+        Ok(rt.bench_builds(
+            &self.device,
+            &self.queue,
+            &mut self.sections,
+            &self.arena,
+            &self.indices,
+        ))
+    }
     /// Whether solid sections are occlusion culled (`cull`).
     pub fn section_cull(&self) -> bool {
         self.cull_on

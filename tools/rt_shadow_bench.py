@@ -81,36 +81,24 @@ def during(control, start, pitch, seconds, action):
 
 
 def build_cost(control, start, pitch):
-    """Every section's BLAS dropped and rebuilt (at most 512 a frame): GPU time per build, and the
-    frames while it happens."""
+    """Every section's BLAS rebuilt at once and timed (wall time of waited submissions, which
+    every backend can give), then rebuilt again over frames (at most 512 a frame) while holding
+    still, for the frames players would see."""
     wait_built(control)
-    before = len(rt_stats(control)["build_gpu_ms"])
-    idle = rt_stats(control)["build_gpu_ms"][-60:]
+    timed = control("rt-shadows bench-builds", timeout=600)["builds"]
+    time.sleep(2.0)
 
     def rebuild():
         control("rt-shadows rebuild")
         time.sleep(0.5)
         return wait_built(control)
     frames, _ = during(control, start, pitch, 6, rebuild)
-    time.sleep(1.0)
     s = rt_stats(control)
-    pairs = list(zip(s["build_gpu_ms"], s["builds_per_frame"]))[-(len(s["build_gpu_ms"]) - before):]
-    building = [(ms, n) for ms, n in pairs if n > 0]
-    tlas_only = statistics.median(idle) if idle else 0.0
-    built = sum(n for _, n in building)
-    gpu = sum(ms for ms, _ in building) - tlas_only * len(building)
     return {
-        "sections": s["blas_count"],
-        "triangles": s["blas_triangles"],
-        "tlas_only_gpu_ms": tlas_only,
-        "build_frames": len(building),
-        "blas_built_timed": built,
-        "gpu_ms_per_blas": gpu / built if built else None,
-        "gpu_us_per_1k_triangles": 1000 * gpu / (s["blas_triangles"] * built / max(s["blas_count"], 1) / 1000)
-        if built and s["blas_triangles"] else None,
-        "max_frame_build_gpu_ms": max((ms for ms, _ in building), default=None),
-        "tlas_cpu_ms": s["cpu_ms"],
+        "timed": {k: v for k, v in timed.items() if k != "batch_gpu_ms"},
         "frames_during_rebuild": frames,
+        "tlas_cpu_ms": s["cpu_ms"],
+        "tlas_gpu_ms_median": statistics.median(s["build_gpu_ms"][-60:]) if s["build_gpu_ms"] else None,
     }
 
 
