@@ -1644,9 +1644,25 @@ impl Behaviours {
         }
         let mut from = level.min_y();
         while let Some(min_y) = next_ticking(level, from).filter(|&y| y < level.max_y()) {
-            for _ in 0..speed {
-                let pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
-                self.sim(level, ticks).random_tick_at(pos);
+            // Nothing a random tick does draws from randValue, so a section's
+            // positions are drawn a few at a time and their blocks read
+            // together first: those reads miss the cache, and independent
+            // misses overlap. Each tick then reads its block again (cached),
+            // as the ticks before it may have changed it.
+            let mut left = speed;
+            while left > 0 {
+                let n = left.min(4) as usize;
+                left -= n as i32;
+                let mut drawn = [BlockPos::new(0, 0, 0); 4];
+                for pos in &mut drawn[..n] {
+                    *pos = ticks.block_random_pos(min_x, min_y, min_z, 15);
+                }
+                for pos in &drawn[..n] {
+                    std::hint::black_box(level.block_state(*pos));
+                }
+                for pos in &drawn[..n] {
+                    self.sim(level, ticks).random_tick_at(*pos);
+                }
             }
             from = min_y + 16;
         }
