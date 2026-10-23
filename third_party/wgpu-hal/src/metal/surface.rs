@@ -40,6 +40,8 @@ impl super::Surface {
             render_layer: Mutex::new(layer),
             swapchain_format: RwLock::new(None),
             extent: RwLock::new(wgt::Extent3d::default()),
+            queued: Default::default(),
+            busy_since: Mutex::new(None),
         }
     }
 
@@ -368,6 +370,28 @@ impl crate::Surface for super::Surface {
                     return Err(crate::SurfaceError::Occluded);
                 }
             }
+        }
+
+        // Horizon: with display sync off, don't wait for a drawable. A
+        // window's compositor takes one a refresh, so `nextDrawable` would
+        // wait for the display whenever the last one presented is not on
+        // screen yet, and the frame rate would follow the display. Report a
+        // timeout instead; the caller draws that frame elsewhere.
+        // A drawable whose handler never comes (none should) stops it after
+        // a moment.
+        #[cfg(target_os = "macos")]
+        {
+            let mut busy = self.busy_since.lock();
+            if !render_layer.displaySyncEnabled()
+                && self.queued.load(core::sync::atomic::Ordering::Acquire) > 0
+            {
+                let since = *busy.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() < core::time::Duration::from_millis(100) {
+                    return Err(crate::SurfaceError::Timeout);
+                }
+                self.queued.store(0, core::sync::atomic::Ordering::Release);
+            }
+            *busy = None;
         }
 
         let (drawable, texture) = match autoreleasepool(|_| {

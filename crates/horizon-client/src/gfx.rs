@@ -288,8 +288,11 @@ pub struct Renderer {
     adapter: wgpu::Adapter,
     /// The window's swapchain; `None` when rendering offscreen (`--offscreen`).
     surface: Option<wgpu::Surface<'static>>,
-    /// The offscreen colour target, sized like `config`.
+    /// The offscreen colour target, sized like `config`; with a window, for
+    /// the frames the display has no room for (Metal with VSync off).
     offscreen: Option<wgpu::Texture>,
+    /// Rendering offscreen only (`--offscreen`): no surface to recreate.
+    windowless: bool,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     /// Which steps of the first frame on this device still go to the log
@@ -2126,6 +2129,7 @@ impl Renderer {
             instance,
             adapter,
             surface,
+            windowless: offscreen.is_some(),
             offscreen,
             in_flight: std::collections::VecDeque::new(),
             first_frame: if previous.is_none() {
@@ -2301,7 +2305,7 @@ impl Renderer {
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
-        if self.offscreen.is_some() {
+        if self.windowless {
             return Ok(());
         }
         // Wayland allows only one tearing-control object per window surface.
@@ -2372,6 +2376,8 @@ impl Renderer {
         self.config.height = height;
         if let Some(surface) = &self.surface {
             surface.configure(&self.device, &self.config);
+            // Made again at the new size when next needed.
+            self.offscreen = None;
         } else {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
@@ -2826,6 +2832,21 @@ impl Renderer {
             None => (None, false),
             Some(wgpu::CurrentSurfaceTexture::Success(f)) => (Some(f), false),
             Some(wgpu::CurrentSurfaceTexture::Suboptimal(f)) => (Some(f), true),
+            // Metal with VSync off (the vendored wgpu-hal): the display has yet
+            // to show the last frame presented. A window's compositor takes one
+            // drawable a refresh, so waiting for one would hold the frame rate
+            // to the display's, VSync or not (#1333). This frame is drawn
+            // offscreen instead, as vanilla's OpenGL window drops the frames
+            // the display has no time for: it shows the newest each refresh.
+            Some(wgpu::CurrentSurfaceTexture::Timeout)
+                if cfg!(target_os = "macos")
+                    && self.config.present_mode != wgpu::PresentMode::Fifo =>
+            {
+                if self.offscreen.is_none() {
+                    self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
+                }
+                (None, false)
+            }
             Some(wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded) => {
                 return Ok(false);
             }

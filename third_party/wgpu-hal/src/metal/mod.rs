@@ -644,6 +644,10 @@ pub struct Surface {
     render_layer: Mutex<Retained<CAMetalLayer>>,
     swapchain_format: RwLock<Option<wgt::TextureFormat>>,
     extent: RwLock<wgt::Extent3d>,
+    /// Horizon: drawables presented and not yet on screen (or dropped).
+    queued: Arc<atomic::AtomicUsize>,
+    /// Horizon: since when `acquire_texture` has found `queued` above zero.
+    busy_since: Mutex<Option<std::time::Instant>>,
 }
 
 unsafe impl Send for Surface {}
@@ -801,9 +805,23 @@ impl crate::Queue for Queue {
     }
     unsafe fn present(
         &self,
-        _surface: &Surface,
+        surface: &Surface,
         texture: SurfaceTexture,
     ) -> Result<(), crate::SurfaceError> {
+        // Horizon: count the drawable until the display shows it (or drops it).
+        let queued = surface.queued.clone();
+        queued.fetch_add(1, atomic::Ordering::AcqRel);
+        let block = block2::RcBlock::new(move |_drawable| {
+            // Saturating: the count may have been reset since.
+            let _ = queued.try_update(atomic::Ordering::AcqRel, atomic::Ordering::Acquire, |n| {
+                n.checked_sub(1)
+            });
+        });
+        unsafe {
+            texture
+                .drawable
+                .addPresentedHandler(block2::RcBlock::as_ptr(&block))
+        };
         autoreleasepool(|_| {
             // We do not bother adjusting `command_buffer_created_not_submitted`
             // because we immediately commit this buffer.
