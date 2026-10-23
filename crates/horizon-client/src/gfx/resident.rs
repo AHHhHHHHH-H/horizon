@@ -31,6 +31,8 @@ pub struct Resident<T> {
     slots: FxHashMap<SectionKey, u32>,
     columns: Vec<Column>,
     column_index: FxHashMap<(i32, i32), u32>,
+    /// `visible`'s sort, kept for its buffers.
+    nearest: NearestFirst,
 }
 
 impl<T> Default for Resident<T> {
@@ -40,6 +42,7 @@ impl<T> Default for Resident<T> {
             slots: FxHashMap::default(),
             columns: Vec::new(),
             column_index: FxHashMap::default(),
+            nearest: NearestFirst::default(),
         }
     }
 }
@@ -202,7 +205,7 @@ impl<T> Resident<T> {
     /// entirely inside holds none it would reject (its sections skip the
     /// test). `radius` is the render distance in chunks.
     pub fn visible(
-        &self,
+        &mut self,
         camera: DVec3,
         radius: i32,
         frustum: &Frustum,
@@ -238,7 +241,69 @@ impl<T> Resident<T> {
                 }
             }
         }
-        out.sort_unstable_by_key(|v| (v.distance, v.key));
+        self.nearest.sort(out);
+    }
+}
+
+/// Lists shorter than this are sorted directly.
+const SMALL_LIST: usize = 64;
+
+/// The order of `sort_unstable_by_key(|v| (v.distance, v.key))` (keys are
+/// unique, so there is only one) in linear time: a bucket sort on the
+/// distance, then each bucket's few sections by distance and key. Sections
+/// fill the view's disc about evenly, so buckets linear in the squared
+/// distance, as many as sections, hold one or two each. The bucket is a
+/// non-decreasing function of the distance (each rounding step is), so no
+/// section can land before a nearer one.
+#[derive(Default)]
+struct NearestFirst {
+    copy: Vec<Visible>,
+    bucket: Vec<u32>,
+    /// Where each bucket starts in the sorted list, then one past the end.
+    starts: Vec<u32>,
+}
+
+impl NearestFirst {
+    fn sort(&mut self, list: &mut [Visible]) {
+        let key = |v: &Visible| (v.distance, v.key);
+        let n = list.len();
+        let distance = |v: &Visible| f64::from_bits(v.distance);
+        let (low, high) = list.iter().fold((f64::INFINITY, 0.0f64), |(l, h), v| {
+            (l.min(distance(v)), h.max(distance(v)))
+        });
+        if n < SMALL_LIST || high <= low {
+            list.sort_unstable_by_key(key);
+            return;
+        }
+        let scale = n as f64 / (high - low);
+        self.bucket.clear();
+        self.bucket.extend(
+            list.iter()
+                .map(|v| (((distance(v) - low) * scale) as usize).min(n - 1) as u32),
+        );
+        self.starts.clear();
+        self.starts.resize(n + 1, 0);
+        for &b in &self.bucket {
+            self.starts[b as usize + 1] += 1;
+        }
+        for i in 1..=n {
+            self.starts[i] += self.starts[i - 1];
+        }
+        self.copy.clear();
+        self.copy.extend_from_slice(list);
+        // `starts[b]` walks through bucket b while it fills, then is put back.
+        for (v, &b) in self.copy.iter().zip(&self.bucket) {
+            let at = &mut self.starts[b as usize];
+            list[*at as usize] = *v;
+            *at += 1;
+        }
+        let mut start = 0;
+        for &end in &self.starts[..n] {
+            if end - start > 1 {
+                list[start as usize..end as usize].sort_unstable_by_key(key);
+            }
+            start = end;
+        }
     }
 }
 
@@ -348,6 +413,41 @@ mod tests {
             .map(|v| (f64::from_bits(v.distance), v.key))
             .collect();
         assert_eq!(fast, slow);
+    }
+
+    #[test]
+    fn nearest_first_sorts_as_the_full_sort() {
+        let mut nearest = NearestFirst::default();
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for n in [0, 1, 2, 63, 64, 65, 500, 4000] {
+            for spread in [1u32, 7, 1000, 1 << 20] {
+                // Squared distances of a few values only (many ties, broken by
+                // key) up to nearly all different, some lists all one value.
+                let list: Vec<Visible> = (0..n)
+                    .map(|i| {
+                        let r = next();
+                        let d = f64::from(r % spread) * 0.37 + if spread == 1 { 5.0 } else { 0.0 };
+                        Visible {
+                            distance: d.to_bits(),
+                            key: ((r >> 8) as i32 % 9 - 4, (r >> 16) as i32 % 24, i as i32),
+                            slot: i,
+                            origin: [d as f32, 0.0, 0.0],
+                        }
+                    })
+                    .collect();
+                let mut fast = list.clone();
+                nearest.sort(&mut fast);
+                let mut slow = list;
+                slow.sort_unstable_by_key(|v| (v.distance, v.key));
+                assert_eq!(fast, slow, "{n} {spread}");
+            }
+        }
     }
 
     /// Every key reaches its value through its slot and column, and every
