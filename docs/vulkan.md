@@ -20,9 +20,6 @@ Run at least three alternating 120-second F8 recordings. Inspect nearby blocks,
 distant terrain, transparency, water, lighting and reloads as well as timings.
 Use the viewer's actual backend field: OpenGL fallback is an OpenGL result.
 
-After the isolated test works, `foreground-first` and `foreground-vulkan` compare
-the two backends with the same combined terrain controls. Their 120 FPS adaptive
-goal controls background duty cycle; rendering remains uncapped in pack options.
 Do not add Iris or shaders to one side of an isolated backend comparison.
 
 Linux software rendering checks reached the actual Vulkan backend, rendered the

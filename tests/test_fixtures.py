@@ -2,9 +2,8 @@ import json
 import subprocess
 import unittest
 
-from tools.test_dispatch import failure_summary
+from tools.client_fixture import FixtureTimeout, failure_summary
 from tools.test_client_graphics import graphics_failure_summary, validate_shader_report
-from tools.test_culling_rays import FixtureTimeout
 
 
 class FixtureDiagnosticTests(unittest.TestCase):

@@ -18,18 +18,6 @@ GPU performance and macOS 27 were never tested.
 | core-performance | 12 | none | 6144 MiB |
 | m2-balanced | 12 | 128 | 6144 MiB |
 | adaptive (experiment) | 12 | 128 | 6144 MiB |
-| worker-pacing (experiment) | 12 | 128 | 6144 MiB |
-| adaptive-pacing (experiment) | 12 | 128 | 6144 MiB |
-| queue-wait (experimental) | 12 | 128 | 6144 MiB |
-| adaptive-queue (experimental) | 12 | 128 | 6144 MiB |
-| dispatch-retry (experimental) | 12 | 128 | 6144 MiB |
-| tick-dedup (experimental) | 12 | 128 | 6144 MiB |
-| culling-empty (experimental) | 12 | 128 | 6144 MiB |
-| quad-reuse (experimental) | 12 | 128 | 6144 MiB |
-| terrain-position (experimental) | 12 | 128 | 6144 MiB |
-| culling-rays (experimental) | 12 | 128 | 6144 MiB |
-| foreground-first (combined experiment) | 12 | 128 | 6144 MiB |
-| foreground-vulkan (combined experiment) | 12 | 128 | 6144 MiB |
 | low-memory | 8 | none | 3072 MiB |
 | far-distance | 12 | 256 | 8192 MiB, with sufficient physical RAM |
 | cinematic | 12 | 128 | 6144 MiB |
@@ -45,15 +33,10 @@ The latter adds only the pinned core performance mods and leaves every original
 controller disabled. Then test balanced separately for its additional distant
 terrain. Matching captured settings does not prove pixel-identical rendering.
 
-The profiles marked *experiment* each isolate one change to Distant Horizons,
-EntityCulling or the JVM (adaptive terrain throttling, precise worker pacing,
-debounce-queue waits, rejected-dispatch retries, empty culling whitelists,
-culling ray scratch vectors, terrain quad reuse, terrain position arithmetic,
-tick membership storage, a smaller heap, compact object headers). Each kept the
-upstream behaviour it replaced and was measured only on Linux software rendering,
-where none showed a gain large enough to enable by default; balanced keeps them
-all off. Their write-ups were removed once the Rust rewrite replaced this track;
-they remain in Git history. Matched software-rendered pairs showed `core-performance`
+The adaptive experiment throttles Distant Horizons' background work through its public
+configuration API when frames fall below a target; balanced keeps it off. Earlier
+experiments patched Distant Horizons' and EntityCulling's own classes; they were
+removed on 2026-10-24, because Horizon doesn't build on another mod's code. Matched software-rendered pairs showed `core-performance`
 14–21% faster than `baseline`, and Vulkan about 1.5% more FPS for about 12% more
 CPU; neither is evidence for a Mac GPU.
 

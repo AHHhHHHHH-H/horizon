@@ -92,16 +92,6 @@ public final class HorizonClient implements ClientModInitializer {
         context.put("minecraft", "26.3");
         context.put("profile", profile);
         context.put("adaptive_budget_enabled", terrainBudget != null);
-        context.put("precise_worker_pacing", dev.horizonlab.mixin.HorizonMixinPlugin.workerPacingEnabled());
-        context.put("debounce_queue_wait", dev.horizonlab.mixin.HorizonMixinPlugin.debounceWaitEnabled());
-        context.put("wakeable_idle_wait", dev.horizonlab.mixin.HorizonMixinPlugin.debounceWaitEnabled());
-        context.put("dispatch_retry_backoff", dev.horizonlab.mixin.HorizonMixinPlugin.dispatchRetryEnabled());
-        context.put("tick_membership_dedup", dev.horizonlab.mixin.HorizonMixinPlugin.tickDedupEnabled());
-        context.put("terrain_quad_reuse", dev.horizonlab.mixin.HorizonMixinPlugin.quadReuseEnabled());
-        context.put("terrain_position_arithmetic", dev.horizonlab.mixin.HorizonMixinPlugin.terrainPositionEnabled());
-        context.put("culling_ray_scratch", dev.horizonlab.mixin.HorizonMixinPlugin.cullingRayScratchEnabled());
-        context.put("empty_culling_whitelist", dev.horizonlab.mixin.HorizonMixinPlugin.cullingEmptyEnabled());
-        context.put("interruptible_terrain_read", dev.horizonlab.mixin.HorizonMixinPlugin.terrainReadWaitEnabled());
         context.put("adaptive_target_fps", targetFps);
         context.putAll(visualSettings(client));
         var device = RenderSystem.getDevice().getDeviceInfo();

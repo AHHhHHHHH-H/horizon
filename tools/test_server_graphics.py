@@ -15,10 +15,10 @@ except ImportError:
 
 try:
     from . import build_mod, build_pack
-    from .test_culling_rays import run_fixture
+    from .client_fixture import run_fixture
 except ImportError:
     import build_mod, build_pack
-    from test_culling_rays import run_fixture
+    from client_fixture import run_fixture
 
 
 def main():

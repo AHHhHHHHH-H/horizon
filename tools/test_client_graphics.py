@@ -17,13 +17,11 @@ except ImportError:
 
 try:
     from . import build_mod, build_pack
-    from .test_culling_rays import FixtureTimeout, run_fixture
-    from .test_dispatch import failure_summary
+    from .client_fixture import FixtureTimeout, failure_summary, run_fixture
 except ImportError:
     import build_mod
     import build_pack
-    from test_culling_rays import FixtureTimeout, run_fixture
-    from test_dispatch import failure_summary
+    from client_fixture import FixtureTimeout, failure_summary, run_fixture
 
 
 

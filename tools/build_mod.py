@@ -37,23 +37,6 @@ def test_metrics():
                       SOURCE / "test/java/dev/horizonlab/budget/TerrainBudgetTest.java"]
     subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, budget_sources)], check=True)
     subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.budget.TerrainBudgetTest"], check=True)
-    worker_sources = [SOURCE / "main/java/dev/horizonlab/budget/WorkerPacer.java",
-                      SOURCE / "test/java/dev/horizonlab/budget/WorkerPacerTest.java"]
-    subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, worker_sources)], check=True)
-    subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.budget.WorkerPacerTest"], check=True)
-    debounce_sources = [SOURCE / "main/java/dev/horizonlab/budget/DebounceWait.java",
-                        SOURCE / "test/java/dev/horizonlab/budget/DebounceWaitTest.java"]
-    subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, debounce_sources)], check=True)
-    subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.budget.DebounceWaitTest"], check=True)
-    idle_sources = [SOURCE / "main/java/dev/horizonlab/budget/WakeableIdleWait.java",
-                    SOURCE / "test/java/dev/horizonlab/budget/WakeableIdleWaitTest.java"]
-    subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, idle_sources)], check=True)
-    subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.budget.WakeableIdleWaitTest"], check=True)
-    dispatch_sources = [SOURCE / "main/java/dev/horizonlab/budget/DispatchRetry.java",
-                        SOURCE / "test/java/dev/horizonlab/budget/DispatchRetryTest.java"]
-    subprocess.run(["javac", "--release", "25", "-d", str(destination), *map(str, dispatch_sources)], check=True)
-    subprocess.run(["java", "-cp", str(destination), "dev.horizonlab.budget.DispatchRetryTest"], check=True)
-
 
 def build():
     lock = json.loads((ROOT / "packs/mods.lock.json").read_text())
@@ -65,9 +48,6 @@ def build():
     dh = lock["projects"]["distanthorizons"]
     jars.append(runtime.fetch(dh["url"], ROOT / ".local/pack-cache" / dh["filename"],
                               dh["hashes"]["sha512"], "sha512"))
-    culling = lock["projects"]["entityculling"]
-    jars.append(runtime.fetch(culling["url"], ROOT / ".local/pack-cache" / culling["filename"],
-                              culling["hashes"]["sha512"], "sha512"))
     api = lock["projects"]["fabric-api"]
     api_jar = runtime.fetch(api["url"], ROOT / ".local/pack-cache" / api["filename"],
                             api["hashes"]["sha512"], "sha512")
@@ -96,7 +76,6 @@ def build():
                     "-d", str(adapter_tests),
                     str(SOURCE / "test/java/dev/horizonlab/client/DistantTerrainBudgetTest.java"),
                     str(SOURCE / "test/java/dev/horizonlab/client/DistantTerrainSettingsTest.java"),
-                    str(SOURCE / "test/java/dev/horizonlab/geometry/RelativeTerrainPositionTest.java"),
                     str(SOURCE / "test/java/dev/horizonlab/metrics/ResidentMemoryTest.java")], check=True)
     subprocess.run(["java", "-cp", os.pathsep.join([str(adapter_tests), test_classpath]),
                     "dev.horizonlab.client.DistantTerrainBudgetTest"], check=True)
@@ -104,8 +83,6 @@ def build():
                     "dev.horizonlab.client.DistantTerrainSettingsTest"], check=True)
     subprocess.run(["java", "--enable-native-access=ALL-UNNAMED", "-cp", os.pathsep.join([str(adapter_tests), test_classpath]),
                     "dev.horizonlab.metrics.ResidentMemoryTest"], check=True)
-    subprocess.run(["java", "-cp", os.pathsep.join([str(adapter_tests), test_classpath]),
-                    "dev.horizonlab.geometry.RelativeTerrainPositionTest"], check=True)
     output = ROOT / "dist" / f"horizon-{lock['pack_version']}.jar"
     output.parent.mkdir(exist_ok=True)
     entries = {path.relative_to(classes).as_posix(): path.read_bytes() for path in classes.rglob("*.class")}
@@ -122,18 +99,6 @@ def build():
             archive.writestr(info, entries[name])
     print(f"Built {output} ({output.stat().st_size} bytes, sha256 {lab.digest(output, 'sha256')})")
     return output
-
-
-def build_dispatch_fixture():
-    return build_integration_fixture("dispatch", "dev.horizonlab.dispatch.DispatchIntegration")
-
-
-def build_tick_dedup_fixture():
-    return build_integration_fixture("tick-dedup", "dev.horizonlab.dispatch.TickDedupIntegration")
-
-
-def build_culling_empty_fixture():
-    return build_integration_fixture("culling-empty", "dev.horizonlab.dispatch.CullingEmptyIntegration", ["entityculling"])
 
 
 def build_integration_fixture(name, entrypoint, extra_projects=(), fixture_mixins=(), fixture_dependencies=None):
@@ -172,97 +137,10 @@ def build_integration_fixture(name, entrypoint, extra_projects=(), fixture_mixin
     return output
 
 
-def benchmark_workers():
-    arguments = [json.loads(line) for line in (BUILD / "javac.args").read_text().splitlines()]
-    classpath = os.pathsep.join([str(BUILD / "classes"), arguments[arguments.index("-classpath") + 1]])
-    tests = BUILD / "worker-benchmark"
-    tests.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["javac", "--release", "25", "-proc:none", "-cp", classpath,
-                    "-d", str(tests), str(SOURCE / "test/java/dev/horizonlab/budget/WorkerPacingBenchmark.java")], check=True)
-    output = ROOT / "dist/worker-pacing-benchmark.txt"
-    with output.open("w", encoding="utf-8") as report:
-        report.write(f"Java {subprocess.check_output(['java', '--version'], text=True).splitlines()[0]}\n")
-        report.write(f"Platform {platform.system()} {platform.release()} {platform.machine()}; logical CPUs {os.cpu_count()}\n")
-        report.flush()
-        for repeat in range(3):
-            for ratio in ["0.5", "0.05"]:
-                for mode in ["upstream", "precise"]:
-                    subprocess.run(["java", "-cp", os.pathsep.join([str(tests), classpath]),
-                                    "dev.horizonlab.budget.WorkerPacingBenchmark", ratio, "10000", "50000", mode],
-                                   stdout=report, check=True)
-    print(output.read_text(), end="")
-
-
-def benchmark_debounce():
-    arguments = [json.loads(line) for line in (BUILD / "javac.args").read_text().splitlines()]
-    classpath = os.pathsep.join([str(BUILD / "classes"), arguments[arguments.index("-classpath") + 1]])
-    tests = BUILD / "debounce-benchmark"
-    tests.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["javac", "--release", "25", "-proc:none", "-cp", classpath,
-                    "-d", str(tests), str(SOURCE / "test/java/dev/horizonlab/budget/DebounceQueueBenchmark.java")], check=True)
-    output = ROOT / "dist/debounce-queue-benchmark.txt"
-    with output.open("w", encoding="utf-8") as report:
-        report.write(f"Java {subprocess.check_output(['java', '--version'], text=True).splitlines()[0]}\n")
-        report.write(f"Platform {platform.system()} {platform.release()} {platform.machine()}; logical CPUs {os.cpu_count()}\n")
-        report.flush()
-        subprocess.run(["java", "-cp", os.pathsep.join([str(tests), classpath]),
-                        "dev.horizonlab.budget.DebounceQueueBenchmark"], stdout=report, check=True)
-    print(output.read_text(), end="")
-
-
-def benchmark_headers():
-    arguments = [json.loads(line) for line in (BUILD / "javac.args").read_text().splitlines()]
-    classpath = arguments[arguments.index("-classpath") + 1]
-    tests = BUILD / "header-benchmark"
-    tests.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["javac", "--release", "25", "-proc:none", "-cp", classpath,
-                    "-d", str(tests), str(SOURCE / "test/java/dev/horizonlab/metrics/ObjectHeaderBenchmark.java")], check=True)
-    output = ROOT / "dist/object-header-benchmark.txt"
-    with output.open("w", encoding="utf-8") as report:
-        report.write(f"Java {subprocess.check_output(['java', '--version'], text=True).splitlines()[0]}\n")
-        report.write(f"Platform {platform.system()} {platform.release()} {platform.machine()}; logical CPUs {os.cpu_count()}\n")
-        report.flush()
-        for repeat in range(3):
-            for enabled in [False, True]:
-                report.write(f"fork={repeat} requested_compact_headers={enabled}\n")
-                report.flush()
-                subprocess.run(["java", "-Xms128M", "-Xmx512M",
-                                "-XX:" + ("+" if enabled else "-") + "UseCompactObjectHeaders",
-                                "-cp", os.pathsep.join([str(tests), classpath]),
-                                "dev.horizonlab.metrics.ObjectHeaderBenchmark", str(enabled).lower()],
-                               stdout=report, check=True)
-    print(output.read_text(), end="")
-
-
-def benchmark_idle():
-    arguments = [json.loads(line) for line in (BUILD / "javac.args").read_text().splitlines()]
-    classpath = os.pathsep.join([str(BUILD / "classes"), arguments[arguments.index("-classpath") + 1]])
-    tests = BUILD / "idle-benchmark"
-    tests.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["javac", "--release", "25", "-proc:none", "-cp", classpath,
-                    "-d", str(tests), str(SOURCE / "test/java/dev/horizonlab/budget/IdleQueueBenchmark.java")], check=True)
-    output = ROOT / "dist/idle-queue-benchmark.txt"
-    with output.open("w", encoding="utf-8") as report:
-        report.write(f"Java {subprocess.check_output(['java', '--version'], text=True).splitlines()[0]}\n")
-        report.write(f"Platform {platform.system()} {platform.release()} {platform.machine()}; logical CPUs {os.cpu_count()}\n")
-        report.flush()
-        subprocess.run(["java", "-cp", os.pathsep.join([str(tests), classpath]),
-                        "dev.horizonlab.budget.IdleQueueBenchmark"], stdout=report, check=True)
-    print(output.read_text(), end="")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--test-only", action="store_true")
-    parser.add_argument("--benchmark-workers", action="store_true", help="Measure tiny-job executor pacing; not Minecraft FPS")
-    parser.add_argument("--benchmark-headers", action="store_true", help="Measure object allocation with compact headers off/on; not game RAM")
     args = parser.parse_args()
-    if args.test_only and (args.benchmark_workers or args.benchmark_headers):
-        parser.error("Benchmarks require the compiled mod; omit --test-only")
     test_metrics()
     if not args.test_only:
         build()
-        if args.benchmark_workers:
-            benchmark_workers()
-        if args.benchmark_headers:
-            benchmark_headers()

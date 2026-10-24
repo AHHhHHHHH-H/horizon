@@ -20,18 +20,6 @@ PROFILES = {
     "core-performance": {"title": "Full-detail performance comparison", "mods": CORE, "render": 12, "lod": 0, "heap": 6144},
     "m2-balanced": {"title": "M2 Pro balanced", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144},
     "adaptive": {"title": "Adaptive terrain experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True},
-    "worker-pacing": {"title": "Precise worker pacing experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "pacing": True},
-    "adaptive-pacing": {"title": "Adaptive precise pacing experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True, "pacing": True},
-    "queue-wait": {"title": "Debounce queue wait experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "queue_wait": True},
-    "adaptive-queue": {"title": "Adaptive pacing and queue wait experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True, "pacing": True, "queue_wait": True},
-    "dispatch-retry": {"title": "Rejected dispatch retry experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "dispatch_retry": True},
-    "tick-dedup": {"title": "Terrain tick membership experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "tick_dedup": True},
-    "culling-empty": {"title": "Empty culling whitelist experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "culling_empty": True},
-    "quad-reuse": {"title": "Terrain quad reuse experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "quad_reuse": True},
-    "terrain-position": {"title": "Relative terrain position experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "terrain_position": True},
-    "culling-rays": {"title": "Culling ray scratch experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "culling_rays": True},
-    "foreground-first": {"title": "Foreground-first combined experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True, "pacing": True, "queue_wait": True, "dispatch_retry": True, "tick_dedup": True, "target_fps": 120},
-    "foreground-vulkan": {"title": "Foreground-first Vulkan experiment", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 128, "heap": 6144, "adaptive": True, "pacing": True, "queue_wait": True, "dispatch_retry": True, "tick_dedup": True, "target_fps": 120, "backend": "vulkan"},
     "low-memory": {"title": "Low memory", "mods": CORE, "render": 8, "lod": 0, "heap": 3072},
     "far-distance": {"title": "Far distance", "mods": CORE + ["distanthorizons"], "render": 12, "lod": 256, "heap": 8192},
     "cinematic": {"title": "Cinematic (optional)", "mods": CORE + ["distanthorizons", "iris", "complementary-reimagined"], "render": 12, "lod": 128, "heap": 6144},
@@ -85,28 +73,10 @@ def overrides(profile_name, mod_bytes):
     files = {f"mods/horizon-{read_lock()['pack_version']}.jar": mod_bytes,
              "config/horizon-profile.txt": (profile_name + "\n").encode(),
              "options.txt": options(profile).encode()}
-    experiment = any(profile.get(key, False) for key in ["adaptive", "pacing", "queue_wait", "dispatch_retry", "tick_dedup", "culling_empty", "culling_rays", "terrain_position", "quad_reuse"])
+    experiment = profile.get("adaptive", False)
     config = ROOT / "packs/config" / f"{'m2-balanced' if experiment else profile_name}.toml"
     files["config/horizon-adaptive.properties"] = (
         f"enabled={str(profile.get('adaptive', False)).lower()}\ntargetFps={profile.get('target_fps', 60)}\n").encode()
-    files["config/horizon-worker-pacing.properties"] = (
-        f"enabled={str(profile.get('pacing', False)).lower()}\n").encode()
-    files["config/horizon-queue-wait.properties"] = (
-        f"enabled={str(profile.get('queue_wait', False)).lower()}\n").encode()
-    files["config/horizon-dispatch-retry.properties"] = (
-        f"enabled={str(profile.get('dispatch_retry', False)).lower()}\n").encode()
-    files["config/horizon-tick-dedup.properties"] = (
-        f"enabled={str(profile.get('tick_dedup', False)).lower()}\n").encode()
-    files["config/horizon-culling-empty.properties"] = (
-        f"enabled={str(profile.get('culling_empty', False)).lower()}\n").encode()
-    files["config/horizon-culling-rays.properties"] = (
-        f"enabled={str(profile.get('culling_rays', False)).lower()}\n").encode()
-    files["config/horizon-quad-reuse.properties"] = (
-        f"enabled={str(profile.get('quad_reuse', False)).lower()}\n").encode()
-    files["config/horizon-terrain-position.properties"] = (
-        f"enabled={str(profile.get('terrain_position', False)).lower()}\n").encode()
-    files["config/horizon-terrain-read-wait.properties"] = (
-        f"enabled={str(bool(profile['lod'])).lower()}\n").encode()
     if profile["lod"]:
         if not config.exists():
             raise FileNotFoundError(f"Missing verified DH profile config: {config}")
