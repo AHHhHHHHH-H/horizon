@@ -155,14 +155,14 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
    "Server thread" with one level per dimension; the window joins it as a client through memory (`remote`),
    exactly as a LAN guest or a dedicated server's player does. This is what players run. Open
    `[server-thread]` issues list the gaps left.
-2. **Legacy in-frame (deprecated; public selectors removed in Horizon v0.3.0):** `--in-frame`,
-   `--no-server-thread` and `HORIZON_SERVER_THREAD=0` warn but still work during the 0.2 release line.
+2. **Legacy in-frame (deprecated; no removal release scheduled):** `--in-frame`,
+   `--no-server-thread` and `HORIZON_SERVER_THREAD=0` warn but still work.
    Remove these overrides to use the default server thread. The window's `Game` ticks the world itself,
    one level that follows the player (`fn enter_dimension`). Most harnesses still test this path;
    the internal command harness remains available while that coverage migrates.
 
-LAN guests and dedicated servers always use the server code, so a fix there serves both. Test the server
-thread when you touch player-facing gameplay, alongside the relevant parity harnesses:
+LAN guests and dedicated servers always use the server code, so a fix there serves both. Test
+player-facing gameplay on the server thread only, alongside the relevant parity harnesses:
 
 ```sh
 cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3 --world T               # server thread

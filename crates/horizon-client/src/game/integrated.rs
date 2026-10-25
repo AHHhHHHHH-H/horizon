@@ -8,7 +8,7 @@
 //!
 //! On by default. The public in-frame selectors (`--in-frame`,
 //! `--no-server-thread`, `HORIZON_SERVER_THREAD=0`) are deprecated and will
-//! be removed in Horizon v0.3.0. LAN guests and dedicated servers use the
+//! be removed in a future release. LAN guests and dedicated servers use the
 //! same server code either way.
 use super::{
     Game, Options, PackResources, Resources, UiResources,

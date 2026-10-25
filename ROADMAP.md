@@ -432,11 +432,11 @@ Port `PistonMovingBlockEntity.moveCollidedEntities` and `moveStuckEntities` (hon
 
 #### One single-player path: remove the in-frame world
 
-Single player will have one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode is deprecated; its public selectors go in Horizon v0.3.0.
+Single player will have one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode is deprecated; no removal release is scheduled.
 
 <details><summary>Technical</summary>
 
-`--in-frame`, `--no-server-thread` and `HORIZON_SERVER_THREAD=0` are deprecated, warn at startup, and will be removed in Horizon v0.3.0. Remove these overrides to use the default server thread. Most harnesses still test the old path; migrate `lan_e2e` and parity coverage before deleting the internal in-frame world. See also 'Single player as a server' and [docs/server-levels.md](docs/server-levels.md).
+`--in-frame`, `--no-server-thread` and `HORIZON_SERVER_THREAD=0` are deprecated, warn at startup, and will be removed in a future release. Remove these overrides to use the default server thread. Most harnesses still test the old path; migrate `lan_e2e` and parity coverage before deleting the internal in-frame world. See also 'Single player as a server' and [docs/server-levels.md](docs/server-levels.md).
 
 </details>
 

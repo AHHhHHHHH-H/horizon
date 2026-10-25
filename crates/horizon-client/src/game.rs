@@ -292,7 +292,7 @@ struct Options {
     dev_mods: Vec<PathBuf>,
     /// Single player runs on an integrated server thread (game/integrated.rs),
     /// as vanilla's does: the default. Deprecated: `--in-frame`,
-    /// `--no-server-thread` and `HORIZON_SERVER_THREAD=0` go in Horizon v0.3.0.
+    /// `--no-server-thread` and `HORIZON_SERVER_THREAD=0` will be removed in a future release.
     server_thread: bool,
     /// What this Game executes; independent of its current server connection.
     execution_role: execution_role::ExecutionRole,
@@ -303,7 +303,7 @@ impl Options {
             return;
         }
         *warned = true;
-        let message = "Horizon: warning: --in-frame, --no-server-thread and HORIZON_SERVER_THREAD=0 are deprecated and will be removed in Horizon v0.3.0; remove these overrides to use the default integrated server thread.";
+        let message = "Horizon: warning: --in-frame, --no-server-thread and HORIZON_SERVER_THREAD=0 are deprecated and will be removed in a future release; remove these overrides to use the default integrated server thread.";
         if log::log_enabled!(log::Level::Warn) {
             log::warn!("{message}");
         } else {
