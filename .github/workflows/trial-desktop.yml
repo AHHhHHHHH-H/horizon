@@ -16,7 +16,7 @@ jobs:
       all: true
   pr1916:
     needs: full
-    if: always()
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/parity.yml
     with:
       base: 96199c23e7ba28ec666bff1309ce6a075a058c17
@@ -24,7 +24,7 @@ jobs:
       runner: '["self-hosted", "ludodesktop-staging"]'
   pr1901:
     needs: pr1916
-    if: always()
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/parity.yml
     with:
       base: 35a89eaebe28921c12c9b5a05072d3b3f31ab00a
@@ -32,7 +32,7 @@ jobs:
       runner: '["self-hosted", "ludodesktop-staging"]'
   pr1900:
     needs: pr1901
-    if: always()
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/parity.yml
     with:
       base: c965aad8d3ad6a837149d6ae5a6e7100c168232d
