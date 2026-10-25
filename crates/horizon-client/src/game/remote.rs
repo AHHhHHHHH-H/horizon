@@ -19,6 +19,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    net_gaps::{Gap, Gaps},
     save::SaveDir,
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
@@ -176,6 +177,7 @@ pub(super) struct Remote {
     /// Inventory as last synchronised, for creative-mode slot updates.
     synced: Vec<Option<ItemStack>>,
     decode_errors: u32,
+    protocol_gaps: Gaps,
     clock: Option<i32>,
     /// `ClientClockManager.ClientClockInstance`'s rate and partial tick for
     /// the level's clock (its total is `world.day_time`), and
@@ -433,6 +435,7 @@ impl Game<'_> {
             player_type,
             synced: vec![None; 36],
             decode_errors: 0,
+            protocol_gaps: Gaps::default(),
             clock: None,
             clock_rate: 1.0,
             clock_partial: 0.0,
@@ -840,7 +843,8 @@ impl Game<'_> {
                 Event::Reconfigured(registries) => self.set_registries(registries),
                 Event::PackPush(p) => self.handle_pack_push(p),
                 Event::PackPop(id) => self.handle_pack_pop(id),
-                Event::DecodeError(e) => {
+                Event::DecodeError { id, error: e } => {
+                    self.record_protocol_gap(Gap::UndecodablePlayPacket(id));
                     if let Some(r) = self.remote.as_mut() {
                         r.decode_errors += 1;
                         if r.decode_errors <= 20 {
@@ -848,6 +852,7 @@ impl Game<'_> {
                         }
                     }
                 }
+                Event::ProtocolGap(gap) => self.record_protocol_gap(gap),
                 Event::Disconnected {
                     reason,
                     from_server,
@@ -1347,7 +1352,13 @@ impl Game<'_> {
     }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
-    fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
+    fn spawn_entity(
+        &mut self,
+        id: i32,
+        kind: &str,
+        position: [f64; 3],
+        rotation: [f32; 3],
+    ) -> bool {
         let [yaw, pitch, head] = rotation;
         let at = Vec3::new(position[0], position[1], position[2]);
         let mob_type = if kind == "minecraft:player" {
@@ -1368,6 +1379,7 @@ impl Game<'_> {
                 on_ground: false,
             });
         }
+        let modeled = mob_type.is_some();
         if let Some(t) = mob_type {
             let mut mob = Mob::new(id as u32, t, at, head);
             super::remote_mob_data::client_defaults(&mut mob);
@@ -1392,6 +1404,14 @@ impl Game<'_> {
                 },
             );
         }
+        modeled
+            || matches!(
+                kind,
+                "minecraft:item"
+                    | "minecraft:experience_orb"
+                    | "minecraft:interaction"
+                    | "minecraft:marker"
+            )
     }
     /// A move packet for entity `id`: to the end of `path` (None: a
     /// rotation alone), turned to `rotation` if it has one. `far_snaps`:
@@ -1806,9 +1826,10 @@ impl Game<'_> {
                         r.level_players.remove(&p.id);
                     }
                 }
-                self.spawn_entity(p.id, &kind, p.position, rotation);
-                if !self.spawn_remote_object(p.id, &kind, p.position, rotation[0], p.data) {
-                    self.spawn_remote_projectile(
+                let modeled = self.spawn_entity(p.id, &kind, p.position, rotation);
+                let object = self.spawn_remote_object(p.id, &kind, p.position, rotation[0], p.data);
+                let projectile = !object
+                    && self.spawn_remote_projectile(
                         p.id,
                         &kind,
                         p.position,
@@ -1816,6 +1837,8 @@ impl Game<'_> {
                         p.velocity,
                         p.data,
                     );
+                if !modeled && !object && !projectile {
+                    self.record_protocol_gap(Gap::Entity(p.kind));
                 }
             }
             C::RemoveEntities(p) => {
@@ -2663,9 +2686,49 @@ impl Game<'_> {
                     self.titles.reset_times();
                 }
             }
-            _ => {}
+            C::Unknown(id, _) => self.record_protocol_gap(Gap::PlayPacket(id)),
+            C::ProjectilePower(_)
+            | C::SetSimulationDistance(_)
+            | C::SoundEntity(_)
+            | C::UpdateTags(_)
+            | C::SetEntityMotion(_)
+            | C::UpdateAttributes(_) => {
+                self.record_protocol_gap(Gap::UnhandledPlayPacket(packet.id()));
+            }
+            // Consumed by the network thread, not client-world updates.
+            C::BundleDelimiter(_)
+            | C::Disconnect(_)
+            | C::KeepAlive(_)
+            | C::ResourcePackPop(_)
+            | C::ResourcePackPush(_)
+            | C::StartConfiguration(_) => {}
+            // The end of the batch supplies the count used by our chunk-batch reply.
+            C::ChunkBatchStart(_) => {}
+            // Non-brand plugin channels are optional extensions, not vanilla features.
+            C::CustomPayload(_) => {}
         }
         Ok(())
+    }
+
+    fn record_protocol_gap(&mut self, gap: Gap) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if r.protocol_gaps.record(gap) {
+            let name = gap
+                .name()
+                .or_else(|| match gap {
+                    Gap::Entity(id) => r.builtin.get("minecraft:entity_type")?.name(id),
+                    _ => None,
+                })
+                .unwrap_or("unknown id");
+            log::warn!(
+                "Horizon: {} {} (id {}); see server.protocol_gaps in horizon-ctl status",
+                gap.category(),
+                name,
+                gap.id()
+            );
+        }
     }
     /// `handleAddObjective`: add, remove or change an objective.
     fn remote_objective(&mut self, p: play::SetObjective) {
@@ -5034,6 +5097,9 @@ impl Game<'_> {
             "health": r.health.0,
             "food": r.health.1,
             "decode_errors": r.decode_errors,
+            "protocol_gaps": r.protocol_gaps.report(|id| {
+                r.builtin.get("minecraft:entity_type")?.name(id).map(str::to_owned)
+            }),
             "chat": r.chat.iter().rev().take(10).rev().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
         }))
     }
