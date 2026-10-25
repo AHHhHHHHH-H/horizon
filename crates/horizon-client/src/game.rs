@@ -291,13 +291,27 @@ struct Options {
     /// `--dev-mod PATH` (repeatable): mods always on and reloaded when rebuilt.
     dev_mods: Vec<PathBuf>,
     /// Single player runs on an integrated server thread (game/integrated.rs),
-    /// as vanilla's does: the default. `--in-frame` (or `--no-server-thread`,
-    /// or `HORIZON_SERVER_THREAD=0`) runs the world in the frame instead.
+    /// as vanilla's does: the default. Deprecated: `--in-frame`,
+    /// `--no-server-thread` and `HORIZON_SERVER_THREAD=0` go in Horizon v0.3.0.
     server_thread: bool,
     /// What this Game executes; independent of its current server connection.
     execution_role: execution_role::ExecutionRole,
 }
 impl Options {
+    fn warn_in_frame_deprecation(warned: &mut bool) {
+        if *warned {
+            return;
+        }
+        *warned = true;
+        let message = "Horizon: warning: --in-frame, --no-server-thread and HORIZON_SERVER_THREAD=0 are deprecated and will be removed in Horizon v0.3.0; remove these overrides to use the default integrated server thread.";
+        if log::log_enabled!(log::Level::Warn) {
+            log::warn!("{message}");
+        } else {
+            // --help skips logger setup, but deprecated selectors still warn.
+            eprintln!("{message}");
+        }
+    }
+
     /// The name to join servers with: the one given, else the offline name kept
     /// next to options.txt (created on first use).
     fn player_name(&self) -> String {
@@ -309,6 +323,11 @@ impl Options {
         })
     }
     fn read() -> Result<Option<Self>> {
+        let mut warned_in_frame = false;
+        let server_thread = std::env::var("HORIZON_SERVER_THREAD").map_or(true, |v| v != "0");
+        if !server_thread {
+            Self::warn_in_frame_deprecation(&mut warned_in_frame);
+        }
         let sibling = std::env::current_exe()?
             .parent()
             .ok_or("missing executable directory")?
@@ -350,8 +369,7 @@ impl Options {
             dev_mods: Vec::new(),
             // The command harness (HORIZON_COMMAND_SCRIPT) drives the world
             // itself, without the event loop: it stays in the frame.
-            server_thread: std::env::var("HORIZON_SERVER_THREAD").map_or(true, |v| v != "0")
-                && std::env::var_os("HORIZON_COMMAND_SCRIPT").is_none(),
+            server_thread: server_thread && std::env::var_os("HORIZON_COMMAND_SCRIPT").is_none(),
             execution_role: execution_role::ExecutionRole::Client,
         };
         let mut session_file = std::env::var("HORIZON_SESSION_FILE").ok();
@@ -360,7 +378,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..64 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --dev-mod PATH          A Horizon mod (.hmod or folder) to develop: always on, reloaded when rebuilt\n  --in-frame              Run single player's world in the frame, not on its server thread\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..64 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --dev-mod PATH          A Horizon mod (.hmod or folder) to develop: always on, reloaded when rebuilt\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -376,7 +394,10 @@ impl Options {
                 "--offscreen" => o.offscreen = true,
                 "--control" => o.control = Some(horizon_client::control::default_path()),
                 "--server-thread" => o.server_thread = true,
-                "--in-frame" | "--no-server-thread" => o.server_thread = false,
+                "--in-frame" | "--no-server-thread" => {
+                    Self::warn_in_frame_deprecation(&mut warned_in_frame);
+                    o.server_thread = false;
+                }
                 _ => {
                     let value = args
                         .next()

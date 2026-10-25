@@ -26,16 +26,21 @@ the other dimensions' levels as `Parked` values and swaps one into place (`enter
 The packets of a guest are read in its own level's pass (`Hub::tick_level`), so its actions and
 commands run with its level in place.
 
-The window's own game (`--in-frame`, `--no-server-thread`, `HORIZON_SERVER_THREAD=0`, and the command
-harness) keeps one level, which follows its player (`enter_dimension`). LAN guests of a world run that way
-stay in the host's dimension. That mode is the escape hatch, so it gets no multi-level work.
+The legacy in-frame game keeps one level, which follows its player (`enter_dimension`). LAN guests
+of a world run that way stay in the host's dimension. It gets no multi-level work.
+
+**Deprecated; removal in Horizon v0.3.0:** `--in-frame`, `--no-server-thread` and
+`HORIZON_SERVER_THREAD=0` still select the legacy mode during the 0.2 release line, but emit a
+startup warning. Remove these flags and unset the environment variable to use the default integrated
+server thread. The internal command harness (`HORIZON_COMMAND_SCRIPT`) still runs in-frame without
+a deprecation warning of its own while harness coverage migrates to the server thread.
 
 ## One code path for both
 
 The dedicated server and the server thread are the same code. Each `Game` has an explicit
 `ExecutionRole`: `Client`, `IntegratedServer` or `DedicatedServer`, selected before construction in
 `Options.execution_role`. Startup, world loading and opening other dimensions use that role. Only
-clients mesh chunks and show loading progress; a client can still run its simulation in-frame.
+clients mesh chunks and show loading progress; the deprecated in-frame simulation also has the client role.
 Connecting or disconnecting changes `remote`, independently of the execution role.
 
 The server thread has a hub without a host player. The window joins it through memory as one

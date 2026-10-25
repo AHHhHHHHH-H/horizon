@@ -158,7 +158,7 @@
    "status": "now",
    "area": "gameplay",
    "plain": "Single player now runs a small server in the background, as vanilla does. We are fixing what still behaves differently there; every fix also works for LAN and server players.",
-   "dev": "Since #1514 single player runs on the server thread (`game/integrated.rs`) and the window joins it as a client; `--in-frame` keeps the old path. The open `[server-thread]` issues list the gaps. In review: a tool that changes a block ends the click (#1797), potions keep their potion over the connection (#1796), mobs' aggression and arm swings (#1802). docs/server-levels.md.",
+   "dev": "Since #1514 single player runs on the server thread (`game/integrated.rs`) and the window joins it as a client. The legacy in-frame selectors are deprecated; removal is documented in docs/server-levels.md. The open `[server-thread]` issues list the gaps. In review: a tool that changes a block ends the click (#1797), potions keep their potion over the connection (#1796), mobs' aggression and arm swings (#1802). docs/server-levels.md.",
    "links": [
     "#1514",
     "#1797",
@@ -560,8 +560,8 @@
    "title": "One single-player path: remove the in-frame world",
    "status": "next",
    "area": "gameplay",
-   "plain": "Single player will have one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode goes once everything passes without it.",
-   "dev": "`--in-frame` (also `--no-server-thread` and `HORIZON_SERVER_THREAD=0`) still ticks the world inside the window's `Game`, and most harnesses test that path. Delete it once `lan_e2e --server-thread` and the parity harnesses pass on the server thread, which also halves the bug surface. See also 'Single player as a server' and docs/server-levels.md.",
+   "plain": "Single player will have one way to run, the server thread, so every fix works everywhere and there are fewer bugs. The older in-frame mode is deprecated; its public selectors go in Horizon v0.3.0.",
+   "dev": "`--in-frame`, `--no-server-thread` and `HORIZON_SERVER_THREAD=0` are deprecated, warn at startup, and will be removed in Horizon v0.3.0. Remove these overrides to use the default server thread. Most harnesses still test the old path; migrate `lan_e2e` and parity coverage before deleting the internal in-frame world. See also 'Single player as a server' and docs/server-levels.md.",
    "links": [
     "docs/server-levels.md"
    ]

@@ -6,10 +6,10 @@
 //! the world's options) with [`Integrated::call`], as vanilla's client calls
 //! into its `IntegratedServer`.
 //!
-//! On by default. `--in-frame` (or `--no-server-thread`, or
-//! `HORIZON_SERVER_THREAD=0`) runs the world in the frame instead, the
-//! escape hatch. LAN guests and dedicated servers use the same code either
-//! way.
+//! On by default. The public in-frame selectors (`--in-frame`,
+//! `--no-server-thread`, `HORIZON_SERVER_THREAD=0`) are deprecated and will
+//! be removed in Horizon v0.3.0. LAN guests and dedicated servers use the
+//! same server code either way.
 use super::{
     Game, Options, PackResources, Resources, UiResources,
     execution_role::ExecutionRole,

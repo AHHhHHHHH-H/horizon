@@ -51,6 +51,11 @@ Development builds that link quickly: `cargo build --profile fast -p horizon-cli
 | `--render-distance N` | Chunks, 2..64 (default 12) |
 | `--resources PATH` | Prepared resource directory |
 
+Single player uses the integrated server thread by default. **Deprecated; removal in Horizon v0.3.0:**
+`--in-frame`, `--no-server-thread` and `HORIZON_SERVER_THREAD=0`. These overrides keep working during
+the 0.2 release line and emit a startup warning. Remove the flags and unset the environment variable
+to use the default. See [server levels](server-levels.md) for the migration details.
+
 | Control | Action |
 | --- | --- |
 | Mouse | Look (vanilla default sensitivity) |
