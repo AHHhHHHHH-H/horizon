@@ -1,7 +1,8 @@
 //! Resolution scale and FXAA (Horizon settings): the world renders into its
 //! own target at the scaled size, then one full-screen pass copies or
 //! anti-aliases it onto the screen, under the hand and HUD. With neither on,
-//! the world renders straight to the screen.
+//! the world renders straight to the screen. A post-processing chain
+//! ([`Chain`]) takes that target instead and draws onto the screen itself.
 
 struct WorldTarget {
     size: [u32; 2],
@@ -214,5 +215,43 @@ impl Post {
         });
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// A post-processing chain over the world: it reads the world's own target
+/// (colour, and depth reversed) and draws onto the screen, under the hand and
+/// HUD. One runs at a time; each kind keeps its own state.
+pub enum Chain {
+    /// A shader pack in the `shaders/` format (`pack_post.rs`).
+    Java(super::pack_post::PackPost),
+}
+
+impl Chain {
+    /// Draws the world target `world` (colour, depth) of `size` onto `screen` of `window`.
+    pub fn run(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        world: (&wgpu::TextureView, &wgpu::TextureView),
+        screen: &wgpu::TextureView,
+        frame: &super::Frame,
+        size: [u32; 2],
+        window: [u32; 2],
+    ) {
+        match self {
+            Chain::Java(post) => post.run(
+                device,
+                queue,
+                encoder,
+                world.0,
+                world.1,
+                screen,
+                frame,
+                &frame.pack,
+                size,
+                window,
+            ),
+        }
     }
 }
