@@ -29,9 +29,9 @@ horizon-shader pack my_pack                         # check, then write my_pack-
 ```
 golden_hour 1.0.0 (shader API 0.1): ok
   sky       Warm horizon                     99 expressions, 0 texture reads
-  post      Glow                            185 expressions, 3 texture reads
+  post      Glow                            192 expressions, 3 texture reads
   post      Colour grade                    201 expressions, 2 texture reads
-  sha256 fd92a294...
+  sha256 b5e0d98c...
 ```
 
 or every problem, at its file, line and column:
