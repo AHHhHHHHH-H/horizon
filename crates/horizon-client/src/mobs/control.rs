@@ -161,7 +161,7 @@ impl Mob {
                         * if self.on_ground {
                             attr_speed
                         } else {
-                            self.kind.flying_speed
+                            self.synced_attribute("minecraft:flying_speed", self.kind.flying_speed)
                         }) as f32;
                     self.set_speed(speed);
                     let sd = (xd * xd + zd * zd).sqrt();
@@ -286,7 +286,7 @@ impl Mob {
                 let top = w.data.state(state).top;
                 let name = &w.facts.get(state).name;
                 let door_or_fence = name.ends_with("_door") || name.ends_with("fence");
-                if yd > self.kind.step_height
+                if yd > self.synced_attribute("minecraft:step_height", self.kind.step_height)
                     && xd * xd + zd * zd < f64::from(self.width().max(1.0))
                     || top > 0.0
                         && self.position.y < f64::from(top) + f64::from(by)

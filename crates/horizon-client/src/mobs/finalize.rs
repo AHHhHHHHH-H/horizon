@@ -516,6 +516,14 @@ fn effect_modifiers(m: &Mob, a: Attr) -> impl Iterator<Item = (f64, Op)> + '_ {
 }
 /// `AttributeInstance.getValue`: the base, then the modifiers by operation.
 pub fn value(m: &Mob, a: Attr) -> f64 {
+    if !m.extra.synced_attributes.is_empty()
+        && let Some(value) = m
+            .extra
+            .synced_attributes
+            .get(&format!("minecraft:{}", a.name()))
+    {
+        return *value;
+    }
     compute(m, a, true)
 }
 fn compute(m: &Mob, a: Attr, with_transient: bool) -> f64 {
@@ -573,6 +581,14 @@ fn refresh(m: &mut Mob, a: Attr) {
 /// The value without the transient baby modifier (`speed_bonus` applies
 /// that one to movement speed).
 fn base_with_modifiers(m: &Mob, a: Attr) -> f64 {
+    if !m.extra.synced_attributes.is_empty()
+        && let Some(value) = m
+            .extra
+            .synced_attributes
+            .get(&format!("minecraft:{}", a.name()))
+    {
+        return *value;
+    }
     compute(m, a, false)
 }
 /// `AttributeInstance.setBaseValue`.

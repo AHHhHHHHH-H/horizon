@@ -769,6 +769,12 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         None => super::aquatic::rotations(m, alpha, body)
             .unwrap_or_else(|| glam::Mat4::from_rotation_y((180.0 - body).to_radians())),
     };
+    let scale = m
+        .extra
+        .synced_attributes
+        .get("minecraft:scale")
+        .copied()
+        .unwrap_or(1.0) as f32;
     let mut base = origin * rotation;
     if m.death_time > 0 && !super::creaking::tearing_down(m) {
         let f = ((m.death_time as f32 + alpha - 1.0) / 20.0 * 1.6)
@@ -825,6 +831,9 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
     }
     base *= species_rotations(m, alpha);
     base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
+    if scale != 1.0 {
+        base *= glam::Mat4::from_scale(glam::Vec3::splat(scale));
+    }
     base *= species_scale(m, alpha);
     base * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0))
 }

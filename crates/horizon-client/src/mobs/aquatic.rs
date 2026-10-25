@@ -268,7 +268,7 @@ fn squid_ai_step(m: &mut Mob) {
         v[X_BODY_ROT] += (-(horizontal.atan2(mv.y) as f32).to_degrees() - v[X_BODY_ROT]) * 0.1;
     } else {
         v[TENTACLE_ANGLE] = v[TENTACLE_MOVEMENT].msin().abs() * PI * 0.25;
-        let yd = m.velocity.y - m.kind.gravity;
+        let yd = m.velocity.y - m.synced_attribute("minecraft:gravity", m.kind.gravity);
         m.velocity = Vec3::new(0.0, yd * 0.98, 0.0);
         let v = &mut m.anim.v;
         v[X_BODY_ROT] += (-90.0 - v[X_BODY_ROT]) * 0.02;
