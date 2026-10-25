@@ -1163,8 +1163,12 @@ impl Game<'_> {
     }
     /// Paints recipe book calls; returns the first tooltip set (vanilla keeps
     /// the first one a frame asks for).
-    fn paint_book(&mut self, batch: &mut HudBatch, calls: &[Drawn]) -> Option<Vec<(String, u32)>> {
-        let mut tooltip: Option<Vec<(String, u32)>> = None;
+    fn paint_book(
+        &mut self,
+        batch: &mut HudBatch,
+        calls: &[Drawn],
+    ) -> Option<Vec<(horizon_client::text::Text, u32)>> {
+        let mut tooltip: Option<Vec<(horizon_client::text::Text, u32)>> = None;
         for d in calls {
             let start = batch.vertices.len();
             let atlas = &self.gui.atlas;
@@ -1259,7 +1263,14 @@ impl Game<'_> {
                         tooltip = Some(
                             lines
                                 .iter()
-                                .map(|l| (l.iter().map(|r| r.text.as_str()).collect(), u32::MAX))
+                                .map(|l| {
+                                    (
+                                        horizon_client::text::Text::literal(
+                                            l.iter().map(|r| r.text.as_str()).collect::<String>(),
+                                        ),
+                                        u32::MAX,
+                                    )
+                                })
                                 .collect(),
                         );
                     }
@@ -1272,7 +1283,8 @@ impl Game<'_> {
                                 self.translate(
                                     "gui.recipebook.moreRecipes",
                                     "Right Click for More",
-                                ),
+                                )
+                                .into(),
                                 u32::MAX,
                             ));
                         }

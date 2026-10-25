@@ -182,6 +182,25 @@ fn is_potion_item(item: &str) -> bool {
     item.ends_with("potion") || item == "minecraft:tipped_arrow"
 }
 
+/// ItemStack.getStyledHoverName: custom spans inherit italic, while explicit
+/// false values and nested colours/fonts remain intact. Rarity colour is the
+/// caller's base colour, not an override of a component's own colour.
+pub fn custom_name_text(stack: &ItemStack) -> Option<crate::text::Text> {
+    let name = stack.custom_name()?;
+    let mut text = stack
+        .custom_name_component()
+        .map(crate::entity_nbt::name_text)
+        .unwrap_or_else(|| crate::text::Text::legacy(name));
+    let base = crate::text::Style {
+        italic: Some(true),
+        ..Default::default()
+    };
+    for span in &mut text.spans {
+        span.style.inherit(&base);
+    }
+    Some(text)
+}
+
 /// The name line of `stack`, as the item's translation or, for potions and
 /// smithing templates, its name component gives it.
 pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) -> String {

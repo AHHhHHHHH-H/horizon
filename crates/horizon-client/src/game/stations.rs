@@ -1096,7 +1096,7 @@ impl Game<'_> {
         }
         let (ox, oy) = self.inventory_origin(batch);
         let local = (self.cursor.0 - ox, self.cursor.1 - oy);
-        let mut tooltip: Option<Vec<(String, u32)>> = None;
+        let mut tooltip: Option<Vec<(horizon_client::text::Text, u32)>> = None;
         {
             let atlas = &self.gui.atlas;
             batch.fill(
@@ -1218,7 +1218,12 @@ impl Game<'_> {
                 self.draw_cartography(batch, ox, oy);
             }
             if kind == Kind::Loom {
-                tooltip = self.draw_loom(batch, ox, oy, local);
+                tooltip = self.draw_loom(batch, ox, oy, local).map(|lines| {
+                    lines
+                        .into_iter()
+                        .map(|(text, color)| (text.into(), color))
+                        .collect()
+                });
             }
             let atlas = &self.gui.atlas;
             let s = self.station.as_ref().expect("open station");
@@ -1394,7 +1399,12 @@ impl Game<'_> {
                                     lines.push((levels, rgba(170, 170, 170, 255)));
                                 }
                             }
-                            tooltip = Some(lines);
+                            tooltip = Some(
+                                lines
+                                    .into_iter()
+                                    .map(|(text, color)| (text.into(), color))
+                                    .collect(),
+                            );
                         }
                     }
                 }
@@ -1503,7 +1513,8 @@ impl Game<'_> {
                                 self.translate(
                                     "container.upgrade.error_tooltip",
                                     "Item can't be upgraded this way",
-                                ),
+                                )
+                                .into(),
                                 u32::MAX,
                             )]);
                         }
@@ -1632,7 +1643,10 @@ impl Game<'_> {
 
     /// `ItemStack.getTooltipLines` subset: name in rarity colour, potion
     /// effects, enchantments (gray, curses red), stored enchantments, trims.
-    pub(super) fn stack_tooltip(&self, stack: &ItemStack) -> Vec<(String, u32)> {
+    pub(super) fn stack_tooltip(
+        &self,
+        stack: &ItemStack,
+    ) -> Vec<(horizon_client::text::Text, u32)> {
         let e: &Enchantments = &self.res.stations().enchantments;
         let props = e.props(&stack.item);
         let rarity = horizon_client::item_tooltip::rarity(
@@ -1835,6 +1849,15 @@ impl Game<'_> {
                 lines.push((self.translate(key, fallback), rgba(255, 85, 85, 255)));
             }
         }
+        let mut lines: Vec<_> = lines
+            .into_iter()
+            .map(|(line, color)| (horizon_client::text::Text::legacy(&line), color))
+            .collect();
+        if display.name_visible(self.screen == Screen::Creative)
+            && let Some(name) = horizon_client::item_tooltip::custom_name_text(stack)
+        {
+            lines[0].0 = name;
+        }
         lines
     }
     /// Menu state for the control socket.
@@ -1863,20 +1886,27 @@ impl Game<'_> {
         self.settings.file.bool("advancedItemTooltips")
     }
     /// `TooltipRenderUtil`: dark box with the purple border, first line spaced.
-    pub(super) fn draw_tooltip_lines(
+    pub(super) fn draw_tooltip_lines<T: Clone + Into<horizon_client::text::Text>>(
         &self,
         batch: &mut HudBatch,
-        lines: &[(String, u32)],
+        lines: &[(T, u32)],
         x: f32,
         y: f32,
     ) {
         if lines.is_empty() {
             return;
         }
+        let lines: Vec<_> = lines
+            .iter()
+            .map(|(text, color)| {
+                let text: horizon_client::text::Text = text.clone().into();
+                (text.resolve_legacy(), *color)
+            })
+            .collect();
         let atlas = &self.gui.atlas;
         let w = lines
             .iter()
-            .map(|(t, _)| HudBatch::text_width(atlas, t))
+            .map(|(t, _)| atlas.font.width_text(t))
             .fold(0.0, f32::max);
         let h = if lines.len() == 1 {
             8.0
@@ -1929,7 +1959,7 @@ impl Game<'_> {
         );
         let mut ty = y;
         for (i, (text, color)) in lines.iter().enumerate() {
-            batch.text(atlas, text, x, ty, *color, true);
+            batch.text_styled(atlas, text, x, ty, *color, true);
             ty += if i == 0 { 12.0 } else { 10.0 };
         }
     }
