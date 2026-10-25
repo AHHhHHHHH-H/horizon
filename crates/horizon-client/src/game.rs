@@ -36,6 +36,7 @@ mod debug_keys;
 mod decorated_pot;
 mod dedicated;
 mod deflect;
+mod discord;
 mod dispense_fixture;
 mod dispenser;
 mod dragon;
@@ -141,6 +142,7 @@ mod sculk;
 mod sculk_fixture;
 mod server_packs;
 mod server_travel;
+mod shader_packs;
 mod shield;
 mod sign_edit;
 mod sniffers;
@@ -1166,6 +1168,8 @@ struct Game<'a> {
     carried: Option<ItemStack>,
     craft_grid: Vec<Option<ItemStack>>,
     craft_size: usize,
+    /// The crafting table the 3x3 grid belongs to (`CraftingMenu.access`).
+    craft_table: Option<[i32; 3]>,
     /// A quick craft drag over inventory slots: (button, game slots so far).
     inv_drag: Option<(i32, Vec<usize>)>,
     /// `AbstractContainerScreen`'s quick craft and skip-release state.
@@ -2914,6 +2918,7 @@ impl Game<'_> {
         }
         if &*name == "minecraft:crafting_table" {
             self.craft_size = 3;
+            self.craft_table = Some(pos);
         } else if &*name == "minecraft:ender_chest" {
             self.open_ender_chest(key);
             self.container_opener_event(key, true);
@@ -5423,6 +5428,7 @@ impl Game<'_> {
             }
         }
         self.craft_size = 2;
+        self.craft_table = None;
         if let Some(key) = self.container.take() {
             self.container_opener_event(key, false);
             self.post_block_game_event(
@@ -9562,13 +9568,13 @@ impl Game<'_> {
                 let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 112.0);
                 let stack = self.inventory[c].clone();
                 self.draw_slot_item(batch, drag.as_ref(), c, stack.clone(), x, y);
-                if let Some(stack) = stack
-                    && self.cursor.0 >= x
+                if self.cursor.0 >= x
                     && self.cursor.0 < x + 16.0
                     && self.cursor.1 >= y
                     && self.cursor.1 < y + 16.0
                 {
-                    hovered = Some(stack);
+                    batch.fill(&self.gui.atlas, x, y, 16.0, 16.0, rgba(255, 255, 255, 128));
+                    hovered = stack;
                 }
             }
             let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
@@ -10085,6 +10091,11 @@ impl Game<'_> {
         } else {
             self.gather_dynamic_lights(camera, alpha);
         }
+        let pack_inputs = if title {
+            Default::default()
+        } else {
+            self.shader_pack_inputs(camera, alpha as f32)
+        };
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
@@ -10168,6 +10179,7 @@ impl Game<'_> {
             hand: &hand,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
             screen: &screen,
+            pack: pack_inputs,
             border,
             game_time: self.world.game_time as f32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
@@ -11418,6 +11430,7 @@ impl ApplicationHandler for Game<'_> {
                     self.track_toggle_screens();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
                     horizon_client::heartbeat::set_lan(self.is_published());
+                    self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
                     // The world ticking in the frame: once its ticks took a
                     // tick's length, the rest are dropped (`FixedStep::tick_fits`).
@@ -11700,7 +11713,11 @@ impl<'a> Game<'a> {
         let inventory = vec![None; 36];
         let now = Instant::now();
         let look = options.look;
-        let particles = horizon_client::particles::ParticleEngine::new(&root, &gui.atlas.sprites);
+        let particles = horizon_client::particles::ParticleEngine::new(
+            &root,
+            &gui.atlas.sprites,
+            &gui.atlas.translucent,
+        );
         Ok(Game {
             res: res.clone(),
             rest_loader: None,
@@ -11737,6 +11754,7 @@ impl<'a> Game<'a> {
             carried: None,
             craft_grid: vec![None; 9],
             craft_size: 2,
+            craft_table: None,
             inv_drag: None,
             tweaks: Default::default(),
             inv_clicks: Default::default(),
@@ -12089,6 +12107,8 @@ enum PendingWorldEntry {
     Server {
         address: String,
         name: String,
+        /// A transfer's carried-over server cookies (`TransferState`).
+        cookies: Option<horizon_client::net::Cookies>,
     },
 }
 
@@ -12163,8 +12183,12 @@ impl Game<'_> {
             }) => {
                 self.open_world(&folder, name.as_deref(), seed, creative, create.as_deref())?;
             }
-            Some(PendingWorldEntry::Server { address, name }) => {
-                self.connect_server(&address, &name)?;
+            Some(PendingWorldEntry::Server {
+                address,
+                name,
+                cookies,
+            }) => {
+                self.connect_server_with_cookies(&address, &name, cookies)?;
             }
             None => {}
         }
@@ -12716,6 +12740,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         hand: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
+        pack: Default::default(),
         border: None,
         game_time: 0.0,
         shader_game_time: 0.0,
@@ -12888,6 +12913,7 @@ fn write_report(game: &Game<'_>) -> Result<()> {
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     EventLoop::new()?.run_app(&mut game)?;
+    horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);
@@ -13245,6 +13271,7 @@ fn run_loading(
     };
     let mut app = App::Loading(Box::new(loading));
     EventLoop::new()?.run_app(&mut app)?;
+    horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut game) => {
             write_report(&game)?;
@@ -13295,6 +13322,14 @@ pub fn run() -> Result<()> {
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
     let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
+    if options.dedicated.is_none() {
+        let automated = options.benchmark.is_some()
+            || options.offscreen
+            || options.frames.is_some()
+            || options.world_frames.is_some();
+        horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
+    }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
