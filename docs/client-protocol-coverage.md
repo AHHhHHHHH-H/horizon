@@ -4,6 +4,9 @@ A successful join or zero `decode_errors` does not establish complete client sup
 A packet must be decoded, applied to client state, and displayed or acted on. A typed
 decoder alone proves none of the later steps.
 
+For the contribution index, known limits, unfinished fixes and a wider audit
+process, see [the client parity handoff](client-parity-handoff.md).
+
 ## Inspect a session
 
 `horizon-ctl --socket PATH status` includes `server.protocol_gaps`:
