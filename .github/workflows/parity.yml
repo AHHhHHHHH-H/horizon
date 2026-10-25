@@ -13,6 +13,14 @@ on:
         description: The commit to check out and test
         type: string
         required: true
+      runner:
+        description: TRIAL ONLY (ci-runners-1) the runner labels, as JSON
+        type: string
+        default: '["self-hosted", "horizon-game"]'
+      all:
+        description: TRIAL ONLY every harness, from scratch
+        type: boolean
+        default: false
 permissions:
   contents: read
 env:
@@ -21,7 +29,7 @@ env:
 
 jobs:
   parity:
-    runs-on: [self-hosted, horizon-game]
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 120  # a change to core crates reruns ~300 harnesses: ~60-90 min on the Mac mini
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +51,10 @@ jobs:
         env:
           PARITY_HOSTS: ''
           BASE_SHA: ${{ inputs.base }}
-        run: python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400  # world_spawn takes ~1480 s on a busy runner
+          ALL: ${{ inputs.all }}
+        run: |
+          if [ "$ALL" = true ]; then python3 tools/parity.py --all --timeout 2400
+          else python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400; fi
       - name: Logs of the failed harnesses
         if: failure()
         uses: actions/upload-artifact@v4

@@ -1,0 +1,40 @@
+name: trial-desktop
+# TRIAL ONLY (ci-runners-1, never merged): the parity job on the desktop's staging runner, a full run on this
+# branch's base, then three pull requests the Mac mini already checked, for timings and identical results.
+on:
+  push:
+    branches: [ci/desktop-parity-trial-2]
+permissions:
+  contents: read
+jobs:
+  full:
+    uses: ./.github/workflows/parity.yml
+    with:
+      base: b4345b1c2bcd6788ae0835dbc6f9e2866ad4d651
+      head: ${{ github.sha }}
+      runner: '["self-hosted", "ludodesktop-staging"]'
+      all: true
+  pr1916:
+    needs: full
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/parity.yml
+    with:
+      base: 96199c23e7ba28ec666bff1309ce6a075a058c17
+      head: ac47b988c9add9ceb575a23a24751084ec43abc6
+      runner: '["self-hosted", "ludodesktop-staging"]'
+  pr1901:
+    needs: pr1916
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/parity.yml
+    with:
+      base: 35a89eaebe28921c12c9b5a05072d3b3f31ab00a
+      head: 574d65a03ca86775593d52472da4b1802f0a7d2a
+      runner: '["self-hosted", "ludodesktop-staging"]'
+  pr1900:
+    needs: pr1901
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/parity.yml
+    with:
+      base: c965aad8d3ad6a837149d6ae5a6e7100c168232d
+      head: 96199c23e7ba28ec666bff1309ce6a075a058c17
+      runner: '["self-hosted", "ludodesktop-staging"]'
