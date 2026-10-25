@@ -1,6 +1,6 @@
 # Make a mod
 
-This guide takes you from nothing to a mod that other players can install from [playhorizon.dev/mods](/mods). You write the mod in Rust. It is compiled to WebAssembly and runs in a sandbox, so a player can see what it may do before turning it on. You need no Minecraft modding experience.
+This guide takes you from nothing to a mod that other players can install from [playhorizon.dev/mods](/mods). You write the mod in Rust, or in Lua ([Write it in Lua](/docs/lua-mods)). It is compiled to WebAssembly and runs in a sandbox, so a player can see what it may do before turning it on. You need no Minecraft modding experience.
 
 ## The path
 
@@ -41,7 +41,7 @@ cargo horizon-mod new my-mod
 cd my-mod
 ```
 
-`new` makes a folder with a working mod in it: a `/hello` command that answers in chat. `--name "My Mod"` sets the name players see, and `--template content` makes a [content mod](/docs/content-mods) instead, with no code. The folder holds:
+`new` makes a folder with a working mod in it: a `/hello` command that answers in chat. `--name "My Mod"` sets the name players see, `--template content` makes a [content mod](/docs/content-mods) instead, with no code, and `--template lua` a [Lua mod](/docs/lua-mods). The folder holds:
 
 ```
 my-mod/

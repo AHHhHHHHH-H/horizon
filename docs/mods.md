@@ -128,7 +128,8 @@ There is no file, socket, process or raw-input interface, on purpose.
 | **wasmtime + component model** | yes: memory, fuel, no imports but ours | yes | WIT → Rust on both sides | 85 ns per empty hook call; 50 ms to compile a 64 KB mod on load | **chosen** |
 | wasmtime, core modules with a hand ABI | yes | yes | no: pointers and lengths by hand | a few ns less per call | not worth the fragile ABI |
 | wasmi (interpreter) | yes | yes | no components | no compile time, execution ~10-50x slower than cranelift code | kept in mind for a platform without JIT |
-| Lua (mlua) or another script | partial (strip the stdlib, hope) | yes | no | fast to write | not Rust; weak sandbox |
+| Lua (mlua) or another script, in the game | partial (strip the stdlib, hope) | yes | no | fast to write | not Rust; weak sandbox |
+| Lua *inside* the WebAssembly sandbox ([`horizon-mod-lua`](#lua-mods)) | yes: the same as any mod | yes | the same API, as Lua tables | the interpreter in the mod (~240 KB); a HUD tick ~60 µs | **offered** as a way in for Lua writers |
 | native `cdylib` plugins | none | no: per OS and arch, unstable Rust ABI | yes | none | unsafe for players |
 | an embedded JVM | none per mod | yes | Java | 100+ MB, seconds of startup | see the research |
 
@@ -238,6 +239,65 @@ cover, then plays the mod in the sandbox for 40 ticks, 120 frames, a chat line
 and each of its commands: it must start and never trap or overrun. It checks a
 `.hpack` and a resource pack `.zip` too, and a signature with `--key <public
 key> --signature <file>.minisig`.
+
+### Lua mods
+
+A mod can be written in Lua 5.4 instead of Rust:
+`cargo horizon-mod new my-mod --template lua` makes one. The interpreter,
+[piccolo](https://github.com/kyren/piccolo) (pure Rust, MIT), is built into
+the mod's WebAssembly component with the script by
+[`horizon-mod-lua`](../crates/horizon-mod-lua/src/lib.rs). So a Lua mod is an
+`.hmod` like any other: the same sandbox, capabilities, time budgets and
+checks. Only the toolchain is shared with Rust mods (`cargo horizon-mod build`
+compiles the interpreter once, in about 30 s).
+
+```lua
+local greeted = 0
+horizon.command("hello")
+
+function on_command(name, args)
+  greeted = greeted + 1
+  horizon.chat.show(string.format("Hello %s! (%d so far)", args, greeted))
+end
+```
+
+- **Hooks are global functions the script defines:** `on_tick(tick)`,
+  `on_frame(seconds)`, `on_command(name, args)` and `on_chat(text)`. The game
+  calls only those that exist. A command returns its feedback as a string, or
+  raises `error(text)` for the red error.
+- **Commands** are registered with `horizon.command(name)` while the script
+  loads.
+- **The API is a table per interface:**
+  - `horizon.game.player()` (a table with `x y z yaw pitch health food
+    dimension`, or nil) and `horizon.game.clock()` (`game_time day_time`).
+  - `horizon.chat.show(text)`.
+  - `horizon.hud.set_panel(corner, lines)`, where the corner is
+    `"top-left"`, ... and the lines are strings or `{text =, color =}`; and
+    `horizon.hud.clear()`.
+  - `horizon.storage.get(key)`, `set(key, value)` (`true`, or `nil` and why)
+    and `delete(key)`.
+  - `horizon.log.info(text)`, ...; `print` writes to the mod's log.
+- **Capabilities are the crate's features too.** The Cargo.toml's
+  `horizon-mod-lua` features list the same capabilities as
+  `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`): only those
+  tables are built in, and the game refuses a mod whose component uses one
+  it didn't declare.
+- **The standard library** is piccolo's: base, `math`, `string` (`len sub
+  lower upper reverse`), `table` (`pack unpack`) and `coroutine`. The mod
+  runtime adds `string.format` (`%d %s %f %x %e %g %q`, with flags, width and
+  precision), `string.rep`, `table.insert`, `table.remove` and `table.concat`.
+  There is no `io` or `os`, and patterns (`string.find`, `gsub`) aren't there
+  yet.
+- **`math.random`** is seeded from a fixed sequence: the sandbox has no
+  entropy.
+
+The example [`coords-hud-lua`](../crates/horizon-mod-sdk/examples/coords-hud-lua/main.lua)
+is [`coords-hud`](../crates/horizon-mod-sdk/examples/coords-hud/src/lib.rs)
+line for line, and the sandbox test runs the same checks on both. With the
+player moving every tick (a new panel each one), a tick costs 54–68 µs in Lua
+against 22–63 µs in Rust on a busy Mac mini M4 Pro
+(`coords_hud_tick_cost_in_rust_and_lua`), under the 0.1 ms the API asks of a
+HUD script.
 
 ### Template layout
 

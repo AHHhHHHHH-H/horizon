@@ -1,7 +1,7 @@
 //! `cargo horizon-mod`: make Horizon mods in Rust (`docs/mods.md`).
 //!
-//! - `new <path> [--template code|content] [--name "Name"] [--sdk-path <dir>]`:
-//!   a mod from a template: a Rust crate, or a content mod (no code).
+//! - `new <path> [--template code|content|lua] [--name "Name"] [--sdk-path <dir>]`:
+//!   a mod from a template: a Rust crate, a content mod (no code), or a Lua mod.
 //! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`, with the mod's
 //!   `assets/` and `data/`; a folder without `Cargo.toml` is content only.
 //! - `run [--game <horizon-client>] [-- <game args>]`: build, then play with
@@ -23,6 +23,8 @@ use std::{
 
 const TARGET: &str = "wasm32-unknown-unknown";
 const SDK_GIT: &str = "{ git = \"https://github.com/ludovic111/horizon\" }";
+/// The Lua runtime from the same repository, with the template's capability.
+const LUA_GIT: &str = "{ git = \"https://github.com/ludovic111/horizon\", features = [\"chat\"] }";
 
 fn main() -> ExitCode {
     // Cargo runs `cargo-horizon-mod horizon-mod <args>`.
@@ -38,7 +40,7 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("registry") => registry::main(&args[1..]),
-        _ => Err("usage: cargo horizon-mod new <path> [--template code|content] | build [--debug] | run [--game <horizon-client>] [-- <game args>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
+        _ => Err("usage: cargo horizon-mod new <path> [--template code|content|lua] | build [--debug] | run [--game <horizon-client>] [-- <game args>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -79,18 +81,26 @@ fn new(args: &[String]) -> Result<(), String> {
         })
         .collect();
     let name = flag(args, "--name").map_or_else(|| base.replace(['-', '_'], " "), str::to_string);
-    let sdk = match flag(args, "--sdk-path") {
+    let (sdk, lua) = match flag(args, "--sdk-path") {
         Some(p) => {
             let p = std::fs::canonicalize(p).map_err(|e| format!("--sdk-path {p}: {e}"))?;
-            format!("{{ path = {:?} }}", p.display().to_string())
+            let lua = p.parent().unwrap_or(&p).join("horizon-mod-lua");
+            (
+                format!("{{ path = {:?} }}", p.display().to_string()),
+                format!(
+                    "{{ path = {:?}, features = [\"chat\"] }}",
+                    lua.display().to_string()
+                ),
+            )
         }
-        None => SDK_GIT.to_string(),
+        None => (SDK_GIT.to_string(), LUA_GIT.to_string()),
     };
     let fill = |t: &str| {
         t.replace("{crate}", &id.replace('_', "-"))
             .replace("{id}", &id)
             .replace("{name}", &name)
             .replace("{sdk}", &sdk)
+            .replace("{lua}", &lua)
     };
     let code = [
         ("Cargo.toml", include_str!("../template/Cargo.toml.in")),
@@ -138,10 +148,19 @@ fn new(args: &[String]) -> Result<(), String> {
         ),
         (".gitignore", include_str!("../template/gitignore")),
     ];
+    // The code template's mod, written in Lua.
+    let lua_files = [
+        ("Cargo.toml", include_str!("../template/lua/Cargo.toml.in")),
+        (MANIFEST, include_str!("../template/lua/horizon-mod.toml")),
+        ("src/lib.rs", include_str!("../template/lua/src/lib.rs")),
+        ("main.lua", include_str!("../template/lua/main.lua")),
+        (".gitignore", include_str!("../template/gitignore")),
+    ];
     let files: &[(&str, &str)] = match flag(args, "--template").unwrap_or("code") {
         "code" => &code,
         "content" => &content,
-        other => return Err(format!("no template {other}: code or content")),
+        "lua" => &lua_files,
+        other => return Err(format!("no template {other}: code, content or lua")),
     };
     for &(file, text) in files {
         let file = fill(file);
@@ -207,6 +226,13 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
 fn compile(root: &Path, release: bool) -> Result<(Vec<u8>, PathBuf), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(cargo);
+    // The Lua runtime's seeds (crates/horizon-mod-lua): getrandom 0.3
+    // takes a custom source only with this cfg.
+    let flags = std::env::var("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS").unwrap_or_default();
+    cmd.env(
+        "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+        format!("{flags} --cfg getrandom_backend=\"custom\"").trim(),
+    );
     cmd.current_dir(root).args([
         "build",
         "--lib",
@@ -320,6 +346,26 @@ mod tests {
     }
 
     #[test]
+    fn the_lua_template_is_a_valid_mod() {
+        let dir = std::env::temp_dir().join(format!("horizon-mod-lua-{}", std::process::id()));
+        let path = dir.join("hello-lua");
+        new(&[
+            path.display().to_string(),
+            "--template".into(),
+            "lua".into(),
+        ])
+        .unwrap();
+        let manifest =
+            Manifest::parse(&std::fs::read_to_string(path.join(MANIFEST)).unwrap()).unwrap();
+        assert_eq!(manifest.capabilities, [horizon_mods::Capability::Chat]);
+        let cargo = std::fs::read_to_string(path.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("horizon-mod-lua = ") && cargo.contains(LUA_GIT));
+        let script = std::fs::read_to_string(path.join("main.lua")).unwrap();
+        assert!(script.contains("horizon.command(\"hello\")"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_content_template_builds_and_checks_with_no_code() {
         let dir = std::env::temp_dir().join(format!("horizon-mod-content-{}", std::process::id()));
         let path = dir.join("gems");
@@ -357,7 +403,7 @@ mod tests {
             new(&[
                 dir.join("x").display().to_string(),
                 "--template".into(),
-                "lua".into()
+                "python".into()
             ])
             .is_err()
         );

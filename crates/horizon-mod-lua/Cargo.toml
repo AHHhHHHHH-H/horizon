@@ -1,0 +1,29 @@
+[package]
+name = "horizon-mod-lua"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Write Horizon mods in Lua: a Lua interpreter (piccolo) running inside the mod's WebAssembly sandbox"
+
+# One feature per capability, as the mod's horizon-mod.toml lists them: the
+# game refuses a mod whose component imports an interface it didn't declare,
+# so only the `horizon.<interface>` tables a feature names are compiled in.
+[features]
+game-read = []
+chat = []
+hud = []
+storage = []
+
+[dependencies]
+horizon-mod-sdk = { path = "../horizon-mod-sdk" }
+# Pure Rust, so it builds for wasm32-unknown-unknown (C Lua needs setjmp). MIT.
+piccolo = "0.3.3"
+
+# piccolo's hash tables (ahash) and math.random (rand) ask getrandom for
+# seeds; a mod has no entropy source, so they get a fixed sequence (below).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+getrandom03 = { package = "getrandom", version = "0.3" }
+
+[lints]
+workspace = true

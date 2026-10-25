@@ -1,5 +1,6 @@
-//! Loads real mods built with the SDK: the coords-hud example and a guest
-//! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
+//! Loads real mods built with the SDK: the coords-hud example (in Rust and
+//! in Lua) and a guest that misbehaves on command. Needs `rustup target add
+//! wasm32-unknown-unknown`.
 use horizon_mods::{
     Clock, Corner, Mods, Output, Package, Player, Snapshot, Status, manifest::componentize,
 };
@@ -27,9 +28,16 @@ fn mods_dir() -> &'static Path {
         let status = Command::new(env!("CARGO"))
             .current_dir(&root)
             .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
+            // As `cargo horizon-mod build` does, for the Lua runtime's seeds.
+            .env(
+                "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+                "--cfg getrandom_backend=\"custom\"",
+            )
             .args([
                 "-p",
                 "coords-hud",
+                "-p",
+                "coords-hud-lua",
                 "-p",
                 "horizon-mods-test-guest",
                 "--target-dir",
@@ -45,8 +53,10 @@ fn mods_dir() -> &'static Path {
         let dir = target.join("mods");
         std::fs::create_dir_all(&dir).unwrap();
         let example = root.join("crates/horizon-mod-sdk/examples/coords-hud/horizon-mod.toml");
+        let lua = root.join("crates/horizon-mod-sdk/examples/coords-hud-lua/horizon-mod.toml");
         let mods = [
             ("coords_hud", std::fs::read_to_string(example).unwrap()),
+            ("coords_hud_lua", std::fs::read_to_string(lua).unwrap()),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
@@ -81,9 +91,19 @@ fn player() -> Snapshot {
     }
 }
 
+/// The same example in Rust and in Lua: the same checks pass for both.
 #[test]
 fn coords_hud_draws_and_answers() {
-    let mut mods = load("coords_hud.hmod");
+    for (hmod, name) in [
+        ("coords_hud.hmod", "Coordinates HUD"),
+        ("coords_hud_lua.hmod", "Coordinates HUD (Lua)"),
+    ] {
+        coords_hud_checks(hmod, name);
+    }
+}
+
+fn coords_hud_checks(hmod: &str, name: &str) {
+    let mut mods = load(hmod);
     assert_eq!(mods.entries()[0].status, Status::Running);
     assert_eq!(mods.commands().collect::<Vec<_>>(), ["where", "coords"]);
     mods.set_snapshot(player());
@@ -102,7 +122,7 @@ fn coords_hud_draws_and_answers() {
 
     assert!(mods.command("where"));
     let chat = Output::Chat {
-        name: "Coordinates HUD".into(),
+        name: name.into(),
         text: "12, 64, -4 in minecraft:overworld".into(),
     };
     assert_eq!(mods.drain(), [chat]);
@@ -115,6 +135,44 @@ fn coords_hud_draws_and_answers() {
     };
     assert_eq!(mods.drain(), [hidden]);
     assert!(!mods.command("gamemode creative"));
+    // On the title screen /where is an error, `error()` in Lua.
+    mods.set_snapshot(Snapshot::default());
+    assert!(mods.command("where"));
+    let error = Output::Feedback {
+        text: "Not in a world".into(),
+        error: true,
+    };
+    assert_eq!(mods.drain(), [error], "{hmod}");
+}
+
+/// What a tick of the HUD example costs, in Rust and in Lua: the player
+/// moves every tick, so each one formats and sends a new panel.
+#[test]
+fn coords_hud_tick_cost_in_rust_and_lua() {
+    for hmod in ["coords_hud.hmod", "coords_hud_lua.hmod"] {
+        let mut mods = load(hmod);
+        let mut snapshot = player();
+        // Warm up: the first calls compile and fill caches.
+        for t in 0..100 {
+            snapshot.player.as_mut().unwrap().x += 0.1;
+            mods.set_snapshot(snapshot.clone());
+            mods.tick(t);
+        }
+        let ticks = 2000;
+        let started = Instant::now();
+        for t in 0..ticks {
+            snapshot.player.as_mut().unwrap().x += 0.1;
+            mods.set_snapshot(snapshot.clone());
+            mods.tick(t);
+        }
+        let per_tick = started.elapsed() / ticks as u32;
+        assert_eq!(mods.entries()[0].status, Status::Running, "{hmod}");
+        println!("{hmod}: {per_tick:?} per tick (a new panel each tick)");
+        assert!(
+            per_tick.as_micros() < 1000,
+            "{hmod} took {per_tick:?} per tick"
+        );
+    }
 }
 
 #[test]

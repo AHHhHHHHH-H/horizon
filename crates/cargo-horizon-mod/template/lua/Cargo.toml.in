@@ -1,0 +1,17 @@
+[package]
+name = "{crate}"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+# The Lua interpreter, built into the mod with main.lua. Its features are the
+# capabilities horizon-mod.toml lists (game-read, chat, hud, storage): keep
+# the two lists the same.
+[dependencies]
+horizon-mod-lua = {lua}
+
+[profile.release]
+opt-level = "s"
+lto = true
