@@ -99,6 +99,8 @@ What real mods need next, in the order modpacks and servers need it:
 
 ## Changelog
 
+- Experimental `render` (`experimental = ["render"]`): HUD shapes (fill, quad, sprite, item, text), `gui-size`, camera
+  `shake`, drawn by the game's own renderer.
 - SDK: `horizon-mod-lua`, mods written in Lua 5.4 (the interpreter built into the mod, same sandbox and API);
   `cargo horizon-mod new --template lua`; example `coords-hud-lua`.
 - API 0.2 (content): data-driven blocks and items, tags, `horizon:add_to`, terrain adaptation.
