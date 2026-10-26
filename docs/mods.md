@@ -288,7 +288,8 @@ end
   `horizon-mod-lua` features list the same capabilities as
   `horizon-mod.toml` (`game-read`, `chat`, `hud`, `storage`): only those
   tables are built in, and the game refuses a mod whose component uses one
-  it didn't declare.
+  it didn't declare. A capability in the manifest but not in the features
+  leaves its table out: the script fails with `attempt to index a nil value`.
 - **The standard library** is piccolo's: base, `math`, `string` (`len sub
   lower upper reverse`), `table` (`pack unpack`) and `coroutine`. The mod
   runtime adds `string.format` (`%d %s %f %x %e %g %q`, with flags, width and
