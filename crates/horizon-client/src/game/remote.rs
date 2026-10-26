@@ -3343,6 +3343,12 @@ impl Game<'_> {
                     self.audio
                         .play("minecraft:entity.player.swim", Some(feet), volume, pitch);
                 }
+                // NetherPortalBlock.entityInside on the client's own level:
+                // the portal overlay and its trigger sound (the server moves
+                // the player).
+                horizon_client::motion::MotionEvent::InsidePortal { .. } => {
+                    self.client_inside_nether_portal();
+                }
                 _ => {}
             }
         }
@@ -4826,6 +4832,34 @@ impl Game<'_> {
             input: if input == Input::Throw { 4 } else { 0 },
             changed: Vec::new(),
             carried,
+        }));
+    }
+    /// `CreativeModeInventoryScreen.slotClicked` outside the window: the server knows nothing of
+    /// a stack picked from the creative screen, so the carried stack (an item tab's right click:
+    /// one of it) is dropped through `handleCreativeModeItemDrop`, a SetCreativeModeSlot to slot
+    /// -1, and the hand swings as `Player.drop` predicts.
+    pub(super) fn remote_creative_drop(&mut self, right: bool) {
+        let one = right && !self.creative_inventory_open();
+        let Some(carried) = self.carried.as_mut() else {
+            return;
+        };
+        let thrown = if one && carried.count > 1 {
+            carried.count -= 1;
+            ItemStack {
+                count: 1,
+                ..carried.clone()
+            }
+        } else {
+            self.carried.take().expect("carried")
+        };
+        if !self.creative {
+            return;
+        }
+        self.swing_arm();
+        let item = self.to_network(&Some(thrown));
+        self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot: -1,
+            item,
         }));
     }
     pub(super) fn remote_close_container(&mut self) {

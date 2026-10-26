@@ -558,6 +558,8 @@ struct GameLevel<'w> {
     /// Where the chunk tickets let blocks tick.
     tickets: horizon_client::ticket_levels::Levels,
     random_tick_sections: &'w mut horizon_client::random_tick_sections::RandomTickSections,
+    /// Players with each chest open (a trapped chest's signal).
+    lid_openers: &'w HashMap<(i32, i32, i32), i32>,
 }
 struct PlayerCollision {
     y: f64,
@@ -693,6 +695,10 @@ impl LevelAccess for GameLevel<'_> {
         _state: BlockStateId,
         _direction: Direction,
     ) -> i32 {
+        // TrappedChestBlock.getSignal: the players with it open, at most 15.
+        if let Some(count) = self.lid_openers.get(&(pos.x, pos.y, pos.z)) {
+            return (*count).clamp(0, 15);
+        }
         jukebox::jukebox_signals(self.world, self.items, pos).map_or(0, |(signal, _)| signal)
     }
     fn biome_name(&self, pos: BlockPos) -> Option<&str> {
@@ -1505,7 +1511,7 @@ struct Game<'a> {
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
-    /// Horizon's extras (zoom, FPS counter, keystrokes): `game/extras.rs`.
+    /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
@@ -2203,7 +2209,7 @@ impl Game<'_> {
         self.player_drop(thrown);
     }
     /// `Player.drop`: the statistics and a thrown item entity in front of the player.
-    fn player_drop(&mut self, thrown: ItemStack) {
+    pub(super) fn player_drop(&mut self, thrown: ItemStack) {
         let Some(eye) = self.eye_position() else {
             return;
         };
@@ -2474,6 +2480,7 @@ impl Game<'_> {
             spill: &mut self.spill,
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
+            lid_openers: &self.lid_openers,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
         self.flush_spill();
@@ -6512,7 +6519,11 @@ impl Game<'_> {
         use horizon_client::menu::Input;
         let button = i32::from(right);
         if self.remote.is_some() {
-            self.remote_throw(right, input);
+            if self.screen == Screen::Creative {
+                self.remote_creative_drop(right);
+            } else {
+                self.remote_throw(right, input);
+            }
             return;
         }
         let before = self.carried.clone();
@@ -10496,7 +10507,10 @@ impl Game<'_> {
             menu_blur: self.menu_blur(),
         };
         let result = match self.renderer.as_mut() {
-            Some(renderer) => horizon_client::spans::time("renderer", || renderer.render(&frame)),
+            Some(renderer) => {
+                renderer.set_pass_timing(self.debug);
+                horizon_client::spans::time("renderer", || renderer.render(&frame))
+            }
             None => Err("renderer".into()),
         };
         // Restore storage even when rendering fails (for example, a lost surface).
@@ -11296,7 +11310,6 @@ impl ApplicationHandler for Game<'_> {
                         && self.sleeping.is_none()
                         && self.player.is_some()
                         && !self.mod_wheel(d)
-                        && !self.extras_scroll(d)
                         && let Some((wheel, (_, vertical_steps))) =
                             self.mouse
                                 .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
@@ -11707,7 +11720,6 @@ impl ApplicationHandler for Game<'_> {
                     let PhysicalKey::Code(key) = event.physical_key else {
                         return Ok(());
                     };
-                    self.extras_key(key, event.state == ElementState::Pressed, event.repeat);
                     self.mod_key(key, event.state == ElementState::Pressed, event.repeat);
                     // key.smoothCamera toggles the cinematic camera.
                     if self.screen == Screen::Playing
