@@ -976,7 +976,7 @@ pub const ALL: &[Def] = &[
             "entity.camel.death"
         ],
         Some("entity.camel.step"),
-        Baby::Abs(0.95, 1.4, 1.38)
+        Baby::Scale(0.6, None)
     ),
     def!(
         HappyGhast,
