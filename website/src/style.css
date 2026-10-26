@@ -81,7 +81,7 @@ code {
   text-wrap: balance;
 }
 .lede { max-width: var(--measure); color: var(--muted); text-wrap: pretty; }
-.kicker, .meta, .download-meta, .eyebrow, .row-index, .row-meta, .disclaimer {
+.kicker, .meta, .download-meta, .eyebrow, .row-index, .row-meta, .disclaimer, .partner-label {
   font: var(--text-micro-weight) var(--text-micro) / var(--text-micro-line) var(--mono);
   letter-spacing: var(--text-micro-tracking);
   color: var(--muted);
@@ -381,7 +381,7 @@ figcaption span { font-family: var(--mono); font-size: var(--text-micro); letter
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .js .reveal, .js .reveal-media, .js .systems .system { transform: none; filter: none; transition: opacity 200ms linear; }
-  .menu nav a { transform: none; }
+  .menu nav a, .partner-link:hover { transform: none; }
 }
 
 /* --- Touch: every target at least 44 px high ------------------------------------------- */
@@ -391,6 +391,15 @@ figcaption span { font-family: var(--mono); font-size: var(--text-micro); letter
   .nav-mark, .theme-toggle, .nav-github { min-height: 44px; }
   .link-arrow, .footer-links a { display: inline-flex; align-items: center; min-height: 44px; }
 }
+
+/* --- Partner: a sponsor's banner, labelled so it reads as one -------------------------------- */
+
+.partner { max-width: 880px; margin: 0 auto; }
+.docs-main .partner { margin: 28px 0 0; max-width: 72ch; }
+.partner-label { text-transform: uppercase; margin-bottom: 8px; }
+.partner-link { display: block; transition: transform var(--quick) var(--ease-quick), filter var(--quick) var(--ease-quick); }
+.partner-link img { display: block; width: 100%; height: auto; }
+.partner-link:hover { transform: translateY(-2px); filter: brightness(1.06); }
 
 /* --- Narrow screens ------------------------------------------------------------------------ */
 
