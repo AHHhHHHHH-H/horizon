@@ -1,0 +1,46 @@
+name: trial-desktop
+# TRIAL ONLY (ci-runners-1, never merged): the desktop's staging runner. A full run of every harness on this commit,
+# then, on the heads of PRs #1916, #1901 and #1900, the exact harnesses the Mac mini's parity job ran there
+# (.github/trial/names-<pr>.txt, all passed on the Mac), to compare results and timings.
+on:
+  push:
+    branches: [ci/desktop-parity-trial-3]
+permissions:
+  contents: read
+env:
+  HORIZON_TELEMETRY_URL: "off"
+jobs:
+  run:
+    runs-on: [self-hosted, ludodesktop-staging]
+    timeout-minutes: 240
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - {name: full, head: '', names: ''}
+          - {name: pr1916, head: ac47b988c9add9ceb575a23a24751084ec43abc6, names: names-1916.txt}
+          - {name: pr1901, head: 574d65a03ca86775593d52472da4b1802f0a7d2a, names: names-1901.txt}
+          - {name: pr1900, head: 96199c23e7ba28ec666bff1309ce6a075a058c17, names: names-1900.txt}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.head || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          clean: false
+      - name: The harness list of this trial
+        if: matrix.names != ''
+        run: git show "$GITHUB_SHA:.github/trial/${{ matrix.names }}" > "$RUNNER_TEMP/names.txt"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tools from the runner
+        run: bash tools/ci/runner-env.sh
+      - name: Vanilla data, and resources prepared by this preparer
+        run: bash tools/ci/vanilla-data.sh
+      - name: Harnesses
+        env:
+          PARITY_HOSTS: ''
+        run: |
+          if [ -s "$RUNNER_TEMP/names.txt" ]; then python3 tools/parity.py $(cat "$RUNNER_TEMP/names.txt") --timeout 2400
+          else python3 tools/parity.py --all --timeout 2400; fi
