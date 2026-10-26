@@ -1,0 +1,29 @@
+name: site-redeploy
+# playhorizon.dev is built by ludovic111/horizon-site (Railway), which reads these files from this repository's
+# main at build time. When one of them changes on main, rebuild the site from its source so it shows the new ones.
+# Push and manual runs only: never pull requests, so a fork can't reach the token.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'launcher/links.json'
+      - 'docs/api/**'
+      - 'roadmap/roadmap.json'
+      - 'crates/horizon-theme/tokens.css'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: site-redeploy
+  cancel-in-progress: false
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # RAILWAY_TOKEN: a project token of horizon-site, environment production only ("horizon main → site redeploy").
+      # Plain `redeploy` would reuse the last image; --from-source builds again, so the build reads main afresh.
+      - name: Rebuild the site
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: npx --yes @railway/cli@5.71.0 redeploy --from-source --yes --service 0e91d5b1-87c6-4785-b5cd-e6773b011812
