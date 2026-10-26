@@ -1,0 +1,29 @@
+name: trial-playhorizon
+# TRIAL ONLY (never merged): playhorizon's staging runner (label playhorizon). A full run of every harness on this
+# commit, to compare results and timings with the Mac mini (full run ~80 min) before it gets horizon-game.
+on:
+  push:
+    branches: [ci/playhorizon-parity-trial]
+permissions:
+  contents: read
+env:
+  HORIZON_TELEMETRY_URL: "off"
+jobs:
+  full:
+    runs-on: [self-hosted, playhorizon]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          clean: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tools from the runner
+        run: bash tools/ci/runner-env.sh
+      - name: Vanilla data, and resources prepared by this preparer
+        run: bash tools/ci/vanilla-data.sh
+      - name: Harnesses
+        env:
+          PARITY_HOSTS: ''
+        run: python3 tools/parity.py --all --timeout 2400
