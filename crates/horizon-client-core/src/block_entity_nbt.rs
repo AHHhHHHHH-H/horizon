@@ -62,7 +62,7 @@ fn f32_tag(v: f32) -> Tag {
 }
 
 /// `TheEndGatewayBlockEntity.loadAdditional`: BlockPos.CODEC and Level.isInSpawnableBounds.
-pub(crate) fn gateway_exit(tag: &Tag) -> Option<[i32; 3]> {
+pub fn gateway_exit(tag: &Tag) -> Option<[i32; 3]> {
     let Tag::IntArray(v) = tag else { return None };
     let p: [i32; 3] = v.as_slice().try_into().ok()?;
     ((-30_000_000..30_000_000).contains(&p[0])
