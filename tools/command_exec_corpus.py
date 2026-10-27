@@ -182,6 +182,23 @@ def player_state():
         cmd('/item modify entity @s weapon.mainhand {type:"minecraft:set_count",count:1}'),
         cmd('/clear @s'),
         cmd('/clear @s'),
+        # Inventory.clearOrCountMatchingItems visits the off hand as well as
+        # the main inventory, and consumes limited clears in inventory-slot order.
+        cmd('/item replace entity @s weapon.offhand with minecraft:shield'),
+        cmd('/clear @s minecraft:shield 0'),
+        cmd('/clear @s minecraft:shield 1'),
+        cmd('/clear @s minecraft:shield 0'),
+        cmd('/item replace entity @s weapon.offhand with minecraft:stone 5'),
+        cmd('/clear @s minecraft:stone 2'),
+        cmd('/clear @s minecraft:stone 0'),
+        cmd('/clear @s'),
+        cmd('/clear @s minecraft:stone 0'),
+        cmd('/item replace entity @s armor.head with minecraft:iron_helmet'),
+        cmd('/item replace entity @s armor.feet with minecraft:iron_boots'),
+        cmd('/clear @s * 1'),
+        cmd('/clear @s minecraft:iron_boots 0'),
+        cmd('/clear @s minecraft:iron_helmet 0'),
+        cmd('/clear @s'),
         cmd('/attribute @s minecraft:max_health get'),
         cmd('/attribute @s minecraft:max_health base get'),
         cmd('/attribute @s minecraft:max_health base set 30'),
@@ -224,6 +241,12 @@ def world_blocks():
         cmd('/clone 0 205 0 4 207 4 6 205 6 masked'),
         cmd('/execute if blocks 0 205 0 4 207 4 6 205 6 all'),
         cmd('/setblock 3 206 3 minecraft:air'),
+        # A container keeps its loot table and seed until its items change
+        # (RandomizableContainer.tryLoadLootTable / trySaveLootTable).
+        cmd('/setblock 7 206 7 minecraft:chest{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'),
+        cmd('/data get block 7 206 7'),
+        cmd('/data get block 7 206 7 LootTableSeed'),
+        cmd('/setblock 7 206 7 minecraft:air'),
         # A hopper placed into power turns `enabled=false` and keeps its block entity.
         cmd('/setblock 5 205 5 minecraft:redstone_block'),
         cmd('/setblock 5 206 5 minecraft:hopper'),
@@ -304,6 +327,17 @@ def entities():
         cmd('/data get entity @e[tag=attr,limit=1] Health'),
         cmd('/attribute @e[tag=attr,limit=1] minecraft:attack_damage base get'),
         cmd('/kill @e[tag=attr]'),
+        # An End crystal is an entity of its own: a type selector finds it,
+        # reads it and kills it (#1531).
+        cmd('/summon minecraft:end_crystal 4.5 210 8.5'),
+        cmd('/execute if entity @e[type=minecraft:end_crystal]'),
+        cmd('/data get entity @e[type=minecraft:end_crystal,limit=1] Pos'),
+        cmd('/kill @e[type=minecraft:end_crystal]'),
+        cmd('/execute if entity @e[type=minecraft:end_crystal]'),
+        cmd('/summon minecraft:ender_dragon 4.5 210 8.5'),
+        cmd('/execute if entity @e[type=minecraft:ender_dragon]'),
+        cmd('/data get entity @e[type=minecraft:ender_dragon,limit=1] Pos'),
+        cmd('/kill @e[type=minecraft:ender_dragon]'),
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),
@@ -510,13 +544,21 @@ def execute():
 
 def levels():
     """A nether portal round trip: on the way back the Overworld's entities (the
-    pig left by `entities`) are found and a summon names what it summoned."""
+    pig left by `entities`) are found and a summon names what it summoned. An
+    unbounded selector also reaches the level the player is not in, while a
+    bounded one does not."""
     return [
         *setup('/fill 2 231 12 5 236 12 minecraft:obsidian', '/fill 3 232 12 4 235 12 minecraft:nether_portal[axis=x]',
-               '/tp @s 3.5 232 12.5 0 0'),
+               '/tp @s 3.5 232 12.5 0 0',
+               # A cow in the Overworld, in a chunk that stays loaded while the
+               # player is in the nether.
+               '/forceload add 0 0',
+               '/summon minecraft:cow 10.5 210 4.5 {NoAI:1b,NoGravity:1b,Tags:["remote_cow"]}'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:the_nether run say through the portal'),
+        cmd('/data get entity @e[tag=remote_cow,limit=1] Pos'),
+        cmd('/data get entity @e[tag=remote_cow,distance=..128,limit=1] Pos'),
         {'op': 'portal'},
         {'op': 'settle'},
         cmd('/execute if dimension minecraft:overworld run say back through the portal'),
@@ -611,7 +653,9 @@ def world_misc():
         cmd('/fill 0 210 0 2 212 2 minecraft:glass keep'),
         cmd('/fill 0 210 0 2 212 2 minecraft:dirt replace #minecraft:base_stone_overworld'),
         cmd('/fill 0 210 0 2 212 2 minecraft:air strict'),
-        cmd('/fill 0 210 0 100 300 100 minecraft:stone'),
+        # A connected server loads more terrain than the oracle's 5x5 core.
+        # Keep the far corner unambiguously unloaded in both executions.
+        cmd('/fill 0 210 0 1000 300 1000 minecraft:stone'),
         cmd('/setblock 0 211 0 minecraft:oak_sign{front_text:{messages:["a","b","c","d"]}}'),
         cmd('/data get block 0 211 0 front_text.messages'),
         cmd('/clone 0 211 0 0 211 0 1 211 1 replace move'),
@@ -814,6 +858,9 @@ def functions_and_packs():
 
 def ticking():
     return [
+        # Isolate named-stream commands from earlier loot rolls, including
+        # ocean vegetation updated while asynchronous terrain loads settle.
+        *setup('/random reset *'),
         cmd('/tick query'),
         cmd('/tick rate 40'),
         cmd('/tick query'),
@@ -1046,9 +1093,25 @@ def test_command():
     ]
 
 
+def server_clock():
+    """Only explicit tick operations advance the script's authoritative clock."""
+    return [
+        *setup('/scoreboard objectives add harness_clock dummy',
+               '/execute store result score before harness_clock run time query gametime'),
+        {'op': 'tick', 'n': 3},
+        *setup('/execute store result score elapsed harness_clock run time query gametime',
+               '/scoreboard players operation elapsed harness_clock -= before harness_clock'),
+        cmd('/scoreboard players get elapsed harness_clock'),
+        # The connected owner is the only player; @s and @a use the same body.
+        cmd('/execute as @a run say connected owner'),
+        *setup('/scoreboard objectives remove harness_clock'),
+    ]
+
+
 def groups():
     return [
         ('setup', group_setup()),
+        ('server clock', server_clock()),
         ('client commands', client_commands()),
         ('game state', game_state()),
         ('player state', player_state()),

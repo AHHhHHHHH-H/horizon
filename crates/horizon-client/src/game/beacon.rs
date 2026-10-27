@@ -164,9 +164,33 @@ impl Game<'_> {
             let (was, is) = (previous > 0, b.levels > 0);
             if !was && is {
                 self.beacon_sound([x, y, z], "minecraft:block.beacon.activate");
+                let levels = b.levels;
+                self.for_each_player(|g| g.beacon_constructed([x, y, z], levels));
             } else if was && !is {
                 self.beacon_sound([x, y, z], "minecraft:block.beacon.deactivate");
             }
+        }
+    }
+    /// `BeaconBlockEntity.tick` after activating: `CONSTRUCT_BEACON` for a
+    /// player in the box `AABB(x, y, z, x, y - 4, z).inflate(10, 5, 10)`.
+    fn beacon_constructed(&mut self, p: [i32; 3], levels: i32) {
+        let Some(bb) = self
+            .player
+            .as_ref()
+            .map(|pl| pl.dimensions.bounds(pl.position))
+        else {
+            return;
+        };
+        let (lo, hi) = (bb.min_position(), bb.max_position());
+        let [x, y, z] = p.map(f64::from);
+        if lo.x < x + 10.0
+            && hi.x > x - 10.0
+            && lo.y < y + 5.0
+            && hi.y > y - 9.0
+            && lo.z < z + 10.0
+            && hi.z > z - 10.0
+        {
+            self.trigger_construct_beacon(levels);
         }
     }
     pub(super) fn beacon_sound(&mut self, p: [i32; 3], sound: &str) {
@@ -515,11 +539,15 @@ impl Game<'_> {
         if self.carried.is_some() {
             self.draw_carried(batch);
         } else if let Some(stack) = stack_tip {
-            let lines = self.stack_tooltip(&stack);
-            self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
+            self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
         } else if let Some(key) = tooltip {
             let text = self.translate(&key, &key);
-            self.draw_tooltip_lines(batch, &[(text, u32::MAX)], self.cursor.0, self.cursor.1);
+            self.draw_tooltip_lines(
+                batch,
+                &[(horizon_client::text::Text::literal(text), u32::MAX)],
+                self.cursor.0,
+                self.cursor.1,
+            );
         }
     }
     /// `BeaconRenderer`: each section's rotating solid beam and its glow.

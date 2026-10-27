@@ -1,6 +1,10 @@
 //! Container block entities: chests/barrels (27 slots) and the three furnace
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
+pub use crate::chunk::block_entity::{
+    Banner, Beacon, BlockEntity, Campfire, ChiseledBookshelf, Crafter, CreakingHeart, EndGateway,
+    Furnace, FurnaceKind, Jukebox, Lectern, Skull, SkullSkin,
+};
 use crate::{
     crafting::Recipes,
     items::{ItemStack, Items},
@@ -8,12 +12,6 @@ use crate::{
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FurnaceKind {
-    Furnace,
-    BlastFurnace,
-    Smoker,
-}
 impl FurnaceKind {
     pub fn recipe_type(self) -> &'static str {
         match self {
@@ -34,67 +32,109 @@ impl FurnaceKind {
         }
     }
 }
-#[derive(Clone, Debug)]
-pub struct Furnace {
-    pub kind: FurnaceKind,
-    /// input, fuel, result
-    pub items: [Option<ItemStack>; 3],
-    pub lit_remaining: i32,
-    pub lit_total: i32,
-    pub cooking_timer: i32,
-    pub cooking_total: i32,
-    pub speed: f32,
-    /// `AbstractFurnaceBlockEntity.recipesUsed`: how many of each recipe this furnace has
-    /// made since a player last took from its output. The experience is owed per recipe
-    /// rather than per item, and a save keeps it as the `RecipesUsed` compound.
-    pub recipes_used: HashMap<String, u32>,
+/// The key `recipes_used` keeps a recipe under: its full id, as vanilla's `ResourceKey<Recipe>`
+/// writes it in `RecipesUsed`. Horizon's own recipe ids are file names without the namespace, so
+/// keeping both forms would write a key twice, and vanilla refuses such a furnace
+/// ("Duplicate entry for key").
+pub fn recipe_used_key(id: &str) -> String {
+    if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("minecraft:{id}")
+    }
 }
 /// A hopper's slots: the only plain container with five.
 pub const HOPPER_SLOTS: usize = 5;
 
-#[derive(Clone, Debug)]
-pub enum BlockEntity {
-    Chest(Vec<Option<ItemStack>>),
-    Furnace(Furnace),
-    Brewing(Box<crate::brewing::BrewingStand>),
-    /// Signs and hanging signs (`SignBlockEntity`).
-    Sign(crate::signs::SignData),
-    /// `JukeboxBlockEntity`: the record and its `JukeboxSongPlayer`.
-    Jukebox(Jukebox),
-    /// `BeaconBlockEntity`.
-    Beacon(Box<Beacon>),
-    /// `LecternBlockEntity`: the book and the open page.
-    Lectern(Lectern),
-    /// Sculk sensors, shriekers and catalysts (`crate::sculk`).
-    Sculk(Box<crate::sculk::SculkEntity>),
-    /// `CreakingHeartBlockEntity`: its protector and the hurt emitter.
-    CreakingHeart(Box<CreakingHeart>),
-    /// `BannerBlockEntity`: the pattern layers.
-    Banner(Banner),
-    /// `CrafterBlockEntity`.
-    Crafter(Crafter),
-    /// `SpawnerBlockEntity` (`crate::mobs::spawner`).
-    Spawner(Box<crate::mobs::spawner::Spawner>),
-    /// `TrialSpawnerBlockEntity` (`crate::mobs::trial_spawner`).
-    TrialSpawner(Box<crate::mobs::trial_spawner::TrialSpawner>),
-    /// `VaultBlockEntity` (`crate::vault`).
-    Vault(Box<crate::vault::Vault>),
-    /// `BeehiveBlockEntity` of beehives and bee nests (`crate::beehive`).
-    Beehive(Box<crate::beehive::Beehive>),
-    /// `CommandBlockEntity` of the three command blocks (`crate::command_block`).
-    CommandBlock(Box<crate::command_block::CommandBlock>),
+impl Campfire {
+    /// `placeFood`'s slot: the first empty one, given the item's
+    /// `campfire_cooking` time; it takes one item of `held`.
+    pub fn place_food(&mut self, held: &mut ItemStack, cooking_time: i32) -> bool {
+        let Some(slot) = self.items.iter().position(Option::is_none) else {
+            return false;
+        };
+        self.total[slot] = cooking_time;
+        self.progress[slot] = 0;
+        self.items[slot] = Some(ItemStack {
+            count: 1,
+            ..held.clone()
+        });
+        held.count = held.count.saturating_sub(1);
+        true
+    }
+    /// `cookTick` (lit): each item's progress rises by one; the slots whose
+    /// progress reached their cooking time give up their item (the caller
+    /// drops its result).
+    pub fn cook_tick(&mut self) -> Vec<(usize, ItemStack)> {
+        let mut done = Vec::new();
+        for i in 0..4 {
+            if self.items[i].is_none() {
+                continue;
+            }
+            self.progress[i] += 1;
+            if self.progress[i] >= self.total[i]
+                && let Some(item) = self.items[i].take()
+            {
+                done.push((i, item));
+            }
+        }
+        done
+    }
+    /// `cooldownTick` (unlit): the progress falls by two, no lower than 0.
+    /// Whether anything changed (`setChanged`).
+    pub fn cooldown_tick(&mut self) -> bool {
+        let mut changed = false;
+        for i in 0..4 {
+            if self.progress[i] > 0 {
+                changed = true;
+                self.progress[i] = (self.progress[i] - 2).clamp(0, self.total[i]);
+            }
+        }
+        changed
+    }
 }
-/// `CrafterBlockEntity`: nine slots that can be disabled, the powered flag
-/// and the ticks left in the crafting animation.
-#[derive(Clone, Debug, Default)]
-pub struct Crafter {
-    pub items: [Option<ItemStack>; 9],
-    pub disabled: [bool; 9],
-    pub triggered: bool,
-    pub crafting_ticks: i32,
-    /// The block state's `triggered` when last ticked (not saved): the block
-    /// entity flag follows it only when it changes (`CrafterBlock.neighborChanged`).
-    pub state_triggered: Option<bool>,
+impl Skull {
+    pub fn new(
+        profile: Option<horizon_world::nbt::Tag>,
+        note_block_sound: Option<String>,
+        custom_name: Option<horizon_world::nbt::Tag>,
+    ) -> Self {
+        let skin = profile.as_ref().map(SkullSkin::of);
+        Self {
+            profile,
+            note_block_sound,
+            custom_name,
+            skin,
+        }
+    }
+}
+impl SkullSkin {
+    pub fn of(profile: &horizon_world::nbt::Tag) -> Self {
+        let download = crate::skins::profile_skin_url_nbt(profile).and_then(|url| {
+            let location = crate::skins::skin_location(&crate::skins::texture_hash(&url)?);
+            Some((url, location))
+        });
+        // A `Dynamic` profile (a name or id only) resolves through the
+        // services when the skull is drawn.
+        let dynamic = crate::skins::dynamic_nbt(profile);
+        // DefaultPlayerSkin.get(id), or getDefaultSkin (slim steve) without an id.
+        let fallback = crate::skins::profile_uuid_nbt(profile)
+            .or_else(|| {
+                crate::skins::nbt_text(profile.get("name"))
+                    .map(|name| horizon_protocol::crypto::offline_uuid(&name))
+            })
+            .map_or("entity/player/slim/steve", crate::tab_list::default_skin);
+        Self {
+            download,
+            dynamic,
+            fallback,
+        }
+    }
+}
+/// The skull and head blocks (`SkullBlock`, `WallSkullBlock`): every
+/// `*_skull` and `*_head` but the piston's head.
+fn is_skull(name: &str) -> bool {
+    name.ends_with("_skull") || (name.ends_with("_head") && name != "minecraft:piston_head")
 }
 impl Crafter {
     /// `slotCanBeDisabled`: only empty slots.
@@ -134,48 +174,6 @@ impl Crafter {
                 }
         })
     }
-}
-#[derive(Clone, Debug, Default)]
-pub struct Banner {
-    pub layers: Vec<crate::banner::BannerLayer>,
-    pub name: Option<String>,
-    /// Components not consumed by BannerBlockEntity's implicit fields.
-    pub components: horizon_world::nbt::Compound,
-}
-/// `CreakingHeartBlockEntity` (the logic is in `game/creaking.rs`).
-#[derive(Clone, Debug, Default)]
-pub struct CreakingHeart {
-    /// The protector: its entity id once resolved, and its UUID (the saved form).
-    pub creaking: Option<(Option<u32>, [i32; 4])>,
-    pub ticks_existed: i64,
-    pub ticker: i32,
-    /// Ticks left of the hurt effect (`emitter`) and where it heads.
-    pub emitter: i32,
-    pub emitter_target: Option<[f64; 3]>,
-    pub output_signal: i32,
-}
-#[derive(Clone, Debug, Default)]
-pub struct Lectern {
-    pub book: Option<ItemStack>,
-    pub page: i32,
-}
-#[derive(Clone, Debug, Default)]
-pub struct Beacon {
-    pub levels: i32,
-    /// Effect ids (`minecraft:speed`).
-    pub primary: Option<String>,
-    pub secondary: Option<String>,
-    /// Beam sections (RGB colour, height) and the ones being rebuilt.
-    pub sections: Vec<(u32, i32)>,
-    pub checking: Vec<(u32, i32)>,
-    pub last_check_y: i32,
-}
-#[derive(Clone, Debug, Default)]
-pub struct Jukebox {
-    pub record: Option<ItemStack>,
-    /// `ticks_since_song_started`, while a song plays.
-    pub ticks: i64,
-    pub playing: bool,
 }
 impl BlockEntity {
     pub fn for_block(name: &str) -> Option<Self> {
@@ -238,6 +236,15 @@ impl BlockEntity {
         if name.ends_with("_banner") {
             return Some(Self::Banner(Banner::default()));
         }
+        if is_skull(name) {
+            return Some(Self::Skull(Skull::default()));
+        }
+        if name == "minecraft:end_gateway" {
+            return Some(Self::EndGateway(EndGateway::default()));
+        }
+        if name == "minecraft:daylight_detector" {
+            return Some(Self::DaylightDetector);
+        }
         if name == "minecraft:beacon" {
             return Some(Self::Beacon(Box::new(Beacon {
                 last_check_y: i32::MIN / 2,
@@ -246,6 +253,12 @@ impl BlockEntity {
         }
         if name == "minecraft:brewing_stand" {
             return Some(Self::Brewing(Box::new(crate::brewing::BrewingStand::new())));
+        }
+        if name == "minecraft:campfire" || name == "minecraft:soul_campfire" {
+            return Some(Self::Campfire(Box::default()));
+        }
+        if name == "minecraft:chiseled_bookshelf" {
+            return Some(Self::ChiseledBookshelf(Box::default()));
         }
         let size = match name {
             "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => 27,
@@ -283,6 +296,11 @@ impl BlockEntity {
             Self::Vault(_) => "minecraft:vault",
             Self::Beehive(_) => "minecraft:beehive",
             Self::CommandBlock(_) => "minecraft:command_block",
+            Self::Skull(_) => "minecraft:skull",
+            Self::EndGateway(_) => "minecraft:end_gateway",
+            Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Campfire(_) => "minecraft:campfire",
+            Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
         }
     }
     pub fn contents(&self) -> Vec<ItemStack> {
@@ -298,11 +316,16 @@ impl BlockEntity {
             | Self::TrialSpawner(_)
             | Self::Vault(_)
             | Self::Beehive(_)
-            | Self::CommandBlock(_) => Vec::new(),
+            | Self::CommandBlock(_)
+            | Self::EndGateway(_)
+            | Self::Skull(_)
+            | Self::DaylightDetector => Vec::new(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
             Self::Banner(_) => Vec::new(),
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
+            Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
+            Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
         }
     }
     pub fn slots(&self) -> &[Option<ItemStack>] {
@@ -315,14 +338,20 @@ impl BlockEntity {
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
-            | Self::Banner(_) => &[],
+            | Self::Banner(_)
+            | Self::EndGateway(_)
+            | Self::Skull(_)
+            | Self::DaylightDetector => &[],
             Self::Crafter(c) => &c.items,
+            Self::ChiseledBookshelf(b) => &b.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
             | Self::Vault(_)
             | Self::Beehive(_)
-            | Self::CommandBlock(_) => &[],
+            | Self::CommandBlock(_)
+            // Not a Container (only Clearable): hoppers don't reach in.
+            | Self::Campfire(_) => &[],
         }
     }
     pub fn slots_mut(&mut self) -> &mut [Option<ItemStack>] {
@@ -335,14 +364,19 @@ impl BlockEntity {
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
-            | Self::Banner(_) => &mut [],
+            | Self::Banner(_)
+            | Self::EndGateway(_)
+            | Self::Skull(_)
+            | Self::DaylightDetector => &mut [],
             Self::Crafter(c) => &mut c.items,
+            Self::ChiseledBookshelf(b) => &mut b.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
             | Self::Vault(_)
             | Self::Beehive(_)
-            | Self::CommandBlock(_) => &mut [],
+            | Self::CommandBlock(_)
+            | Self::Campfire(_) => &mut [],
         }
     }
 }
@@ -577,7 +611,22 @@ impl Furnace {
                                     Some(out) => out.count += recipe.result.count,
                                     None => self.items[2] = Some(recipe.result.clone()),
                                 }
-                                *self.recipes_used.entry(recipe.id.clone()).or_insert(0) += 1;
+                                *self
+                                    .recipes_used
+                                    .entry(recipe_used_key(&recipe.id))
+                                    .or_insert(0) += 1;
+                                // AbstractFurnaceBlockEntity.burn: drying a wet sponge fills
+                                // the bucket in the fuel slot.
+                                if self.items[0]
+                                    .as_ref()
+                                    .is_some_and(|i| &*i.item == "minecraft:wet_sponge")
+                                    && self.items[1]
+                                        .as_ref()
+                                        .is_some_and(|f| &*f.item == "minecraft:bucket")
+                                {
+                                    self.items[1] =
+                                        Some(ItemStack::new("minecraft:water_bucket", 1));
+                                }
                                 if let Some(i) = self.items[0].as_mut() {
                                     i.count -= 1;
                                     if i.count == 0 {
@@ -630,6 +679,41 @@ pub fn create_experience(
 mod tests {
     use super::*;
     use horizon_core::random::{LegacyRandom, RandomSource};
+
+    #[test]
+    fn campfire_slots_take_food_cook_it_and_cool_down() {
+        let mut c = Campfire::default();
+        let mut beef = ItemStack::new("minecraft:beef", 2);
+        // placeFood: the first free slot, one item, its recipe's time.
+        assert!(c.place_food(&mut beef, 600));
+        assert_eq!(beef.count, 1);
+        assert_eq!(c.items[0].as_ref().map(|s| s.count), Some(1));
+        assert_eq!((c.progress[0], c.total[0]), (0, 600));
+        let mut fish = ItemStack::new("minecraft:cod", 1);
+        assert!(c.place_food(&mut fish, 3));
+        assert_eq!(c.items[1].as_ref().map(|s| &*s.item), Some("minecraft:cod"));
+        // cookTick: the cod is done on its third tick, the beef keeps cooking.
+        assert!(c.cook_tick().is_empty());
+        assert!(c.cook_tick().is_empty());
+        let done = c.cook_tick();
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].0, &*done[0].1.item), (1, "minecraft:cod"));
+        assert!(c.items[1].is_none());
+        assert_eq!(c.progress[0], 3);
+        // cooldownTick: two a tick, never below zero.
+        assert!(c.cooldown_tick());
+        assert_eq!(c.progress[0], 1);
+        assert!(c.cooldown_tick());
+        assert_eq!(c.progress[0], 0);
+        // Full: four slots, no fifth.
+        for _ in 0..3 {
+            let mut more = ItemStack::new("minecraft:potato", 1);
+            assert!(c.place_food(&mut more, 600));
+        }
+        let mut fifth = ItemStack::new("minecraft:potato", 1);
+        assert!(!c.place_food(&mut fifth, 600));
+        assert_eq!(fifth.count, 1);
+    }
 
     /// A whole amount pays itself without a draw; a fraction is a chance of one more.
     #[test]

@@ -5,6 +5,9 @@
 //!
 //! Nothing here runs unless a mod is installed and turned on: an empty
 //! [`Mods`] makes no engine and every hook returns at once.
+pub mod api_level;
+#[cfg(feature = "runtime")]
+pub mod commands;
 pub mod content;
 #[cfg(feature = "index")]
 pub mod index;
@@ -12,6 +15,8 @@ pub mod manifest;
 pub mod modpack;
 #[cfg(feature = "runtime")]
 mod runtime;
+#[cfg(feature = "runtime")]
+pub mod testing;
 
 pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};

@@ -5,11 +5,7 @@ use crate::keybinds::KeyBinds;
 use crate::options_file::{OptionsFile, V};
 use std::{fs, path::Path};
 
-/// SoundSource names in vanilla order.
-pub const SOUND_SOURCES: [&str; 11] = [
-    "master", "music", "record", "weather", "block", "hostile", "neutral", "player", "ambient",
-    "voice", "ui",
-];
+pub use horizon_client_core::sound_source::SOUND_SOURCES;
 
 /// Per-source volumes for the mixer (soundCategory_* except master).
 static SOURCE_VOLUMES: std::sync::RwLock<[f32; 11]> = std::sync::RwLock::new([1.0; 11]);
@@ -104,7 +100,7 @@ pub struct Settings {
     pub master_volume: f32,
     /// Volumes of every other sound source, indexed like SOUND_SOURCES.
     pub volumes: [f32; 11],
-    /// 0 = auto.
+    /// Requested scale (0 = auto); rendering caps it to the current framebuffer.
     pub gui_scale: u32,
     pub view_bobbing: bool,
     /// Brightness 0..1 (gamma).
@@ -149,6 +145,7 @@ pub struct Settings {
     pub chat_visibility: u8,
     pub chat_colors: bool,
     pub chat_links: bool,
+    pub chat_links_prompt: bool,
     pub chat_opacity: f32,
     pub text_background_opacity: f32,
     pub chat_scale: f32,
@@ -182,6 +179,9 @@ pub struct Settings {
     pub extras: crate::extras::Extras,
     /// The Horizon mods turned on (`horizon-mods.txt`), all off by default.
     pub mods: crate::mod_list::ModList,
+    /// The packs in `shaderpacks/`, listed when the Shader Packs page opens; the pick is
+    /// `horizon.shader_pack`.
+    pub shader_packs: Vec<crate::shader_pack_list::Entry>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -231,6 +231,7 @@ impl Default for Settings {
             chat_visibility: 0,
             chat_colors: true,
             chat_links: true,
+            chat_links_prompt: true,
             chat_opacity: 1.0,
             text_background_opacity: 0.5,
             chat_scale: 1.0,
@@ -255,6 +256,7 @@ impl Default for Settings {
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
+            shader_packs: Vec::new(),
         }
     }
 }
@@ -284,12 +286,6 @@ fn put_s(f: &mut OptionsFile, key: &str, v: &str) {
     }
 }
 impl Settings {
-    /// `ClampingLazyMaxIntRange.validateValue`: clamp once the framebuffer is known.
-    pub fn clamp_gui_scale(&mut self, framebuffer: [i32; 2]) {
-        let max = crate::window::calculate_scale(framebuffer, 0, self.force_unicode) as u32;
-        self.gui_scale = self.gui_scale.min(max);
-    }
-
     pub fn load(path: &Path) -> Self {
         let horizon = path
             .parent()
@@ -421,6 +417,7 @@ impl Settings {
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
+            shader_packs: Vec::new(),
             auto_jump: f.bool("autoJump"),
             language: f.string("lang"),
             force_unicode: f.bool("forceUnicodeFont"),
@@ -428,6 +425,7 @@ impl Settings {
             chat_visibility: f.int("chatVisibility") as u8,
             chat_colors: f.bool("chatColors"),
             chat_links: f.bool("chatLinks"),
+            chat_links_prompt: f.bool("chatLinksPrompt"),
             chat_opacity: f.double("chatOpacity") as f32,
             text_background_opacity: f.double("textBackgroundOpacity") as f32,
             chat_scale: f.double("chatScale") as f32,
@@ -511,6 +509,7 @@ impl Settings {
         put_i(&mut f, "chatVisibility", i32::from(self.chat_visibility));
         put_b(&mut f, "chatColors", self.chat_colors);
         put_b(&mut f, "chatLinks", self.chat_links);
+        put_b(&mut f, "chatLinksPrompt", self.chat_links_prompt);
         put_f(&mut f, "chatOpacity", self.chat_opacity);
         put_f(
             &mut f,
@@ -543,6 +542,21 @@ impl Settings {
             put_s(&mut f, &format!("key_{name}"), &key);
         }
         f
+    }
+    /// These settings with one `options.txt` value changed (`horizon-ctl
+    /// options-set`, as `OptionsFile::set_text` reads it). Horizon's own
+    /// files (graphics, controller, extras, the mod list) aren't in
+    /// `options.txt`, so they stay as they are.
+    pub fn with_option(&self, key: &str, value: &str) -> Result<Self, String> {
+        let mut file = self.to_file();
+        file.set_text(key, value)?;
+        Ok(Self {
+            horizon: self.horizon.clone(),
+            controller: self.controller.clone(),
+            extras: self.extras.clone(),
+            mods: self.mods.clone(),
+            ..Self::from_file(file)
+        })
     }
     /// The `options.txt` text (Options.save).
     pub fn serialize(&self) -> String {
@@ -594,9 +608,142 @@ impl Settings {
     }
 }
 
+/// One option instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opt {
+    Fov,
+    RenderDistance,
+    SimulationDistance,
+    Sensitivity,
+    WheelSensitivity,
+    InvertY,
+    DiscreteScroll,
+    Volume(usize),
+    GuiScale,
+    ViewBobbing,
+    Gamma,
+    MaxFps,
+    Vsync,
+    Fullscreen,
+    SmoothLighting,
+    Clouds,
+    CloudRange,
+    Particles,
+    EntityDistance,
+    EntityShadows,
+    BiomeBlend,
+    Preset,
+    Mipmaps,
+    WeatherRadius,
+    ChunkFade,
+    Vignette,
+    Autosave,
+    CutoutLeaves,
+    ImprovedTransparency,
+    AttackIndicator,
+    InactivityFps,
+    ChunkBuilder,
+    MenuBlur,
+    ToggleCrouch,
+    ToggleSprint,
+    AutoJump,
+    ChatVisibility,
+    ChatColors,
+    ChatLinks,
+    ChatLinksPrompt,
+    ChatOpacity,
+    TextBackgroundOpacity,
+    ChatScale,
+    ChatWidth,
+    ChatHeightFocused,
+    ChatHeightUnfocused,
+    ChatLineSpacing,
+    AutoSuggestions,
+    HideMatchedNames,
+    ReducedDebugInfo,
+    OnlySecureChat,
+    SaveChatDrafts,
+    HighContrast,
+    ShowSubtitles,
+    MusicFrequency,
+    NotificationDisplayTime,
+    Narrator,
+    TextBackground,
+    ChatDelay,
+    DistortionEffects,
+    FovEffects,
+    DarknessPulsing,
+    DamageTilt,
+    GlintSpeed,
+    GlintStrength,
+    HideLightningFlashes,
+    MonochromeLogo,
+    PanoramaSpeed,
+    HideSplashTexts,
+    NarratorHotkey,
+    RotateWithMinecarts,
+    HighContrastBlockOutlines,
+    ForceUnicode,
+    JapaneseGlyphs,
+    /// Horizon's controller settings (`horizon-controller.txt`).
+    PadEnabled,
+    PadVibration,
+    PadAdaptiveTriggers,
+    PadLightbar,
+    PadLookSensitivity,
+    PadInvertX,
+    PadInvertY,
+    PadToggleSneak,
+    PadMoveDeadzone,
+    PadLookDeadzone,
+    PadGlyphs,
+    PadMenuNav,
+    PadKeyboard,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_option_set_keeps_horizon_files() {
+        let mut s = Settings::parse("fov:70\n");
+        s.mods.enabled.insert("zoom".into());
+        s.extras.minimap = true;
+        s.horizon.fog = !s.horizon.fog;
+        s.controller.vibration = !s.controller.vibration;
+        let set = s.with_option("fov", "90").unwrap();
+        assert_eq!(set.fov, 90.0);
+        assert_eq!(set.mods, s.mods);
+        assert_eq!(set.extras, s.extras);
+        assert_eq!(set.horizon, s.horizon);
+        assert_eq!(set.controller, s.controller);
+        assert!(s.with_option("fov", "200").is_err());
+    }
+    #[test]
+    fn gui_scale_survives_temporary_small_framebuffer() {
+        for requested in [0, 1, 2, 6] {
+            let settings = Settings::parse(&format!("guiScale:{requested}\n"));
+            // Hyprland's initial surface can be smaller than the fullscreen one.
+            for (framebuffer, maximum) in [([715, 860], 2), ([3400, 1913], 7)] {
+                let effective = crate::window::calculate_scale(
+                    framebuffer,
+                    settings.gui_scale as i32,
+                    settings.force_unicode,
+                );
+                assert_eq!(
+                    effective,
+                    if requested == 0 {
+                        maximum
+                    } else {
+                        (requested as i32).min(maximum)
+                    }
+                );
+                let saved = Settings::parse(&settings.serialize());
+                assert_eq!(saved.gui_scale, requested);
+            }
+        }
+    }
+
     #[test]
     fn round_trips_vanilla_options_txt() {
         let text = "version:4000\nfov:0.5\nrenderDistance:16\nmaxFps:260\nrenderClouds:\"fast\"\nkey_key.jump:key.keyboard.j\nsoundCategory_music:0.25\nresourcePacks:[\"vanilla\",\"file/x.zip\"]\nlang:fr_fr\nsomeFutureOption:42\n";

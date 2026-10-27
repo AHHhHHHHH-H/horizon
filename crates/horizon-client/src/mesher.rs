@@ -36,9 +36,15 @@ pub struct Vertex {
     pub color: u32,
     /// Smooth light, 16x fixed point: sky in bits 0..8, block in bits 8..16.
     pub light: u32,
-    /// RGBA8_SNORM face normal; w = -127 for two-sided lighting, 0 to keep baked/unlit colour.
+    /// RGBA8_SNORM face normal; w = -127 for two-sided lighting, 0 to keep baked/unlit colour,
+    /// [`CULL_BACK`] to keep it and also drop back-facing pixels.
     pub normal: [i8; 4],
+    /// The `GLINT_TEXTURING` atlas UV for a foil item quad; zero elsewhere.
+    pub glint_uv: [f32; 2],
 }
+/// `Vertex::normal` of a baked-colour quad of an `entitySolid` model: the render type culls
+/// back faces, which the entity pipelines here do not, so `entity.wgsl` discards them.
+pub const CULL_BACK: [i8; 4] = [0, 0, 0, 1];
 /// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
 /// UV0, UV2) with the sprite's array layer beside the light, in 24 bytes
 /// rather than vanilla's 28: the UV is fixed point, which holds model UVs
@@ -55,7 +61,7 @@ pub struct TerrainVertex {
     /// UV within the sprite, `UV_STEPS` per unit (`TerrainVertex::new`,
     /// `terrain.wgsl`'s `terrain_uv`).
     pub(crate) uv: [u16; 2],
-    /// Sprite array layer, with `OPAQUE_LAYER` for opaque leaves.
+    /// Sprite array layer, with `OPAQUE_LAYER` for opaque leaves and quads over opaque texels.
     pub layer: u16,
     /// Smooth light, 16x fixed point: sky in the low byte, block in the high one.
     pub light: u16,
@@ -112,6 +118,14 @@ mod vertex_tests {
         for (a, b) in packed.iter().zip(uv) {
             assert!((a - b).abs() <= 0.5 / 32768.0, "{a} {b}");
         }
+    }
+    #[test]
+    fn emission_keeps_the_colour_and_the_free_bits() {
+        let rgb = super::pack_rgb([0x12, 0x34, 0x56]);
+        assert_eq!(super::emitting(rgb, 0), rgb);
+        assert_eq!(super::emitting(rgb, 9), 0xF656_3412);
+        assert_eq!(super::emitting(rgb, 15), 0xF056_3412);
+        assert_eq!(super::emitting(rgb, 15) | super::EMISSION_BITS, rgb);
     }
 }
 pub struct SectionMesh {
@@ -566,6 +580,14 @@ impl Padded {
 }
 /// Set on a terrain vertex's sprite layer when its texture alpha must be ignored.
 pub const OPAQUE_LAYER: u16 = 1 << 15;
+/// The bits of `TerrainVertex::color`'s alpha byte that hold the light its face emits, for
+/// HDR output's highlights (`gfx/hdr.rs`): 15 minus the level, so the usual 0xFF means none.
+/// The byte's other four bits stay set.
+pub const EMISSION_BITS: u32 = 0x0F00_0000;
+/// `color` marked as emitting light `level` (0 to 15).
+pub fn emitting(color: u32, level: u8) -> u32 {
+    color & !EMISSION_BITS | u32::from(15 - level.min(15)) << 24
+}
 const UNSET: u32 = u32::MAX;
 const NO_BIOME: u16 = u16::MAX;
 /// The `ColorResolver`s `ClientLevel` caches block tints for.
@@ -874,13 +896,14 @@ impl Mesher<'_> {
             target.push(TerrainVertex::new(
                 [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
                 q.uv[i],
-                // Opaque leaves (forceOpaque) draw in the solid layer: no alpha cutout.
-                if !self.cutout_leaves && state.leaves {
+                // Opaque leaves (forceOpaque) and quads over opaque texels draw in the
+                // solid layer: no alpha cutout (a dirt path's side skips its clear top row).
+                if face.opaque && !face.translucent || !self.cutout_leaves && state.leaves {
                     face.layer as u16 | OPAQUE_LAYER
                 } else {
                     face.layer as u16
                 },
-                pack_rgb(rgb),
+                emitting(pack_rgb(rgb), state.emission.max(q.light_emission)),
                 pack_coords(lighting::with_emission(coords[i], q.light_emission)),
             ));
         }

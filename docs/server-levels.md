@@ -31,9 +31,9 @@ of a world run that way stay in the host's dimension. It gets no multi-level wor
 
 **Deprecated:** `--in-frame`, `--no-server-thread` and `HORIZON_SERVER_THREAD=0` still select the
 legacy mode, but emit a startup warning. No removal release is scheduled. Remove these flags and
-unset the environment variable to use the default integrated server thread. The internal command
-harness (`HORIZON_COMMAND_SCRIPT`) still runs in-frame without a deprecation warning of its own while
-harness coverage migrates to the server thread.
+unset the environment variable to use the default integrated server thread. The command harness
+(`HORIZON_COMMAND_SCRIPT`) runs on the integrated server thread; deterministic rule fixtures retain
+the internal in-frame path while their coverage migrates.
 
 ## One code path for both
 

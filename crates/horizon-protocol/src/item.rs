@@ -3,7 +3,7 @@
 //! client sends back in container clicks (HashedStack).
 use crate::{
     Result,
-    buf::{Codec, Reader, Writer},
+    buf::{Codec, Reader, Writer, pack_block_pos, unpack_block_pos},
 };
 use horizon_world::nbt::Tag;
 
@@ -35,10 +35,14 @@ pub mod component {
     pub const MAP_ID: i32 = 48;
     pub const MAP_POST_PROCESSING: i32 = 50;
     pub const CHARGED_PROJECTILES: i32 = 51;
+    pub const BUNDLE_CONTENTS: i32 = 52;
     pub const POTION_CONTENTS: i32 = 53;
     pub const WRITABLE_BOOK_CONTENT: i32 = 56;
     pub const WRITTEN_BOOK_CONTENT: i32 = 57;
     pub const TRIM: i32 = 58;
+    pub const LODESTONE_TRACKER: i32 = 69;
+    pub const FIREWORK_EXPLOSION: i32 = 70;
+    pub const FIREWORKS: i32 = 71;
 }
 
 /// A written book's content (`WrittenBookContent.STREAM_CODEC`): the
@@ -89,6 +93,19 @@ pub enum Component {
     WrittenBook(WrittenBook),
     /// `ChargedProjectiles`: a loaded crossbow's ammunition, as templates.
     Stacks(Vec<Stack>),
+    /// `Fireworks`: flight duration and its explosions.
+    Fireworks {
+        flight: i32,
+        explosions: Vec<FireworkExplosion>,
+    },
+    /// `FireworkExplosion` (a firework star).
+    FireworkExplosion(FireworkExplosion),
+    /// `LodestoneTracker`: the target's dimension and block, and whether it
+    /// follows the lodestone.
+    LodestoneTracker {
+        target: Option<(String, [i32; 3])>,
+        tracked: bool,
+    },
     /// `ArmorTrim` naming its material and pattern by registry id (`trim_material`,
     /// `trim_pattern`); a trim with a direct holder stays [`Component::Raw`].
     Trim {
@@ -98,6 +115,41 @@ pub enum Component {
     /// A component Horizon reads past without interpreting it: its encoded
     /// bytes, written back as they came.
     Raw(Vec<u8>),
+}
+
+/// `FireworkExplosion.STREAM_CODEC`: shape id, colors, fade colors, trail
+/// and twinkle (FireworkExplosion.Shape's BY_ID order).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FireworkExplosion {
+    pub shape: i32,
+    pub colors: Vec<i32>,
+    pub fade: Vec<i32>,
+    pub trail: bool,
+    pub twinkle: bool,
+}
+impl FireworkExplosion {
+    fn read(r: &mut Reader) -> Result<Self> {
+        let ints = |r: &mut Reader| -> Result<Vec<i32>> {
+            let n = r.count(1024)?;
+            (0..n).map(|_| r.i32()).collect()
+        };
+        Ok(Self {
+            shape: r.varint()?,
+            colors: ints(r)?,
+            fade: ints(r)?,
+            trail: r.bool()?,
+            twinkle: r.bool()?,
+        })
+    }
+    fn write(&self, w: &mut Writer) {
+        w.varint(self.shape);
+        w.varint(self.colors.len() as i32);
+        self.colors.iter().for_each(|c| w.i32(*c));
+        w.varint(self.fade.len() as i32);
+        self.fade.iter().for_each(|c| w.i32(*c));
+        w.bool(self.trail);
+        w.bool(self.twinkle);
+    }
 }
 
 /// `Filterable.streamCodec`: the raw value, then an optional filtered one
@@ -119,7 +171,7 @@ pub struct Profile {
     pub properties: Vec<(String, String, Option<String>)>,
 }
 impl Component {
-    fn read(kind: i32, r: &mut Reader) -> Result<Self> {
+    pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
         use component::*;
         Ok(match kind {
             MAX_STACK_SIZE | MAX_DAMAGE | DAMAGE | RARITY | REPAIR_COST | MAP_ID
@@ -148,7 +200,7 @@ impl Component {
                     resolved: r.bool()?,
                 })
             }
-            CHARGED_PROJECTILES => {
+            CHARGED_PROJECTILES | BUNDLE_CONTENTS => {
                 let n = r.count(1024)?;
                 Self::Stacks((0..n).map(|_| Template::read(r)).collect::<Result<_>>()?)
             }
@@ -260,6 +312,28 @@ impl Component {
                     hidden: (0..n).map(|_| r.varint()).collect::<Result<_>>()?,
                 }
             }
+            FIREWORKS => {
+                let flight = r.varint()?;
+                let n = r.count(256)?;
+                Self::Fireworks {
+                    flight,
+                    explosions: (0..n)
+                        .map(|_| FireworkExplosion::read(r))
+                        .collect::<Result<_>>()?,
+                }
+            }
+            FIREWORK_EXPLOSION => Self::FireworkExplosion(FireworkExplosion::read(r)?),
+            LODESTONE_TRACKER => {
+                let target = if r.bool()? {
+                    Some((r.string(32767)?, unpack_block_pos(r.i64()?)))
+                } else {
+                    None
+                };
+                Self::LodestoneTracker {
+                    target,
+                    tracked: r.bool()?,
+                }
+            }
             // ArmorTrim.STREAM_CODEC: two holders, each a reference's id plus
             // one. A direct material or pattern has no registry name: read past.
             TRIM => {
@@ -282,7 +356,7 @@ impl Component {
             }
         })
     }
-    fn write(&self, kind: i32, w: &mut Writer) {
+    pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
             Self::Raw(bytes) => w.bytes(bytes),
             Self::Trim { material, pattern } => {
@@ -374,6 +448,20 @@ impl Component {
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
                 stacks.iter().for_each(|s| Template::write(s, w));
+            }
+            Self::Fireworks { flight, explosions } => {
+                w.varint(*flight);
+                w.varint(explosions.len() as i32);
+                explosions.iter().for_each(|e| e.write(w));
+            }
+            Self::FireworkExplosion(e) => e.write(w),
+            Self::LodestoneTracker { target, tracked } => {
+                w.bool(target.is_some());
+                if let Some((dimension, pos)) = target {
+                    w.string(dimension);
+                    w.i64(pack_block_pos(*pos));
+                }
+                w.bool(*tracked);
             }
             Self::WritableBook(pages) => {
                 w.varint(pages.len() as i32);
@@ -671,6 +759,44 @@ mod tests {
     }
 
     #[test]
+    fn fireworks_components_round_trip() {
+        let mut rocket = Stack::new(42, 1);
+        rocket.added.push((
+            component::FIREWORKS,
+            Component::Fireworks {
+                flight: 3,
+                explosions: vec![
+                    FireworkExplosion {
+                        shape: 4,
+                        colors: vec![0xff0000, 0x00ff00],
+                        fade: vec![0x0000ff],
+                        trail: true,
+                        twinkle: false,
+                    },
+                    FireworkExplosion {
+                        shape: 0,
+                        colors: vec![],
+                        fade: vec![],
+                        trail: false,
+                        twinkle: true,
+                    },
+                ],
+            },
+        ));
+        rocket.added.push((
+            component::FIREWORK_EXPLOSION,
+            Component::FireworkExplosion(FireworkExplosion {
+                shape: 2,
+                colors: vec![7],
+                fade: vec![],
+                trail: false,
+                twinkle: false,
+            }),
+        ));
+        round::<Option<Stack>, Slot>(Some(rocket));
+    }
+
+    #[test]
     fn charged_projectiles_are_item_stack_templates() {
         // A crossbow (id 7) loaded with one arrow (id 9): ChargedProjectiles
         // is a list of ItemStackTemplate, the item before the count.
@@ -679,6 +805,21 @@ mod tests {
         assert_eq!(
             stack.component(component::CHARGED_PROJECTILES),
             Some(&Component::Stacks(vec![Stack::new(9, 1)]))
+        );
+        let mut w = Writer::new();
+        Slot::write(&Some(stack), &mut w);
+        assert_eq!(w.data, bytes);
+    }
+
+    #[test]
+    fn bundle_contents_are_item_stack_templates() {
+        // A bundle (id 7) holding 32 of item 9: BundleContents is a list of
+        // ItemStackTemplate, as ChargedProjectiles is.
+        let bytes = [1, 7, 1, 0, 52, 1, 9, 32, 0, 0];
+        let stack = Slot::read(&mut Reader::new(&bytes)).unwrap().unwrap();
+        assert_eq!(
+            stack.component(component::BUNDLE_CONTENTS),
+            Some(&Component::Stacks(vec![Stack::new(9, 32)]))
         );
         let mut w = Writer::new();
         Slot::write(&Some(stack), &mut w);
