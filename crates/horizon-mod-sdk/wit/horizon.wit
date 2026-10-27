@@ -349,6 +349,36 @@ interface render {
     /// order over the HUD (after the hotbar, under chat and screens), hidden
     /// with the HUD (F1). An empty list removes them.
     set-hud: func(shapes: list<shape>);
+    /// Existing vanilla particles with no block/item payload. Client-local only.
+    enum ambient-particle {
+        smoke,
+        flame,
+        bubble,
+        splash,
+        end-rod,
+        cherry-leaves,
+        white-ash,
+        spore-blossom-air,
+    }
+    record world-particle {
+        kind: ambient-particle,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Initial velocity in blocks per tick; each component must be within -1..1.
+        velocity-x: f64,
+        velocity-y: f64,
+        velocity-z: f64,
+    }
+    /// Queues at most 32 particles per mod per game tick, shared by all hooks.
+    /// Returns the accepted count. Only the first 32 entries are examined.
+    /// Non-finite values, velocity components outside -1..1, positions beyond
+    /// 32 blocks from the player, and calls without a player are ignored.
+    /// The client drops requests outside loaded chunks and draws at most 256
+    /// mod particles per tick across all mods. No server packets are sent.
+    /// Disabling or crashing a mod discards its queued requests; particles
+    /// already spawned expire normally. Requires Mod API level 8.
+    emit-particles: func(particles: list<world-particle>) -> u32;
     /// The screen's size in GUI pixels (width, height), as of this tick.
     gui-size: func() -> tuple<f32, f32>;
     /// Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that

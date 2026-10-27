@@ -106,6 +106,7 @@ impl Mod for Guest {
             "render_hud",
             "render_clear",
             "render_shake",
+            "particles",
             "input_claim",
             "input_poll",
             "input_held",
@@ -468,6 +469,34 @@ impl Mod for Guest {
                     });
                 }
             }
+            "particles" => {
+                let Some(player) = game::get_player() else {
+                    chat::show(&render::emit_particles(&[]).to_string());
+                    return Ok(None);
+                };
+                let mut p = render::WorldParticle {
+                    kind: render::AmbientParticle::Smoke,
+                    x: player.x,
+                    y: player.y,
+                    z: player.z,
+                    velocity_x: 0.0,
+                    velocity_y: 0.05,
+                    velocity_z: 0.0,
+                };
+                match args {
+                    "far" => p.x += 33.0,
+                    "nan" => p.y = f64::NAN,
+                    "speed" => p.velocity_x = 2.0,
+                    "inf" => p.velocity_z = f64::INFINITY,
+                    "edge" => p.x += 32.0,
+                    _ => {}
+                }
+                let count = render::emit_particles(&vec![p; 100]);
+                chat::show(&count.to_string());
+                if args == "panic" {
+                    panic!("after particles");
+                }
+            }
             // Clamped to (1, 10); the two after it shake nothing.
             "render_shake" => {
                 render::shake(2.0, 99.0);
@@ -479,6 +508,21 @@ impl Mod for Guest {
         Ok(None)
     }
     fn tick(&mut self, _tick: u64) {
+        // A synthetic dimension used only by the aggregate particle-budget fixture.
+        if let Some(p) = game::get_player().filter(|p| p.dimension == "test:particles") {
+            render::emit_particles(&vec![
+                render::WorldParticle {
+                    kind: render::AmbientParticle::Smoke,
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    velocity_x: 0.0,
+                    velocity_y: 0.0,
+                    velocity_z: 0.0,
+                };
+                32
+            ]);
+        }
         if let Some((book, all, id)) = self.pending.take() {
             match recipes::place(book, all) {
                 Err(e) if e.starts_with("no screen") => self.pending = Some((book, all, id)),

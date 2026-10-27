@@ -281,6 +281,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("placed recipe {book_id}{}", if all { " (all)" } else { "" })
             }
             Output::Give { item, count, .. } => format!("gave {count} {item}"),
+            Output::Particles { particles, .. } => {
+                format!("queued {} local particle(s)", particles.len())
+            }
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }

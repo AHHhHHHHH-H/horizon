@@ -71,6 +71,7 @@ mod render_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "render-host",
+        additional_derives: [PartialEq],
     });
 }
 use render_bindings::horizon::mods::input;
@@ -78,9 +79,9 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    AmbientParticle, Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate,
+    ItemShape, Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape,
+    SpriteShape, TextShape, WorldParticle, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -238,6 +239,12 @@ pub enum Output {
     CloseScreen { owner: usize },
     /// `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
     Shake { strength: f32, seconds: f32 },
+    /// Client-local vanilla particles; pending requests disappear with their owner.
+    Particles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<WorldParticle>,
+    },
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
     PlaceRecipe { book_id: i32, all: bool },
@@ -425,6 +432,7 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    particle_budget: usize,
     limits: StoreLimits,
     world: WorldSlot,
 }
@@ -437,6 +445,7 @@ pub struct Mods {
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
+    particle_budget: usize,
     world: WorldSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
@@ -623,6 +632,7 @@ impl Mods {
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            particle_budget: 0,
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -802,6 +812,12 @@ impl Mods {
 
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
+        self.particle_budget = 256;
+        for entry in &mut self.entries {
+            if let Some(run) = &mut entry.run {
+                run.store.data_mut().particle_budget = 32;
+            }
+        }
         self.each_client(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
     }
     /// A rendered frame, `seconds` after the last.
@@ -1256,7 +1272,29 @@ impl Mods {
     }
     /// What mods asked to show since the last call.
     pub fn drain(&mut self) -> Vec<Output> {
-        std::mem::take(&mut self.out)
+        let mut out = Vec::new();
+        for mut event in std::mem::take(&mut self.out) {
+            if let Output::Particles {
+                mod_id, particles, ..
+            } = &mut event
+            {
+                if !self.entries.iter().any(|entry| {
+                    entry
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.store.data().id == *mod_id)
+                }) {
+                    continue;
+                }
+                particles.truncate(self.particle_budget);
+                self.particle_budget -= particles.len();
+                if particles.is_empty() {
+                    continue;
+                }
+            }
+            out.push(event);
+        }
+        out
     }
 
     /// Restarts the mods whose file changed since they loaded (mod
@@ -1773,7 +1811,40 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// Bounds both the native work and the region a sandbox may affect.
+fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
+    let positions = [p.x, p.y, p.z, player.x, player.y, player.z];
+    let velocity = [p.velocity_x, p.velocity_y, p.velocity_z];
+    positions.into_iter().all(f64::is_finite)
+        && velocity
+            .into_iter()
+            .all(|v| v.is_finite() && v.abs() <= 1.0)
+        && (p.x - player.x).powi(2) + (p.y - player.y).powi(2) + (p.z - player.z).powi(2)
+            <= 32.0_f64.powi(2)
+}
+
 impl render::Host for State {
+    fn emit_particles(&mut self, particles: Vec<WorldParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| valid_world_particle(p, player))
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::Particles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
     }

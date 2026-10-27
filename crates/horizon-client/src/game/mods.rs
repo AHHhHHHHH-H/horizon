@@ -726,6 +726,40 @@ impl Game<'_> {
                     self.mods.shake.add(strength, seconds);
                     continue;
                 }
+                Output::Particles {
+                    dimension,
+                    particles,
+                    ..
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            if !self.world.chunks.contains_key(&(
+                                (p.x.floor() as i32).div_euclid(16),
+                                (p.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            use horizon_client::particles::{ParticleOptions, ParticleType as P};
+                            use horizon_mods::AmbientParticle as A;
+                            let kind = match p.kind {
+                                A::Smoke => P::Smoke,
+                                A::Flame => P::Flame,
+                                A::Bubble => P::Bubble,
+                                A::Splash => P::Splash,
+                                A::EndRod => P::EndRod,
+                                A::CherryLeaves => P::CherryLeaves,
+                                A::WhiteAsh => P::WhiteAsh,
+                                A::SporeBlossomAir => P::SporeBlossomAir,
+                            };
+                            self.particles.add(
+                                &ParticleOptions::simple(kind),
+                                [p.x, p.y, p.z],
+                                [p.velocity_x, p.velocity_y, p.velocity_z],
+                            );
+                        }
+                    }
+                    continue;
+                }
                 Output::PlaceRecipe { book_id, all } => {
                     self.mod_place_recipe(book_id, all);
                     continue;

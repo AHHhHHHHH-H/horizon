@@ -1302,3 +1302,75 @@ fn browser_lists_items_and_hears_the_player() {
     }
     assert_eq!(said(&mut mods, "browser_poll")[0], "256 events");
 }
+
+#[test]
+fn world_particles_are_local_bounded_and_discarded_on_failure() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let emit = |mods: &mut Mods, args: &str| {
+        assert!(mods.command(&format!("particles {args}")));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Particles { particles, .. } => Some(particles.len()),
+                _ => None,
+            })
+            .sum::<usize>()
+    };
+    assert_eq!(emit(&mut mods, ""), 0); // no world/player
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for invalid in ["far", "nan", "speed", "inf"] {
+        assert_eq!(emit(&mut mods, invalid), 0);
+    }
+    assert_eq!(emit(&mut mods, "edge"), 32);
+    // More host calls, including frames, cannot reset the per-tick quota.
+    mods.frame(0.01);
+    assert_eq!(emit(&mut mods, ""), 0);
+    mods.tick(2);
+    assert_eq!(emit(&mut mods, ""), 32);
+    mods.tick(3);
+    assert_eq!(emit(&mut mods, "panic"), 0);
+}
+
+#[test]
+fn world_particles_share_a_global_tick_budget_across_drains() {
+    let folder = mods_dir().join("particle-budget");
+    std::fs::create_dir_all(&folder).unwrap();
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let paths: Vec<_> = (0..9)
+        .map(|i| {
+            let path = folder.join(format!("particles_{i}.hmod"));
+            let manifest = UI_MANIFEST.replace("test_ui_guest", &format!("particles_{i}"));
+            std::fs::write(&path, Package::write(&manifest, &wasm).unwrap()).unwrap();
+            path
+        })
+        .collect();
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert_eq!(
+        mods.entries()
+            .iter()
+            .filter(|e| e.status == Status::Running)
+            .count(),
+        9
+    );
+    let mut snapshot = player();
+    snapshot.player.as_mut().unwrap().dimension = "test:particles".into();
+    mods.set_snapshot(snapshot);
+    mods.tick(1); // 9 mods each request 32; only 256 may reach the engine.
+    let count = |mods: &mut Mods| {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Particles { particles, .. } => Some(particles.len()),
+                _ => None,
+            })
+            .sum::<usize>()
+    };
+    assert_eq!(count(&mut mods), 256);
+    assert_eq!(count(&mut mods), 0);
+    mods.tick(2);
+    assert_eq!(count(&mut mods), 256);
+}
