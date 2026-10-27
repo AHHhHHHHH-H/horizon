@@ -1970,7 +1970,10 @@ impl Game<'_> {
                     for (index, _, value) in &p.values {
                         match (index, value) {
                             (0, Value::Byte(flags)) => {
-                                m.invisible = flags & 0x20 != 0;
+                                // An invisible illusioner draws its mirror
+                                // images instead (`illusioner::set_invisible`).
+                                m.invisible = flags & 0x20 != 0
+                                    && m.species() != horizon_client::mobs::Species::Illusioner;
                                 m.glowing = flags & 0x40 != 0;
                             }
                             (2, Value::OptText(name)) => {
@@ -3775,6 +3778,34 @@ impl Game<'_> {
             }
         }
         let game_time = self.world.game_time;
+        // `AbstractPiglin.isConverting`: the dimension is not piglin safe.
+        let nether = self.dim == super::Dim::Nether;
+        // What a wither's side heads can look at, by network entity id: the
+        // mobs and the player (position and eye height).
+        let wither_targets: Vec<(i32, [f64; 3], f64)> = if self
+            .mobs
+            .iter()
+            .any(|m| m.species() == horizon_client::mobs::Species::Wither)
+        {
+            let own = self
+                .remote
+                .as_ref()
+                .zip(self.eye_position())
+                .map(|(r, eye)| (r.entity_id, eye, eye[1]));
+            self.mobs
+                .iter()
+                .map(|m| {
+                    (
+                        m.id as i32,
+                        [m.position.x, m.position.y, m.position.z],
+                        m.eye_y(),
+                    )
+                })
+                .chain(own)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -3830,7 +3861,7 @@ impl Game<'_> {
                     S::Slime | S::MagmaCube | S::SulfurCube => cube::client_tick(m, &mut mob_fx),
                     S::Nautilus | S::ZombieNautilus => nautilus::client_tick(m, &mut mob_fx),
                     S::Illusioner => illusioner::client_tick(m, &mut mob_fx),
-                    S::Wither => wither::client_tick(m, &mut mob_fx),
+                    S::Wither => wither::client_smoke(m, &mut mob_fx),
                     _ => {}
                 }
             }
@@ -3935,6 +3966,24 @@ impl Game<'_> {
             horizon_client::mobs::sync::client_tick(m, game_time);
             if m.species() == horizon_client::mobs::Species::Panda {
                 horizon_client::mobs::panda::client_tick(m, thundering);
+            }
+            match m.species() {
+                // WitherBoss.aiStep: the side heads turn toward their targets.
+                horizon_client::mobs::Species::Wither => {
+                    horizon_client::mobs::wither::client_tick(m, |id| {
+                        wither_targets
+                            .iter()
+                            .find(|t| t.0 == id)
+                            .map(|t| (t.1, t.2))
+                    });
+                }
+                // Hoglin and piglin `isConverting` outside the Nether.
+                horizon_client::mobs::Species::Hoglin
+                | horizon_client::mobs::Species::Piglin
+                | horizon_client::mobs::Species::PiglinBrute => {
+                    horizon_client::mobs::piglin::client_converting(m, nether);
+                }
+                _ => {}
             }
         }
         for o in self.orbs.iter_mut().filter(|_| running) {

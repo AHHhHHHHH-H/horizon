@@ -146,6 +146,15 @@ impl Goal for Spell {
     }
 }
 
+/// `Entity.isInvisible` of an illusioner on a client: the shared flag stands
+/// in for the effect the server holds, which draws the mirror images.
+pub fn set_invisible(m: &mut Mob, on: bool) {
+    m.extra.effects.retain(|e| e.0 != INVISIBILITY);
+    if on {
+        m.extra.effects.push((INVISIBILITY, i32::MAX, 0));
+    }
+}
+
 /// The client-side half of `Illusioner.aiStep`: new image offsets when
 /// hurt and once a minute, with a puff of cloud and a sound.
 pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
@@ -168,10 +177,10 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
 }
 
 /// `Illusioner.aiStep` on a client of a server: invisible is the synched
-/// shared flag. The puff is drawn here exactly (sixteen `addParticle`s); the
-/// sound comes from the server.
+/// shared flag (`set_invisible`). The puff is drawn here exactly (sixteen
+/// `addParticle`s); the sound comes from the server.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if !m.invisible || !step(m) {
+    if !m.has_effect(INVISIBILITY) || !step(m) {
         return;
     }
     let (w, h) = (f64::from(m.width()), f64::from(m.height()));
