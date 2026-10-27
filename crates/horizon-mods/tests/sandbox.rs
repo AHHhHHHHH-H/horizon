@@ -30,6 +30,11 @@ capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipe
 experimental = ["ui", "render", "input", "recipes"]
 "#;
 
+/// The vignette example's shader, in its folder and in its `.hmod`.
+const VIGNETTE_WGSL: &str =
+    "crates/horizon-mod-sdk/examples/vignette/assets/vignette/shaders/vignette.wgsl";
+const VIGNETTE_SHADER: &str = "assets/vignette/shaders/vignette.wgsl";
+
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
 fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -48,6 +53,8 @@ fn mods_dir() -> &'static Path {
                 "welcome",
                 "-p",
                 "beacons",
+                "-p",
+                "vignette",
                 "-p",
                 "horizon-mods-test-guest",
                 "-p",
@@ -81,6 +88,16 @@ fn mods_dir() -> &'static Path {
             let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
         }
+        // The vignette ships its shader.
+        let core = std::fs::read(built.join("vignette.wasm")).unwrap();
+        let wgsl = std::fs::read(root.join(VIGNETTE_WGSL)).unwrap();
+        let hmod = Package::write_files(
+            &example("vignette"),
+            Some(&componentize(&core).unwrap()),
+            &[(VIGNETTE_SHADER, &wgsl)],
+        )
+        .unwrap();
+        std::fs::write(dir.join("vignette.hmod"), hmod).unwrap();
         dir
     })
 }
@@ -256,7 +273,9 @@ experimental = ["ui", "render", "input", "recipes"]
     };
     assert_eq!(level("coords_hud.hmod"), 0);
     // The UI guest draws far terrain (`render.set-far-terrain`).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), LEVEL);
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    // The vignette registers a shader.
+    assert_eq!(level("vignette.hmod"), LEVEL);
 }
 
 #[test]
@@ -891,6 +910,7 @@ fn the_examples_test_scripts_pass() {
         ("coords-hud", "coords_hud"),
         ("welcome", "welcome"),
         ("beacons", "beacons"),
+        ("vignette", "vignette"),
     ];
     for (example, hmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -903,7 +923,67 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 5);
+    assert_eq!(ran, 6);
+}
+
+/// A shader the game's check refuses stops only that shader: the mod gets the
+/// error (file, line, reason) and runs on without it.
+#[test]
+fn a_refused_shader_stops_only_itself() {
+    let dir = mods_dir().join("bad_shader");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("vignette.hmod");
+    let good = Package::read(&mods_dir().join("vignette.hmod")).unwrap();
+    let manifest = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../horizon-mod-sdk/examples/vignette/horizon-mod.toml"),
+    )
+    .unwrap();
+    let bad = good.shaders["vignette"].replace("params.low_health", "params.missing");
+    let hmod = Package::write_files(
+        &manifest,
+        good.wasm.as_deref(),
+        &[(VIGNETTE_SHADER, bad.as_bytes())],
+    )
+    .unwrap();
+    std::fs::write(&path, hmod).unwrap();
+    let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert_eq!(mods.shaders().count(), 0);
+    // Its command still runs; registering again meets the same check, whose
+    // error says where the WGSL is wrong.
+    assert!(mods.command("vignette 0.5"));
+    let refused = "assets/vignette/shaders/vignette.wgsl:7:39: invalid field accessor `missing`";
+    assert!(
+        matches!(&mods.drain()[..], [Output::Feedback { text, error: true }] if text.starts_with(refused))
+    );
+    assert_eq!(mods.shaders().count(), 0);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+/// The game removes a pass over its GPU budget: the mod is told nothing, the
+/// player is, and the mod runs on.
+#[test]
+fn a_dropped_shader_tells_the_player() {
+    let mut mods = load("vignette.hmod");
+    let (owner, _, shader) = mods
+        .shaders()
+        .next()
+        .map(|(o, i, s)| (o, i.to_owned(), s.clone()))
+        .unwrap();
+    assert_eq!(shader.params, ["strength", "low_health"]);
+    mods.drop_shader(owner, shader.handle, "it took 3.1 ms of GPU time a frame");
+    assert_eq!(mods.shaders().count(), 0);
+    assert_eq!(
+        mods.drain(),
+        [Output::ShaderStopped {
+            name: "Vignette".into(),
+            shader: "vignette".into(),
+            reason: "it took 3.1 ms of GPU time a frame".into(),
+        }]
+    );
+    assert!(mods.is_running());
 }
 
 /// Capability `world` without a world lent (the registry's trial run):

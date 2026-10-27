@@ -1,0 +1,16 @@
+[package]
+name = "vignette"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Example Horizon mod: a post pass of its own, a vignette that reddens as the player's health falls"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+id = "vignette"
+name = "Vignette"
+version = "0.1.0"
+description = "Darkens the edges of the world's picture, and reddens them as your health falls. /vignette <0 to 1> sets how strong; 0 turns it off."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "render"]
+experimental = ["render"]
+shaders = ["vignette"]

@@ -423,6 +423,18 @@ pub struct Expect {
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
+    /// The shaders it has registered after the step, in order (capability
+    /// `render`): each passed the game's check.
+    shaders: Option<Vec<ShaderExpect>>,
+}
+
+/// A registered shader: its name, and its kind and params' values when given.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShaderExpect {
+    name: String,
+    kind: Option<String>,
+    params: Option<Vec<f32>>,
 }
 
 impl Script {
@@ -698,6 +710,26 @@ impl Step {
                         "block at {} {} {}: expected {}, got {got}",
                         b.x, b.y, b.z, b.state
                     ));
+                }
+            }
+        }
+        if let Some(want) = &e.shaders {
+            let got: Vec<_> = game.mods.shaders().map(|(_, _, s)| s).collect();
+            let names = |n: Vec<&str>| n.join(", ");
+            if want.len() != got.len() || want.iter().zip(&got).any(|(w, g)| w.name != g.name) {
+                return Err(format!(
+                    "shaders\n    expected: [{}]\n    got:      [{}]",
+                    names(want.iter().map(|w| w.name.as_str()).collect()),
+                    names(got.iter().map(|g| g.name.as_str()).collect())
+                ));
+            }
+            for (w, g) in want.iter().zip(&got) {
+                if let Some(kind) = &w.kind {
+                    let what = format!("shader {}'s kind", w.name);
+                    same(&what, &kind.as_str(), &crate::shader_kind_name(g.kind))?;
+                }
+                if let Some(params) = &w.params {
+                    same(&format!("shader {}'s params", w.name), params, &g.values)?;
                 }
             }
         }

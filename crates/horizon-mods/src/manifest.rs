@@ -28,6 +28,10 @@ const RESERVED_NAMESPACES: [&str; 3] = ["minecraft", "c", "horizon"];
 pub const STORAGE_DIR: &str = ".horizon-mod-data";
 /// The biggest `mod.wasm` a mod may ship.
 const MAX_WASM: u64 = 32 << 20;
+/// Shaders a mod may declare, and the bytes of each
+/// (`horizon_shader_api::mods::MAX_SOURCE`).
+const MAX_SHADERS: usize = 16;
+const MAX_SHADER: u64 = 64 << 10;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +62,10 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// The WGSL shaders the mod ships, by name: `assets/<id>/shaders/<name>.wgsl`
+    /// in its `.hmod`, registered from its code with capability `render`.
+    #[serde(default)]
+    pub shaders: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -265,6 +273,31 @@ impl Manifest {
                  add experimental = [\"{c}\"] to use it"
             ));
         }
+        if !m.shaders.is_empty() && !m.capabilities.contains(&Capability::Render) {
+            return Err(format!(
+                "{MANIFEST}: shaders are drawn with capability render"
+            ));
+        }
+        if m.shaders.len() > MAX_SHADERS {
+            return Err(format!(
+                "{MANIFEST}: {} shaders; a mod may ship {MAX_SHADERS}",
+                m.shaders.len()
+            ));
+        }
+        for (i, name) in m.shaders.iter().enumerate() {
+            let ok = (1..=64).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            if !ok {
+                return Err(format!(
+                    "{MANIFEST}: shader {name:?} is not [a-z0-9_]{{1,64}}"
+                ));
+            }
+            if m.shaders[..i].contains(name) {
+                return Err(format!("{MANIFEST}: shader {name} is listed twice"));
+            }
+        }
         if !m.namespaces.is_empty() && !m.capabilities.contains(&Capability::Registries) {
             return Err(format!(
                 "{MANIFEST}: namespaces are for content, which needs capability registries"
@@ -296,6 +329,10 @@ impl Manifest {
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.id.as_str()).chain(self.namespaces.iter().map(String::as_str))
     }
+    /// Where the shader `name` is in the mod's `.hmod` or folder.
+    pub fn shader_path(&self, name: &str) -> String {
+        format!("assets/{}/shaders/{name}.wgsl", self.id)
+    }
     /// Checks that the component's imports need only declared capabilities.
     pub fn check_imports<'a>(
         &self,
@@ -312,11 +349,13 @@ impl Manifest {
     }
 }
 
-/// A mod as found on disk: its manifest and component bytes.
+/// A mod as found on disk: its manifest, component bytes and shaders.
 pub struct Package {
     pub manifest: Manifest,
     /// None for a content-only mod (capability `registries`, no code).
     pub wasm: Option<Vec<u8>>,
+    /// The WGSL of each shader the manifest declares, by name.
+    pub shaders: std::collections::BTreeMap<String, String>,
 }
 impl Package {
     /// A `.hmod` (a zip holding `horizon-mod.toml`, `mod.wasm` and, for
@@ -353,12 +392,17 @@ impl Package {
             return Err(format!("{WASM} is over {} MiB", MAX_WASM >> 20));
         }
         let manifest = Manifest::parse(&toml)?;
+        let shaders = read_shaders(path, &manifest)?;
         if wasm.is_none() && !manifest.capabilities.contains(&Capability::Registries) {
             return Err(format!(
                 "{WASM}: missing (only a content mod, with capability registries, may have no code)"
             ));
         }
-        Ok(Package { manifest, wasm })
+        Ok(Package {
+            manifest,
+            wasm,
+            shaders,
+        })
     }
     /// The `.hmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {
@@ -390,6 +434,46 @@ impl Package {
         }
         Ok(zip.finish().map_err(err)?.into_inner())
     }
+}
+
+/// The WGSL of the shaders `m` declares, from the mod at `path` (a `.hmod` or a folder).
+fn read_shaders(
+    path: &Path,
+    m: &Manifest,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut shaders = std::collections::BTreeMap::new();
+    if m.shaders.is_empty() {
+        return Ok(shaders);
+    }
+    let mut zip = match path.is_dir() {
+        true => None,
+        false => {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            Some(zip::ZipArchive::new(file).map_err(|e| e.to_string())?)
+        }
+    };
+    for name in &m.shaders {
+        let file = m.shader_path(name);
+        let missing = || format!("{file}: missing (shader {name} of {MANIFEST})");
+        let mut bytes = Vec::new();
+        match &mut zip {
+            None => {
+                let f = std::fs::File::open(path.join(&file)).map_err(|_| missing())?;
+                f.take(MAX_SHADER + 1).read_to_end(&mut bytes)
+            }
+            Some(zip) => {
+                let f = zip.by_name(&file).map_err(|_| missing())?;
+                f.take(MAX_SHADER + 1).read_to_end(&mut bytes)
+            }
+        }
+        .map_err(|e| format!("{file}: {e}"))?;
+        if bytes.len() as u64 > MAX_SHADER {
+            return Err(format!("{file} is over {} KiB", MAX_SHADER >> 10));
+        }
+        let text = String::from_utf8(bytes).map_err(|_| format!("{file}: not UTF-8"))?;
+        shaders.insert(name.clone(), text);
+    }
+    Ok(shaders)
 }
 
 /// The `.hmod` files and mod folders in `dir`, by name.
@@ -528,6 +612,41 @@ capabilities = ["game-read", "hud"]
         assert!(with("\"\"").unwrap_err().contains("is not"));
         let code = format!("{EXAMPLE}namespaces = [\"kaisyn\"]\n");
         assert!(Manifest::parse(&code).unwrap_err().contains("registries"));
+    }
+
+    #[test]
+    fn shaders_ship_in_the_package() {
+        let manifest = "id = \"glow\"\nname = \"Glow\"\nversion = \"1\"\napi = \"0.1\"\n\
+            capabilities = [\"render\"]\nexperimental = [\"render\"]\nshaders = [\"edge\"]\n";
+        let dir = std::env::temp_dir().join(format!("horizon-mods-shaders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("glow.hmod");
+        let wgsl = b"fn post(input: PostInput) -> vec4<f32> { return input.color; }\n";
+        let files = [("assets/glow/shaders/edge.wgsl", &wgsl[..])];
+        std::fs::write(
+            &path,
+            Package::write_files(manifest, Some(b"\0asm"), &files).unwrap(),
+        )
+        .unwrap();
+        let p = Package::read(&path).unwrap();
+        assert_eq!(p.shaders["edge"].as_bytes(), wgsl);
+        // Shaders aren't content: no capability registries needed.
+        assert!(crate::Content::read(&path, &p.manifest).unwrap().is_empty());
+        std::fs::write(&path, Package::write(manifest, b"\0asm").unwrap()).unwrap();
+        let missing = Package::read(&path).err().unwrap();
+        assert!(
+            missing.contains("assets/glow/shaders/edge.wgsl: missing"),
+            "{missing}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let no_render = manifest.replace("[\"render\"]", "[]");
+        assert!(
+            Manifest::parse(&no_render)
+                .unwrap_err()
+                .contains("capability render")
+        );
+        let bad = manifest.replace("[\"edge\"]", "[\"Edge\"]");
+        assert!(Manifest::parse(&bad).is_err());
     }
 
     #[test]

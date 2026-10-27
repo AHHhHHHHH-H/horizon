@@ -429,6 +429,43 @@ interface render {
     /// Distance setting, when on, wins. One far terrain shows at a time: the
     /// first loaded mod's.
     set-far-terrain: func(far-terrain: option<far-terrain>);
+    /// Where a mod's shader runs: hook points the game owns, as shader packs'
+    /// stages are (docs/api/shaders.md). A mod never builds a pipeline or
+    /// binds resources of its own.
+    enum shader-kind {
+        /// A full-screen pass over the world's picture once the world is
+        /// drawn (terrain, translucent blocks, entities, particles, weather),
+        /// under the hand and the HUD: where shader packs' post passes run,
+        /// before them. Its WGSL defines `fn post(input: PostInput) ->
+        /// vec4<f32>` and reads the post stage's resources.
+        post-after-translucent,
+        /// A full-screen pass after opaque terrain, before translucent
+        /// blocks. Not run yet: `register-shader` refuses it.
+        post-after-terrain,
+        /// A full-screen pass over the world and the hand, before the HUD.
+        /// Not run yet.
+        post-before-hud,
+        /// The surface of the mod's own blocks, items and entities. Not run
+        /// yet.
+        material,
+        /// The colour of the mod's own HUD shapes. Not run yet.
+        hud-fill,
+    }
+    /// Registers the shader `name` of the mod's manifest
+    /// (`assets/<id>/shaders/<name>.wgsl` in its `.hmod`) as a `kind` pass,
+    /// reading the numbers `params` (up to 16, `[a-z][a-z0-9_]*`) as
+    /// `params.<name>`, all 0 until `set-shader-params`. The game checks the
+    /// WGSL first (naga: its signature, no resources but the stage's, a size
+    /// and compile-time cap) and errs with the file, line and reason, also in
+    /// the game log. Returns the shader's handle. At most 8 per mod; a pass
+    /// that keeps going over its GPU budget (2 ms a frame) is removed, and
+    /// the player is told.
+    register-shader: func(name: string, kind: shader-kind, params: list<string>) -> result<u32, string>;
+    /// The shader's `params`, in the order `register-shader` named them
+    /// (extra values are dropped, missing ones are 0), from the next frame on.
+    set-shader-params: func(shader: u32, values: list<f32>);
+    /// Stops drawing the shader; its handle is no longer valid.
+    remove-shader: func(shader: u32);
 }
 
 /// What the game calls. Only the hooks `init` asks for are ever called.

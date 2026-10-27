@@ -197,9 +197,18 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     let mut reader = content.reader()?;
     let mut files = Vec::with_capacity(content.files.len());
     for name in &content.files {
-        files.push((name.as_str(), reader.read(name)?));
+        files.push((name.clone(), reader.read(name)?));
     }
-    let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+    // Its shaders, which content leaves out (`Package::read` checks them).
+    for name in &manifest.shaders {
+        let file = manifest.shader_path(name);
+        let bytes = std::fs::read(root.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+        files.push((file, bytes));
+    }
+    let files: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_slice()))
+        .collect();
     let dir = target_dir.join("horizon-mod");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.hmod", manifest.id));

@@ -89,7 +89,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: the mod's saved state (settings, progress), in a per-mod folder of up to 256 files and 16 MiB, at most 1 MiB written per call; a server owner changes both in `server.toml` (`[mods]`). Not for resources: [where a mod's files go](#where-a-mods-files-go) |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
-| `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
+| `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them. `register-shader(name, kind, params)`, `set-shader-params(shader, values)`, `remove-shader(shader)`: post passes of the mod's own WGSL over the world's picture ([shaders from a mod](#shaders-from-a-mod)). **Experimental:** `experimental = ["render"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory's or crafting table's grid (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. **Experimental:** `experimental = ["recipes"]` |
 
@@ -109,6 +109,7 @@ A mod ships everything it *is* in its `.hmod`, and keeps only what it *saves* in
 |---|---|---|
 | Textures, models, sounds, language files, block states | `assets/<id>/...` in the `.hmod` | the game loads them with the mod, as a resource pack's files; no quota but the package's (16 MiB a file, 512 MiB in all) |
 | Recipes, loot tables, tags, blocks and items | `data/<id>/...` in the `.hmod` | read before the world loads ([content mods](#content-mods-api-02)) |
+| WGSL shaders | `assets/<id>/shaders/<name>.wgsl` in the `.hmod` | capability `render` ([shaders from a mod](#shaders-from-a-mod)); no `registries` needed |
 | Settings, progress, a cache the mod rebuilds | `storage` | the only part that changes while playing: 16 MiB and 256 files per mod |
 
 `assets/` and `data/` need capability `registries` and `api = "0.2"`, with code or without. A gun mod's model,
@@ -119,6 +120,49 @@ it (logged), and two mods cannot share a name (the first one loaded keeps it).
 The chat box colours and Tab-completes a mod's commands like vanilla's, for
 every player whatever their permission level, and takes any text after the
 name (the mod reads it as `args`; API 0.1 has no way to declare argument types).
+
+### Shaders from a mod
+
+A mod with capability `render` may draw full-screen passes of its own over the world, written in WGSL as a
+[Horizon shader pack](api/shaders.md)'s post stage is. It ships each one in its `.hmod` and declares it in its
+manifest:
+
+```toml
+capabilities = ["game-read", "render"]
+experimental = ["render"]
+shaders = ["vignette"]              # assets/vignette/shaders/vignette.wgsl
+```
+
+Its code registers it, then sets its numbers whenever they change (each frame at most):
+
+```rust
+let params = ["strength".to_owned(), "low_health".to_owned()];
+let shader = render::register_shader("vignette", ShaderKind::PostAfterTranslucent, &params)?;
+render::set_shader_params(shader, &[0.6, low_health]);
+```
+
+The WGSL defines `fn post(input: PostInput) -> vec4<f32>` and reads what a pack's post stage reads (`frame`, the
+world's colour and depth, the helpers; [shaders-reference.md](api/shaders-reference.md)), plus `params.<name>`, the
+mod's numbers (up to 16 `f32`s, 0 until set). The example is
+[`vignette`](../crates/horizon-mod-sdk/examples/vignette/src/lib.rs).
+
+- **Hook points, not pipelines.** `kind` is a point of the game's frame. Today the game runs
+  `post-after-translucent`: over the world once it is drawn (terrain, translucent blocks, entities, particles,
+  weather), under the hand and the HUD, before a shader pack's own post passes, in the mods' load order and then the
+  order each registered them. `post-after-terrain`, `post-before-hud`, `material` (the mod's own blocks, items and
+  entities) and `hud-fill` (its HUD shapes) are in the contract and refused with an error until the game runs them.
+  A mod never builds a pipeline, binds a resource of its own or touches another mod's or vanilla's materials.
+- **Checked when registered.** `register-shader` builds the stage as the game will and checks it with naga: the
+  signature, no bindings or entry points of its own (so no storage it could write), translation for Vulkan, Metal
+  and DirectX 12, at most 64 KiB of WGSL, 4,000 expressions and 250 ms to check. A shader that fails is refused with
+  its file, line and reason, in the mod's log too; only that shader stops, the mod runs on.
+- **A GPU budget.** Each pass is timed on the GPU; one that stays over 2 ms a frame for 5 seconds is removed and
+  the player is told in chat ("Mod Vignette's shader vignette stopped: it took 3.1 ms of GPU time a frame"), as a
+  mod that runs out of fuel is stopped. On a GPU without timestamp queries no pass is timed or removed.
+- **Off until the player turns the mod on**, like every mod; its row in Options > Mods says it may "use custom
+  shaders". At most 8 registered at once per mod; `remove-shader` stops one.
+- `cargo horizon-mod test` scripts check them: `expect.shaders = [{ name = "vignette", kind =
+  "post-after-translucent", params = [0.6, 0.0] }]` (the shaders registered after the step, in order).
 
 ### Planned interfaces
 
@@ -346,6 +390,7 @@ checked:
 | `chat = ["..."]` | every chat line it showed, in order (`[]`: none) |
 | `feedback = "..."`, `error = "..."` | the command's answer, shown plain or in red |
 | `panel = ["..."]`, `corner = "top-left"` | its HUD panel's lines (`[]`: no panel) and corner |
+| `shaders = [{ name = "vignette", kind = "...", params = [0.6] }]` | the shaders it has registered, in order (`[]`: none); `kind` and `params` are checked when given |
 | `told = ["Alex: Welcome!"]`, `broadcast = ["..."]` | server mods: every `players.tell` (as `name: text`) and `players.broadcast`, in order |
 | `blocks = [{ x = 2, y = 64, z = 0, state = "minecraft:glowstone" }]` | server mods with `world`: those blocks of the Overworld after the step, the mod's `set-blocks` made (the script checks a state's shape; the game checks its name) |
 | `stopped = "panic"` | the mod was turned off, for a reason holding this text; without it, a mod that traps, panics or overruns fails the test |
@@ -403,6 +448,7 @@ api = "0.1"                  # the API the SDK targets
 side = "client"              # client | server | both
 capabilities = ["game-read", "hud", "chat"]
 experimental = []            # experimental capabilities it uses, e.g. ["ui"]
+shaders = []                 # its WGSL shaders, assets/<id>/shaders/<name>.wgsl (capability render)
 ```
 
 Unknown keys are refused, so a typo is an error, not a silently ignored

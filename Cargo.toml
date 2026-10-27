@@ -34,6 +34,7 @@ members = [
     "crates/horizon-mod-sdk/examples/predator-missile",
     "crates/horizon-mod-sdk/examples/welcome",
     "crates/horizon-mod-sdk/examples/beacons",
+    "crates/horizon-mod-sdk/examples/vignette",
     "mods/official/fps-overlay",
     "mods/official/keystrokes",
     "mods/official/far-view",

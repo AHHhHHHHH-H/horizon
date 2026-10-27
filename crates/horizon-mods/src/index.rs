@@ -553,7 +553,10 @@ impl Facts {
 pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
     match kind {
         Kind::Mod => {
-            let Package { manifest: m, wasm } = Package::read(path)?;
+            // Its shaders are checked when its code registers them (the trial run).
+            let Package {
+                manifest: m, wasm, ..
+            } = Package::read(path)?;
             crate::Content::read(path, &m)?;
             let api_level = match wasm {
                 Some(wasm) => {

@@ -79,8 +79,8 @@ pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, I
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, ShaderKind, Shape,
+    SpriteShape, TextShape, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -184,6 +184,35 @@ impl StorageQuota {
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
+/// Shaders one mod may have registered at once.
+const SHADERS_PER_MOD: usize = 8;
+
+/// A shader a mod registered (`render.register-shader`), checked and ready
+/// for the renderer.
+#[derive(Clone, Debug)]
+pub struct ModShader {
+    pub handle: u32,
+    /// Its name in the manifest's `shaders`.
+    pub name: String,
+    pub kind: ShaderKind,
+    /// The names of its `params`, in order.
+    pub params: Vec<String>,
+    /// Their values (`render.set-shader-params`), one per name.
+    pub values: Vec<f32>,
+    pub stage: Arc<horizon_shader_api::check::CheckedStage>,
+}
+
+/// The kind's name in the WIT contract.
+pub fn shader_kind_name(kind: ShaderKind) -> &'static str {
+    match kind {
+        ShaderKind::PostAfterTranslucent => "post-after-translucent",
+        ShaderKind::PostAfterTerrain => "post-after-terrain",
+        ShaderKind::PostBeforeHud => "post-before-hud",
+        ShaderKind::Material => "material",
+        ShaderKind::HudFill => "hud-fill",
+    }
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -261,6 +290,12 @@ pub enum Output {
     QuietCommands { mod_id: String, lines: Vec<String> },
     /// The mod was turned off: it trapped, overran or failed to start.
     Stopped { name: String, reason: String },
+    /// The game removed one of the mod's shaders (`Mods::drop_shader`).
+    ShaderStopped {
+        name: String,
+        shader: String,
+        reason: String,
+    },
     /// `players.tell`: a line after the mod's name, to the player with this id.
     Tell {
         name: String,
@@ -467,6 +502,11 @@ struct State {
     minimap: Option<ModMinimap>,
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
+    /// The WGSL of the shaders its manifest declares, by name.
+    shader_sources: std::collections::BTreeMap<String, String>,
+    /// Its registered shaders, in the order it registered them.
+    shaders: Vec<ModShader>,
+    next_shader: u32,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -685,6 +725,9 @@ impl Mods {
             zoom: None,
             minimap: None,
             far_terrain: None,
+            shader_sources: package.shaders.clone(),
+            shaders: Vec::new(),
+            next_shader: 0,
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -1321,6 +1364,34 @@ impl Mods {
             });
         }
     }
+    /// The running mods' shaders, in load and registration order: the mod's
+    /// index in [`Mods::entries`], its id and the shader.
+    pub fn shaders(&self) -> impl Iterator<Item = (usize, &str, &ModShader)> {
+        self.entries.iter().enumerate().flat_map(|(i, e)| {
+            let id = e.manifest.as_ref().map_or("", |m| m.id.as_str());
+            e.run
+                .iter()
+                .flat_map(move |r| r.store.data().shaders.iter().map(move |s| (i, id, s)))
+        })
+    }
+    /// Removes the shader `handle` of mod `owner` (it kept going over its GPU
+    /// budget, or the GPU refused it), telling the player why; the mod runs on.
+    pub fn drop_shader(&mut self, owner: usize, handle: u32, reason: &str) {
+        let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) else {
+            return;
+        };
+        let data = run.store.data_mut();
+        let Some(i) = data.shaders.iter().position(|s| s.handle == handle) else {
+            return;
+        };
+        let shader = data.shaders.remove(i);
+        log::warn!("[mod {}] shader {} stopped: {reason}", data.id, shader.name);
+        self.out.push(Output::ShaderStopped {
+            name: data.name.clone(),
+            shader: shader.name,
+            reason: reason.to_owned(),
+        });
+    }
     /// What mods asked to show since the last call.
     pub fn drain(&mut self) -> Vec<Output> {
         std::mem::take(&mut self.out)
@@ -1840,7 +1911,80 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+impl State {
+    fn register_shader_checked(
+        &mut self,
+        name: &str,
+        kind: ShaderKind,
+        params: Vec<String>,
+    ) -> Result<u32, String> {
+        let source = self.shader_sources.get(name).ok_or_else(|| {
+            format!(
+                "no shader {name} in {}'s shaders",
+                crate::manifest::MANIFEST
+            )
+        })?;
+        if kind != ShaderKind::PostAfterTranslucent {
+            return Err(format!(
+                "this Horizon runs post-after-translucent shaders, not {} yet",
+                shader_kind_name(kind)
+            ));
+        }
+        if self.shaders.iter().any(|s| s.name == name) {
+            return Err(format!("shader {name} is already registered"));
+        }
+        if self.shaders.len() >= SHADERS_PER_MOD {
+            return Err(format!("a mod may register {SHADERS_PER_MOD} shaders"));
+        }
+        let file = format!("assets/{}/shaders/{name}.wgsl", self.id);
+        let stage = horizon_shader_api::mods::check(
+            horizon_shader_api::StageKind::Post,
+            &file,
+            source,
+            &params,
+        )
+        .map_err(|problems| {
+            let p: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            p.join("; ")
+        })?;
+        self.next_shader += 1;
+        self.shaders.push(ModShader {
+            handle: self.next_shader,
+            name: name.to_owned(),
+            kind,
+            values: vec![0.0; params.len()],
+            params,
+            stage: Arc::new(stage),
+        });
+        Ok(self.next_shader)
+    }
+}
+
 impl render::Host for State {
+    fn register_shader(
+        &mut self,
+        name: String,
+        kind: ShaderKind,
+        params: Vec<String>,
+    ) -> Result<u32, String> {
+        let result = self.register_shader_checked(&name, kind, params);
+        // In the mod's log as well: a shader refused stops only itself.
+        if let Err(e) = &result {
+            log::warn!("[mod {}] shader {name} refused: {e}", self.id);
+        }
+        result
+    }
+    fn set_shader_params(&mut self, shader: u32, values: Vec<f32>) {
+        if let Some(s) = self.shaders.iter_mut().find(|s| s.handle == shader) {
+            let mut values = values.into_iter();
+            for v in &mut s.values {
+                *v = values.next().filter(|v| v.is_finite()).unwrap_or(0.0);
+            }
+        }
+    }
+    fn remove_shader(&mut self, shader: u32) {
+        self.shaders.retain(|s| s.handle != shader);
+    }
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
     }

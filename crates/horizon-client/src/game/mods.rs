@@ -354,7 +354,10 @@ impl Game<'_> {
                     };
                 };
                 // What it may do first: the row cuts long descriptions.
-                let may: Vec<&str> = m.capabilities.iter().map(|c| c.describe()).collect();
+                let mut may: Vec<&str> = m.capabilities.iter().map(|c| c.describe()).collect();
+                if !m.shaders.is_empty() {
+                    may.push("use custom shaders");
+                }
                 let may = if may.is_empty() {
                     "Asks for nothing.".to_owned()
                 } else {
@@ -703,6 +706,12 @@ impl Game<'_> {
                     }
                     Text::literal(line).with_color(text::RED)
                 }
+                Output::ShaderStopped {
+                    name,
+                    shader,
+                    reason,
+                } => Text::literal(format!("Mod {name}'s shader {shader} stopped: {reason}"))
+                    .with_color(text::RED),
                 server @ (Output::Tell { .. }
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }

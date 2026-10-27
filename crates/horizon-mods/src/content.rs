@@ -208,7 +208,13 @@ impl Content {
         };
         let mut files = Vec::with_capacity(sized.len());
         let mut total = 0u64;
-        for (name, size) in sized {
+        // A mod's shaders are its code's (capability `render`, `Package::shaders`), not content.
+        let shaders: Vec<String> = manifest
+            .shaders
+            .iter()
+            .map(|n| manifest.shader_path(n))
+            .collect();
+        for (name, size) in sized.into_iter().filter(|(n, _)| !shaders.contains(n)) {
             check_path(&name)?;
             if size > MAX_FILE {
                 return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));

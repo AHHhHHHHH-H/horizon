@@ -1,0 +1,29 @@
+# The pass is registered at start, follows the player's health each tick and goes away at
+# strength 0. (A step's ticks run before its command.)
+
+[[step]]
+ticks = 1
+expect.shaders = [{ name = "vignette", kind = "post-after-translucent", params = [0.6, 0.0] }]
+
+[[step]]
+player = { health = 5.0 }
+ticks = 1
+expect.shaders = [{ name = "vignette", params = [0.6, 0.75] }]
+
+[[step]]
+command = "vignette 0"
+expect.feedback = "Vignette at 0"
+expect.shaders = []
+
+[[step]]
+command = "vignette 1"
+expect.feedback = "Vignette at 1"
+expect.shaders = [{ name = "vignette", params = [0.0, 0.0] }]
+
+[[step]]
+ticks = 1
+expect.shaders = [{ name = "vignette", params = [1.0, 0.75] }]
+
+[[step]]
+command = "vignette 2"
+expect.error = "Give a strength from 0 to 1"
