@@ -212,7 +212,7 @@ impl AtmosphereBlend {
             } else {
                 *sky
             };
-            self.target = Some(target.clone());
+            self.target = Some(*target);
             self.since = Some(now);
         }
         let elapsed = self
