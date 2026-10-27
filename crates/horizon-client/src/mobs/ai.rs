@@ -180,6 +180,7 @@ pub fn register(m: &mut Mob) {
         Family::Undead => undead::register(m),
         Family::Hostile => hostile::register(m),
         Family::Aquatic => aquatic::register(m),
+        Family::Generic if m.species() == Species::Armadillo => super::armadillo::register(m),
         Family::Generic => {
             generic(m);
             if m.species() == Species::Rabbit {
@@ -411,7 +412,10 @@ pub fn tick(
     }
     // Mob.tickHeadTurn -> BodyRotationControl.clientTick (a frozen
     // creaking's waits).
-    if m.alive() && (!super::creaking::is_creaking(m) || super::creaking::can_move(m)) {
+    if m.alive()
+        && (!super::creaking::is_creaking(m) || super::creaking::can_move(m))
+        && !super::armadillo::scared(m)
+    {
         m.body_rotation_tick();
     }
     events.append(&mut m.outbox);
@@ -1063,6 +1067,7 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::Evoker if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Bee => super::bee::server_ai_step(m, cx),
+        Species::Armadillo => super::armadillo::server_ai_step(m, cx),
         _ => {}
     }
 }
@@ -1116,6 +1121,7 @@ fn species_ai_step(
         }
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::ai_step(m, w, events),
         Species::Chicken => farm::chicken_ai_step(m, w, events),
+        Species::Armadillo => super::armadillo::tick(m),
         Species::Turtle => super::turtle::ai_step(m, w, events),
         Species::Sheep if m.extra.anim_ticks > 0 => {
             m.extra.anim_ticks -= 1;
@@ -1226,6 +1232,7 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
     match m.species() {
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m),
         Species::SulfurCube => super::sulfur_cube::sounds(m),
+        Species::Armadillo => super::armadillo::sounds(m),
         // The sound variant's baby_sounds (classic sets, like the rest here).
         Species::Pig if m.is_baby() => [
             "entity.baby_pig.ambient",
@@ -1248,6 +1255,10 @@ pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
 ) -> Option<Option<(&'static str, f32, f32)>> {
+    // Armadillo.mobInteract: a ball takes no food.
+    if super::armadillo::scared(m) {
+        return None;
+    }
     if m.extra.age == 0 && m.extra.in_love <= 0 {
         m.extra.in_love = 600;
         m.extra.love_player = true;
@@ -1438,6 +1449,7 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
     m.ai.no_action_time = 0;
     match m.species() {
         Species::Enderman => super::enderman::after_hurt(m, source),
+        Species::Armadillo => super::armadillo::after_hurt(m, source),
         Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
         Species::Wolf => super::tame::after_hurt(m, source),

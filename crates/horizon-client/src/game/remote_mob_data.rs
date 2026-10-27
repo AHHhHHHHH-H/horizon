@@ -4,7 +4,9 @@
 //! own simulation, which a client of a server doesn't run.
 use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
-use horizon_client::mobs::{Mob, Species, Who, bat, camel, creaking, sniffer, sync, tame};
+use horizon_client::mobs::{
+    Mob, Species, Who, armadillo, bat, camel, creaking, sniffer, sync, tame,
+};
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
 use horizon_protocol::registry::Builtin;
@@ -112,6 +114,11 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // follows it in `sync::client_tick`.
             (Species::Sniffer, 18, Value::Id(state)) => {
                 sniffer::set_state(m, (*state).clamp(0, 6) as u8);
+            }
+            // Armadillo.ARMADILLO_STATE (after AgeableMob's two): the shell and
+            // its animations follow it in `sync::client_tick`.
+            (Species::Armadillo, 18, Value::Id(state)) => {
+                armadillo::set_state(m, (*state).clamp(0, 3) as u8);
             }
             // Shulker.DATA_ATTACH_FACE_ID, DATA_PEEK_ID and DATA_COLOR_ID.
             (Species::Shulker, 16, Value::Id(face)) => m.extra.variant3 = (*face).clamp(0, 5) as u8,

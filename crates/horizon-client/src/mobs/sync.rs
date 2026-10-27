@@ -16,8 +16,8 @@
 //! - run its client side animation in `client_tick`, sharing the function
 //!   with the server's `ai_step` where the server computes the same.
 use super::{
-    Mob, Species, allay, axolotl, breeze, camel, copper_golem, creaking, golem, guardian, piglin,
-    ravager, shulker, sniffer, warden,
+    Mob, Species, allay, armadillo, axolotl, breeze, camel, copper_golem, creaking, golem,
+    guardian, piglin, ravager, shulker, sniffer, warden,
 };
 
 // `Pose.id` of the poses mobs take.
@@ -80,6 +80,7 @@ pub fn client_tick(m: &mut Mob, game_time: i64) {
         Species::CopperGolem if !m.no_ai => {
             copper_golem::animate(m);
         }
+        Species::Armadillo => armadillo::tick(m),
         _ => {}
     }
 }
@@ -87,6 +88,9 @@ pub fn client_tick(m: &mut Mob, game_time: i64) {
 /// `handleEntityEvent` of the mob types that start animations by an event
 /// (`ClientboundEntityEventPacket` for a mob of a client).
 pub fn entity_event(m: &mut Mob, event: u8) {
+    if m.species() == Species::Armadillo {
+        armadillo::entity_event(m, event);
+    }
     let age = m.age as f32;
     match m.species() {
         Species::Warden => match event {

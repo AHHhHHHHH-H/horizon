@@ -11,6 +11,7 @@ pub mod ambient;
 pub mod anim;
 pub mod animal_brain;
 pub mod aquatic;
+pub mod armadillo;
 pub mod axolotl;
 pub mod bat;
 pub mod bee;
@@ -811,6 +812,8 @@ pub struct Extra {
     pub brain: Option<Box<monster_brain::Brain>>,
     /// A bee's nectar, anger, flower and hive state.
     pub bee: Option<Box<bee::Bee>>,
+    /// An armadillo's state and scare brain.
+    pub armadillo: armadillo::State,
 }
 #[derive(Clone, Debug)]
 pub struct Mob {
@@ -1580,6 +1583,9 @@ pub struct PlayerView {
     pub last_hurt: Option<(Who, i64)>,
     pub velocity: Vec3,
     pub yaw: f32,
+    /// `Player.isSprinting` and `isPassenger` (what scares an armadillo).
+    pub sprinting: bool,
+    pub riding: bool,
     /// The Hero of the Village effect.
     pub hero: bool,
     /// The active effects, without namespace (`slowness`, `poison`...).
@@ -1846,6 +1852,9 @@ impl Mob {
             return false;
         }
         let mut amount = if reflected { 1000.0 } else { amount };
+        if self.species() == Species::Armadillo {
+            amount = armadillo::reduce_damage(self, amount);
+        }
         if source.kind == DamageKind::FallingBlock
             && !species::body_slot(self.species())
             && self.extra.head.is_some()

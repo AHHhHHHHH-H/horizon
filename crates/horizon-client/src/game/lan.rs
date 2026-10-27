@@ -492,6 +492,14 @@ fn mob_meta(
             }
             defaults.push((17, serializer::COPPER_GOLEM_STATE, Value::Id(0)));
         }
+        // Armadillo.ARMADILLO_STATE (after AgeableMob's two).
+        "minecraft:armadillo" => {
+            let state = horizon_client::mobs::armadillo::state(m);
+            if state != 0 {
+                meta.push((18, serializer::ARMADILLO_STATE, Value::Id(i32::from(state))));
+            }
+            defaults.push((18, serializer::ARMADILLO_STATE, Value::Id(0)));
+        }
         // Enderman.DATA_CARRY_STATE.
         "minecraft:enderman" => {
             if let Some(state) = e.carried {
