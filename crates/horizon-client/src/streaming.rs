@@ -69,6 +69,11 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     fn is_decorated(&self, _proto: &Proto) -> bool {
         false
     }
+    /// A decorated proto chunk's blocks as a column, to light a finished
+    /// neighbour against (vanilla lights with neighbours at FEATURES).
+    fn light_view(&self, _proto: &Proto) -> Option<Chunk> {
+        None
+    }
     /// What to save of a proto chunk dropped before it became final.
     fn saved_proto(&self, _proto: &Proto) -> Option<crate::save::SavedProto> {
         None
@@ -212,6 +217,7 @@ struct Shared {
 }
 pub struct Streaming {
     shared: Arc<Shared>,
+    light_view: Arc<dyn Fn(&Proto) -> Option<Chunk> + Send + Sync>,
     results: mpsc::Receiver<Done>,
     threads: Vec<thread::JoinHandle<()>>,
     order: u64,
@@ -541,8 +547,13 @@ impl Streaming {
                     .expect("spawn worker")
             })
             .collect();
+        let light_view = {
+            let generator = generator.clone();
+            Arc::new(move |p: &Proto| generator.light_view(p))
+        };
         Self {
             shared,
+            light_view,
             results,
             threads,
             order: 0,
@@ -781,6 +792,43 @@ impl Streaming {
     fn distance(&self, x: i32, z: i32) -> i64 {
         self.ranges().priority(x, z, self.loading)
     }
+    /// The 3x3 a light job reads: the finished columns, and for a neighbour
+    /// that will not finish (past the area), its decorated proto chunk, as
+    /// vanilla lights its last FULL ring against neighbours at FEATURES.
+    fn light_region(&self, world: &World, x: i32, z: i32) -> Option<Box<Region>> {
+        let neighbour = |dx: usize, dz: usize| (x + dx as i32 - 1, z + dz as i32 - 1);
+        let stand_in = |n: (i32, i32)| {
+            !world.chunks.contains_key(&n)
+                && !self.in_range(n.0, n.1, 1)
+                && self.decorated.contains(&n)
+        };
+        // Every neighbour is there before any proto becomes a column: a
+        // column is built on the main thread, and a missing neighbour retries.
+        let ready = (0..3).all(|dz| {
+            (0..3).all(|dx| {
+                let n = neighbour(dx, dz);
+                world.chunks.contains_key(&n)
+                    || (stand_in(n) && matches!(self.protos.get(&n), Some(Some(_))))
+            })
+        });
+        if !ready {
+            return None;
+        }
+        let mut region: Region = Default::default();
+        for dz in 0..3 {
+            for dx in 0..3 {
+                let n = neighbour(dx, dz);
+                region[dz][dx] = Some(match world.chunks.get(&n) {
+                    Some(chunk) => chunk.clone(),
+                    None => {
+                        let proto = self.protos.get(&n)?.as_ref()?;
+                        Arc::new((self.light_view)(proto)?)
+                    }
+                });
+            }
+        }
+        Some(Box::new(region))
+    }
     fn region(world: &World, x: i32, z: i32) -> Option<Box<Region>> {
         let mut region: Region = Default::default();
         for dz in 0..3 {
@@ -901,6 +949,11 @@ impl Streaming {
                             apply_lighting(chunk, sections);
                         } else {
                             apply_relighting(chunk, sections, &mut changed);
+                        }
+                        // Saved unlit (at the edge of what was loaded), or its light
+                        // changed: saved again.
+                        if (first && !chunk.light_loaded) || !changed.is_empty() {
+                            world.modified.insert((x, z));
                         }
                         chunk.lit = true;
                         if first {
@@ -1140,7 +1193,7 @@ impl Streaming {
                 world.dirty_light.remove(&(x, z));
                 continue;
             }
-            let Some(region) = Self::region(world, x, z) else {
+            let Some(region) = self.light_region(world, x, z) else {
                 continue;
             };
             world.dirty_light.remove(&(x, z));
@@ -1482,7 +1535,7 @@ impl Streaming {
                 counts[1] += 1;
             } else {
                 counts[2] += 1;
-                if Self::region(world, key.0, key.1).is_some() {
+                if self.light_region(world, key.0, key.1).is_some() {
                     world.dirty_light.insert(key);
                 }
             }
