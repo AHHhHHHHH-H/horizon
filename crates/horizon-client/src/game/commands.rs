@@ -1075,7 +1075,7 @@ impl Game<'_> {
                             p[1] + g.target_eye_height(Target::Player),
                             p[2],
                         ]);
-                        g.throw_from_eyes(rest, eye);
+                        g.throw_from_eyes(rest, eye, false);
                         if let Some(item) = g.dropped.last_mut() {
                             item.thrower = None;
                             item.pickup_delay = 0;
