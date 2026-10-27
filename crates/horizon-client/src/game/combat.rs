@@ -156,6 +156,10 @@ impl Game<'_> {
                 direct,
             });
             self.combat.last_damage = now;
+            // InfestedMobEffect.onMobHurt.
+            if self.potions.effects.get("infested").is_some() {
+                self.player_infested();
+            }
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
