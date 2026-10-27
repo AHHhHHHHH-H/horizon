@@ -1,1 +1,30 @@
-{}
+{
+  "prs": [
+    {
+      "number": 2834,
+      "head": "b98633b677522d467effd4a67192c7b2721cd6fa",
+      "title": "Play the player's own bites while eating on a remote server",
+      "author": "socksprox",
+      "asked_by": "ludovic111",
+      "asked_at": "2026-10-27T16:24:16+00:00"
+    },
+    {
+      "number": 2838,
+      "head": "f6e63d252d660252d6cd26d914cc0f59594681a5",
+      "title": "A neutral mob's anger survives the save and the reload",
+      "author": "levzzz5154",
+      "asked_by": "ludovic111",
+      "asked_at": "2026-10-27T16:24:16+00:00"
+    }
+  ],
+  "blocked": [],
+  "log": [
+    {
+      "at": "2026-10-27T16:24:16+00:00",
+      "by": "ludovic111",
+      "command": "/nightly 2834 2838",
+      "issue": "2859",
+      "url": "https://github.com/ludovic111/horizon/pull/2859#issuecomment-6447400633"
+    }
+  ]
+}
