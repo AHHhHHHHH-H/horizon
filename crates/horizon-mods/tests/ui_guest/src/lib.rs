@@ -110,6 +110,7 @@ impl Mod for Guest {
             "sample_block",
             "local_sound",
             "atmosphere",
+            "nearby",
             "input_claim",
             "input_poll",
             "input_held",
@@ -471,6 +472,10 @@ impl Mod for Guest {
                         browser::Event::Tab(i) => format!("tab {i}"),
                     });
                 }
+            }
+            "nearby" => {
+                let radius = args.parse().unwrap_or(f32::NAN);
+                chat::show(&format!("entities {}", game::nearby_entities(radius).len()));
             }
             "atmosphere" => {
                 let value = (args != "clear").then_some(render::Atmosphere {

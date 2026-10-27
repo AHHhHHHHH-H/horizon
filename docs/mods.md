@@ -758,3 +758,13 @@ returning to the title screen restores the native environment. The API does
 not change server weather, light propagation, mob spawning or other gameplay.
 Invalid values leave the previous configuration intact. Fog distances stay
 finite and ordered, colours are 24-bit RGB and brightness/opacity are 0..1.
+
+### Nearby entities (API level 12)
+
+`game::nearby_entities(radius)` reads at most 128 nearest loaded living
+entities (including remote players), dropped items, experience orbs, boats
+and minecarts. Records include the client entity ID, kind, position, velocity,
+size, grounded state and burning flag. The local player stays in `get_player`.
+Only a finite radius in 0..32 blocks is accepted, and calls share the
+64-query per-tick budget with block sampling. No server-only entity state
+is requested. The snapshot is built only while a running mod imports it.

@@ -80,6 +80,26 @@ interface game {
     /// This never requests or generates chunks. API level 9.
     sample-block: func(x: s32, y: s32, z: s32) -> option<block-sample>;
 
+    record nearby-entity {
+        id: u32,
+        kind: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        velocity-x: f64,
+        velocity-y: f64,
+        velocity-z: f64,
+        width: f32,
+        height: f32,
+        on-ground: bool,
+        burning: bool,
+    }
+    /// Up to 128 nearest loaded living entities, dropped items, experience
+    /// orbs, boats and minecarts (the local player is get-player). Radius is
+    /// finite, 0..32 blocks. Uses the shared 64-query per-tick budget.
+    /// No server-only or unloaded entities are exposed. API level 12.
+    nearby-entities: func(radius: f32) -> list<nearby-entity>;
+
 }
 
 /// Capability `audio` (experimental): bounded local positional sounds.

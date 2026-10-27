@@ -132,12 +132,30 @@ A block along the player's view.
 | `block-light` | `u8` |  |
 | `sky-light` | `u8` |  |
 
+### record `nearby-entity`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `kind` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `velocity-x` | `f64` |  |
+| `velocity-y` | `f64` |  |
+| `velocity-z` | `f64` |  |
+| `width` | `f32` |  |
+| `height` | `f32` |  |
+| `on-ground` | `bool` |  |
+| `burning` | `bool` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
 | `sample-block` | `func(x: s32, y: s32, z: s32) -> option<block-sample>` | Reads a loaded block within 32 blocks of the player, at most 64 times per mod per tick, shared by all hooks. None outside the world, beyond that radius, without a player, or when the query budget is exhausted. This never requests or generates chunks. API level 9. |
+| `nearby-entities` | `func(radius: f32) -> list<nearby-entity>` | Up to 128 nearest loaded living entities, dropped items, experience orbs, boats and minecarts (the local player is get-player). Radius is finite, 0..32 blocks. Uses the shared 64-query per-tick budget. No server-only or unloaded entities are exposed. API level 12. |
 
 ## `audio`
 

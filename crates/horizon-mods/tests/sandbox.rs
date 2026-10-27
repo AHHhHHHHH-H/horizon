@@ -1460,3 +1460,45 @@ fn atmosphere_is_validated_dimension_scoped_and_owner_scoped() {
     assert!(mods.command("atmosphere panic"));
     assert!(mods.atmosphere().is_none());
 }
+
+#[test]
+fn entity_queries_are_bounded_to_visible_client_data() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_entities());
+    let mut snapshot = player();
+    let p = snapshot.player.as_ref().unwrap();
+    snapshot.nearby_entities = (0..300)
+        .map(|id| horizon_mods::NearbyEntity {
+            id,
+            kind: "minecraft:pig".into(),
+            x: p.x + 2.0,
+            y: p.y,
+            z: p.z,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            velocity_z: 0.0,
+            width: 0.9,
+            height: 0.9,
+            on_ground: true,
+            burning: false,
+        })
+        .collect();
+    mods.set_snapshot(snapshot);
+    let query = |mods: &mut Mods, radius: &str| {
+        assert!(mods.command(&format!("nearby {radius}")));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    mods.tick(1);
+    assert_eq!(query(&mut mods, "NaN"), "entities 0");
+    assert_eq!(query(&mut mods, "33"), "entities 0");
+    assert_eq!(query(&mut mods, "1"), "entities 0");
+    assert_eq!(query(&mut mods, "2"), "entities 128");
+    mods.set_snapshot(Snapshot::default());
+    assert_eq!(query(&mut mods, "32"), "entities 0");
+}

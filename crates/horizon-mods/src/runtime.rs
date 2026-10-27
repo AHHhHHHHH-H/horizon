@@ -45,7 +45,7 @@ mod ui_bindings {
 }
 pub use bindings::horizon::mods::audio::Sound as LocalSound;
 pub use bindings::horizon::mods::{
-    game::{BlockSample, Clock, Hit, Player},
+    game::{BlockSample, Clock, Hit, NearbyEntity, Player},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -148,6 +148,7 @@ pub trait ClientWorldView: std::fmt::Debug + Send + Sync {
 pub struct Snapshot {
     pub player: Option<Player>,
     pub client_world: Option<Arc<dyn ClientWorldView>>,
+    pub nearby_entities: Arc<[NearbyEntity]>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
     pub gui_size: (f32, f32),
@@ -340,6 +341,7 @@ struct Running {
     /// It imports `game.raycast`.
     raycasts: bool,
     client_world: bool,
+    entity_queries: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
 }
@@ -718,6 +720,7 @@ impl Mods {
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             client_world: functions.iter().any(|f| f == "game.sample-block"),
+            entity_queries: functions.iter().any(|f| f == "game.nearby-entities"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
         }))
     }
@@ -1013,6 +1016,11 @@ impl Mods {
             .filter_map(|e| e.run.as_ref())
             .filter_map(|run| run.store.data().atmosphere.as_ref())
             .find_map(|(d, value)| (d == dimension).then_some(value))
+    }
+    pub fn wants_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.entity_queries))
     }
     /// Whether a client mod needs a bounded loaded-world snapshot.
     pub fn wants_client_world(&self) -> bool {
@@ -1539,6 +1547,25 @@ impl audio::Host for State {
 }
 
 impl game::Host for State {
+    fn nearby_entities(&mut self, radius: f32) -> Vec<NearbyEntity> {
+        if self.world_query_budget == 0 || !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
+            return Vec::new();
+        }
+        self.world_query_budget -= 1;
+        let Some(p) = &self.snapshot.player else {
+            return Vec::new();
+        };
+        self.snapshot
+            .nearby_entities
+            .iter()
+            .filter(|e| {
+                (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                    <= f64::from(radius).powi(2)
+            })
+            .take(128)
+            .cloned()
+            .collect()
+    }
     fn sample_block(&mut self, x: i32, y: i32, z: i32) -> Option<BlockSample> {
         if self.world_query_budget == 0 {
             return None;

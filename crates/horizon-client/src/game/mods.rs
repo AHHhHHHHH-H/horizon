@@ -480,6 +480,7 @@ impl Game<'_> {
         let (recipes, known_recipes) = self.mod_recipes();
         Snapshot {
             client_world: self.mod_world_snapshot(),
+            nearby_entities: self.mod_nearby_entities(),
             player,
             clock,
             gui_size: self.gui_size(),

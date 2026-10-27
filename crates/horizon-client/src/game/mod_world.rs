@@ -104,3 +104,118 @@ impl Game<'_> {
         }))
     }
 }
+
+impl Game<'_> {
+    pub(super) fn mod_nearby_entities(&self) -> Arc<[horizon_mods::NearbyEntity]> {
+        use horizon_mods::NearbyEntity;
+        if !self.mods.mods.wants_entities() || self.title.is_some() {
+            return Arc::from([]);
+        }
+        let Some(player) = self.player.as_ref() else {
+            return Arc::from([]);
+        };
+        let mut nearby = Vec::new();
+        let mut add = |id,
+                       kind: &str,
+                       pos: horizon_core::geometry::Vec3,
+                       velocity: horizon_core::geometry::Vec3,
+                       width,
+                       height,
+                       on_ground,
+                       burning| {
+            let d2 = (pos.x - player.position.x).powi(2)
+                + (pos.y - player.position.y).powi(2)
+                + (pos.z - player.position.z).powi(2);
+            if d2.is_finite() && d2 <= 32.0_f64.powi(2) {
+                nearby.push((
+                    d2,
+                    NearbyEntity {
+                        id,
+                        kind: kind.into(),
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z,
+                        velocity_x: velocity.x,
+                        velocity_y: velocity.y,
+                        velocity_z: velocity.z,
+                        width,
+                        height,
+                        on_ground,
+                        burning,
+                    },
+                ));
+            }
+        };
+        for m in &self.mobs {
+            if !m.alive() {
+                continue;
+            }
+            let b = m.bounds();
+            add(
+                m.id,
+                &m.kind.id,
+                m.position,
+                m.velocity,
+                (b.max_position().x - b.min_position().x) as f32,
+                (b.max_position().y - b.min_position().y) as f32,
+                m.on_ground,
+                m.fire_ticks > 0,
+            );
+        }
+        for i in &self.dropped {
+            add(
+                i.id,
+                "minecraft:item",
+                i.position,
+                i.velocity,
+                0.25,
+                0.25,
+                i.on_ground,
+                i.fire_ticks > 0,
+            );
+        }
+        for o in &self.orbs {
+            add(
+                o.id,
+                "minecraft:experience_orb",
+                o.position,
+                o.velocity,
+                0.5,
+                0.5,
+                o.on_ground,
+                false,
+            );
+        }
+        for b in &self.boats {
+            add(
+                b.id,
+                if b.chest {
+                    "minecraft:chest_boat"
+                } else {
+                    "minecraft:boat"
+                },
+                b.position,
+                b.velocity,
+                1.375,
+                0.5625,
+                b.on_ground,
+                false,
+            );
+        }
+        for c in &self.carts {
+            add(
+                c.id,
+                c.kind.id(),
+                c.position,
+                c.velocity,
+                0.98,
+                0.7,
+                c.on_ground,
+                false,
+            );
+        }
+        nearby.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        nearby.truncate(128);
+        nearby.into_iter().map(|(_, e)| e).collect()
+    }
+}
