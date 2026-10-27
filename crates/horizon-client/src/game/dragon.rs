@@ -247,6 +247,10 @@ impl Phase {
     }
 }
 pub(super) struct Dragon {
+    /// A dragon a server flies: its moves and its synced data come from the
+    /// server, and the client only flaps its wings, keeps its flight history
+    /// and places its parts.
+    remote: bool,
     /// `Entity.id` once tracked to guests (0 before); its parts take the
     /// eight ids after it (`EnderDragon`'s constructor reserves them).
     pub id: u32,
@@ -374,6 +378,7 @@ const ADJACENCY: [u32; 24] = [
 impl Dragon {
     fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
         Self {
+            remote: false,
             id: 0,
             position,
             previous: position,
@@ -422,6 +427,24 @@ impl Dragon {
         let b = self.sample(delay + 1);
         let yaw = b.1 + wrap(a.1 - b.1) * partial;
         (b.0 + (a.0 - b.0) * f64::from(partial), yaw)
+    }
+    /// The server's move for the dragon: the client follows it, the way every
+    /// other entity follows the server's (`ClientboundMoveEntityPacket` and
+    /// the entity's own interpolation). The position before the move stays
+    /// the previous one, so the dragon is drawn between the two.
+    pub(super) fn remote_move(
+        &mut self,
+        position: Option<[f64; 3]>,
+        rotation: Option<(f32, f32)>,
+    ) {
+        if let Some(position) = position {
+            self.previous = self.position;
+            self.position = Vec3::new(position[0], position[1], position[2]);
+        }
+        if let Some((yaw, _)) = rotation {
+            self.previous_yaw = self.yaw;
+            self.yaw = yaw;
+        }
     }
     pub fn alive(&self) -> bool {
         self.health > 0.0
@@ -1645,8 +1668,12 @@ impl Game<'_> {
         let Some(d) = self.dragon.as_mut() else {
             return;
         };
-        d.previous = d.position;
-        d.previous_yaw = d.yaw;
+        if !d.remote {
+            // The server's dragon moves with its own packets; the client's
+            // previous position is the one before the last of them.
+            d.previous = d.position;
+            d.previous_yaw = d.yaw;
+        }
         d.old_flap = d.flap;
         d.ticks += 1;
         d.hurt_time = (d.hurt_time - 1).max(0);
@@ -1702,8 +1729,13 @@ impl Game<'_> {
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
         d.record();
+        if d.remote {
+            // The server flies the dragon: it sends its moves, its health and
+            // its phase, and the client only flaps its wings, keeps its flight
+            // history and places its parts.
+            return;
+        }
         self.tick_phase();
-        // Steering towards the phase's fly target.
         let Some(d) = self.dragon.as_mut() else {
             return;
         };
@@ -3224,6 +3256,7 @@ impl Game<'_> {
         let at = Vec3::new(position[0], position[1], position[2]);
         let mut d = Dragon::new(at, yaw, i64::from(id));
         d.id = id as u32;
+        d.remote = true;
         d.phase = Phase::from_id(10);
         self.dragon = Some(d);
         self.place_dragon_parts();
@@ -3388,6 +3421,23 @@ impl Game<'_> {
     }
 }
 
+/// A dragon a server flies follows the server's moves: the client draws the
+/// dragon the server flies, so its position and its yaw come from the
+/// server's packets (`ClientboundMoveEntityPacket`), the way every other
+/// entity's do. Whether the move was the dragon's is told by its id.
+pub(super) fn follows_the_server(
+    dragon: &mut Option<Dragon>,
+    id: i32,
+    position: Option<[f64; 3]>,
+    rotation: Option<(f32, f32)>,
+) -> bool {
+    let Some(d) = dragon.as_mut().filter(|d| d.id as i32 == id) else {
+        return false;
+    };
+    d.remote_move(position, rotation);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3403,6 +3453,40 @@ mod tests {
             target: None,
             clockwise: false,
         }
+    }
+
+    #[test]
+    fn a_remote_dragon_follows_the_server() {
+        let mut d = dragon(flying());
+        d.id = 7;
+        d.remote = true;
+        let mut some = Some(d);
+        // The server's move: the dragon goes there, and the position it came
+        // from stays the previous one, so it is drawn between the two.
+        assert!(follows_the_server(
+            &mut some,
+            7,
+            Some([10.0, 64.0, -5.0]),
+            Some((90.0, 0.0))
+        ));
+        let d = some.as_ref().unwrap();
+        assert_eq!(d.position, Vec3::new(10.0, 64.0, -5.0));
+        assert_eq!(d.previous, Vec3::new(0.0, 70.0, 0.0));
+        assert_eq!(d.yaw, 90.0);
+        // A rotation alone leaves the position where it was.
+        assert!(follows_the_server(&mut some, 7, None, Some((45.0, 0.0))));
+        let d = some.as_ref().unwrap();
+        assert_eq!(d.position, Vec3::new(10.0, 64.0, -5.0));
+        assert_eq!(d.previous, Vec3::new(0.0, 70.0, 0.0));
+        assert_eq!(d.yaw, 45.0);
+        // Another entity's move is not the dragon's.
+        assert!(!follows_the_server(
+            &mut some,
+            8,
+            Some([1.0, 2.0, 3.0]),
+            None
+        ));
+        assert_eq!(some.as_ref().unwrap().position, Vec3::new(10.0, 64.0, -5.0));
     }
 
     #[test]

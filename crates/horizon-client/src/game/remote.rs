@@ -1339,6 +1339,16 @@ impl Game<'_> {
                     .map(|m| [m.position.x, m.position.y, m.position.z])
             })
             .unwrap_or([0.0; 3]);
+        // The dragon is drawn from its own state (game/dragon.rs), not from
+        // the generic mob list: the server's moves move that one.
+        if super::dragon::follows_the_server(
+            &mut self.dragon,
+            id,
+            path.as_ref().map(Path::end),
+            rotation,
+        ) {
+            return;
+        }
         if let Some(r) = self.remote.as_mut() {
             if let Some(t) = r.entities.get_mut(&id) {
                 t.position = position;
