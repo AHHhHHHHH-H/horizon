@@ -14,6 +14,9 @@ are ported or that every API is complete. No custom client was installed.
 - [x] API 11: optional atmosphere fields, transitions and owner/dimension cleanup.
 - [x] API 12: bounded nearby entity snapshots for the documented client types.
 - [x] API 13: bounded queues of locally observed gameplay events.
+- [x] API 14: owner-scoped configurable particles using vanilla sprite sets,
+  explicit color/size/lifetime/physics and live caps (256/owner, 1024 total).
+  Pending and live particles are removed on owner failure, disable or reload.
 - [x] SDK bindings, API-level detection and generated reference for these functions.
 - [x] Real WebAssembly sandbox regression tests for these functions.
 
@@ -29,6 +32,8 @@ proving the full asset/settings lifecycle for the requested effects is still wor
 ## Not implemented yet
 
 - [ ] Custom particle sprite/physics/lifetime declarations and their asset lifecycle.
+  Physics/lifetime controls are implemented by API 14; custom sprite images and
+  packaged-asset lifecycle remain unimplemented. This item is not complete.
 - [ ] Emissive overlay/material registration and resource-pack suffix conventions.
 - [ ] Bounded colored-light sources and renderer integration.
 - [ ] Mod-owned post-processing chains, scene/depth inputs and cleanup/composition.
@@ -38,6 +43,16 @@ proving the full asset/settings lifecycle for the requested effects is still wor
 - [ ] Six complete mod/resource-pack adaptations (none is claimed complete).
 
 ## Validation checkpoint
+
+At the API 14 checkpoint:
+
+- Real WebAssembly sandbox suite: 40 passed, 1 pre-existing ignored.
+- Generated API-reference checks: 4 passed.
+- Client particle unit tests with mods enabled: 14 passed.
+- Client binary check with mods enabled: passed.
+- Clippy, all targets of client/runtime/SDK/developer tool with mods: passed.
+- Native visual, collision/lifetime integration and GPU profiling checks:
+  not run. No claim of visual equivalence or complete custom-particle support.
 
 The focused sandbox suite at the event-API checkpoint passed 39 tests, with one
 pre-existing ignored test. Each new API also passed its focused sandbox test and
