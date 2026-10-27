@@ -955,6 +955,18 @@ impl Game<'_> {
                 MobEvent::SoundId(name, at, volume, pitch) => {
                     self.audio.play(&name, Some(at), volume, pitch)
                 }
+                MobEvent::RingBell { pos } => {
+                    let at = [
+                        f64::from(pos[0]) + 0.5,
+                        f64::from(pos[1]) + 0.5,
+                        f64::from(pos[2]) + 0.5,
+                    ];
+                    self.audio
+                        .play("minecraft:block.bell.use", Some(at), 2.0, 1.0);
+                    // `BlockEntity.triggerEvent(1, 0)` on the bell: shakes it
+                    // and makes villagers within range hear it.
+                    self.block_entity_event(pos, 1, 0);
+                }
                 // The sculk layer tracks the game's steps itself
                 // (`entity_motion_events`).
                 MobEvent::GameEvent { .. } => {}

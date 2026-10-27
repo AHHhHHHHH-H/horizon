@@ -238,12 +238,13 @@ impl Game<'_> {
         if self.remote.is_none() {
             self.tick_conduit_servers();
         }
-        let Some(r) = &self.renderer else {
-            if self.remote.is_none() {
-                self.tick_gateway_servers();
-            }
-            return;
-        };
+    let Some(r) = &self.renderer else {
+        if self.remote.is_none() {
+            self.tick_gateway_servers();
+            self.tick_server_bells();
+        }
+        return;
+    };
         // Sorted by position: the order they tick in, and a quick lookup.
         // Read again only when the drawn block entities changed.
         let revision = r.block_entity_revision();
@@ -401,6 +402,70 @@ impl Game<'_> {
             }
         }
         self.be_anims.present = positions;
+    }
+    /// `BellBlockEntity.tick` on a server with no renderer: resonance sound,
+    /// raider glow and the bell's shake for bells that were rung. Villagers
+    /// were already marked as having heard it in `block_entity_event`.
+    fn tick_server_bells(&mut self) {
+        let raiders = self
+            .res
+            .stations()
+            .enchantments
+            .entity_tags
+            .get("minecraft:raiders");
+        let mobs = &self.mobs;
+        let player = self.player_view().map(|p| {
+            (
+                [p.position.x, p.position.y, p.position.z],
+                p.alive,
+            )
+        });
+        let entity = move |h: u64| {
+            if h == PLAYER {
+                return player.as_ref().map(|(position, alive)| BellEntity {
+                    position: *position,
+                    alive: *alive,
+                    raider: false,
+                });
+            }
+            let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
+            Some(BellEntity {
+                position: [m.position.x, m.position.y, m.position.z],
+                alive: m.alive() && !m.removed,
+                raider: raiders.is_some_and(|r| r.contains(&m.kind.id)),
+            })
+        };
+        for pos in self.be_anims.bells.keys().copied().collect::<Vec<_>>() {
+            let tick = {
+                let entity = &entity;
+                self.be_anims.bells.entry(pos).or_default().tick(pos, entity)
+            };
+            let centre = [
+                f64::from(pos[0]) + 0.5,
+                f64::from(pos[1]) + 0.5,
+                f64::from(pos[2]) + 0.5,
+            ];
+            if tick.resonate {
+                self.audio
+                    .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
+            }
+            if let Some((particles, glow)) = tick.ended {
+                for (p, color) in particles {
+                    let c = color as u32;
+                    let channel = |shift: u32| ((c >> shift) & 255) as f32 / 255.0;
+                    let options = ParticleOptions {
+                        color: [channel(16), channel(8), channel(0), channel(24)],
+                        ..ParticleOptions::simple(ParticleType::EntityEffect)
+                    };
+                    self.particles.add(&options, p, [0.0; 3]);
+                }
+                for m in self.mobs.iter_mut() {
+                    if glow.contains(&(m.id as u64)) {
+                        m.add_effect("minecraft:glowing", 60, 0);
+                    }
+                }
+            }
+        }
     }
     /// `ConduitBlockEntity.serverTick` of every conduit in the chunks that
     /// tick blocks, with or without a renderer. The conduits are looked for

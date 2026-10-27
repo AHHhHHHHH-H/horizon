@@ -1011,6 +1011,27 @@ impl Game<'_> {
                         });
                     });
                 }
+                // STAB: MultiPlayerGameMode.piercingAttack; the server checks the
+                // charge with tolerance 5 and runs the same spear hit as the host.
+                8 => {
+                    host.hub.ack(conn, a.sequence);
+                    if spectator {
+                        return;
+                    }
+                    let swung = self.as_guest(host, conn, |g| {
+                        if g.cannot_attack_with_item_with(5) {
+                            return false;
+                        }
+                        if !g.piercing_weapon() {
+                            return false;
+                        }
+                        g.piercing_attack(g.attack_animation());
+                        true
+                    });
+                    // `lan_swings` broadcasts the guest's swing to the other
+                    // players; the client already predicted its own stab.
+                    let _ = swung;
+                }
                 // SWAP_ITEM_WITH_OFFHAND: the hands swap and the item in use stops
                 // (ServerGamePacketListenerImpl.handlePlayerAction), not for spectators.
                 7 if !spectator => {

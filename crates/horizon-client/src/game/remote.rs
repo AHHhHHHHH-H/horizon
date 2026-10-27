@@ -4388,6 +4388,8 @@ impl Game<'_> {
             }
             // SpyglassItem.use (its sound is the server's).
             "minecraft:spyglass" => true,
+            // Kinetic spear: the server charges it; letting go ends the use.
+            _ if self.kinetic_of(held).is_some() => true,
             // ShieldItem.use: anything that blocks attacks, off cooldown.
             _ => {
                 self.raise_shield(self.held_slot());
@@ -4405,6 +4407,7 @@ impl Game<'_> {
             &*stack.item,
             "minecraft:bow" | "minecraft:crossbow" | "minecraft:trident" | "minecraft:spyglass"
         ) || self.blocks_attacks(stack).is_some()
+        || self.kinetic_of(stack).is_some()
     }
 
     /// The rest of Minecraft.startUseItem once the main hand's target passed:
@@ -4549,6 +4552,22 @@ impl Game<'_> {
             return false;
         }
         if self.spectator() {
+            return true;
+        }
+        // MultiPlayerGameMode.piercingAttack: a spear stab, not a normal
+        // attack swing. The server runs the same check with tolerance 5.
+        if self.piercing_weapon() {
+            if self.cannot_attack_with_item() {
+                return false;
+            }
+            self.send(S::PlayerAction(play::PlayerAction {
+                action: 8,
+                pos: [0; 3],
+                direction: 0,
+                sequence: 0,
+            }));
+            self.swing_hand(Hand::Main, self.attack_animation());
+            self.reset_attack_strength();
             return true;
         }
         let mut instant = false;

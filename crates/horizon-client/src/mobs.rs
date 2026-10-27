@@ -944,6 +944,9 @@ pub enum MobEvent {
         mob: u32,
         partner: u32,
     },
+    /// A bell was rung (a villager's `RingBell` AI or a player's block
+    /// event): scare nearby villagers and play the bell sound.
+    RingBell { pos: [i32; 3] },
     /// A sound event id that is not a static string (variant sounds).
     SoundId(String, [f64; 3], f32, f32),
     /// `Level.playLocalSound`: a sound the client plays for itself, never

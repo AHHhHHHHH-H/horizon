@@ -115,7 +115,7 @@ impl Condition {
 
 /// `KineticWeapon`.
 #[derive(Clone, Debug)]
-struct KineticWeapon {
+pub(super) struct KineticWeapon {
     contact_cooldown_ticks: i64,
     delay_ticks: u32,
     dismount_conditions: Option<Condition>,
@@ -235,7 +235,7 @@ impl Game<'_> {
             .as_ref()
             .map(PiercingWeapon::parse)
     }
-    fn kinetic_of(&self, stack: &ItemStack) -> Option<KineticWeapon> {
+    pub(super) fn kinetic_of(&self, stack: &ItemStack) -> Option<KineticWeapon> {
         self.item_component(stack, KINETIC_WEAPON)
             .as_ref()
             .map(KineticWeapon::parse)
@@ -265,9 +265,10 @@ impl Game<'_> {
     pub(super) fn piercing_weapon(&self) -> bool {
         self.held().is_some_and(|s| self.piercing_of(s).is_some())
     }
-    /// `Player.cannotAttackWithItem(held, 0)`: the item's minimum attack
-    /// charge is not reached yet.
-    pub(super) fn cannot_attack_with_item(&self) -> bool {
+    /// `Player.cannotAttackWithItem(held, tolerance)`: the item's minimum
+    /// attack charge is not reached yet. The server uses tolerance 5 for a
+    /// spear stab; the client uses 0.
+    pub(super) fn cannot_attack_with_item_with(&self, tolerance: i32) -> bool {
         let Some(stack) = self.held() else {
             return false;
         };
@@ -280,7 +281,12 @@ impl Game<'_> {
         }
         let speed = self.attack_item_info().map_or(0.0, |i| i.attack_speed);
         let delay = 20.0 / (4.0 + speed).max(0.1);
-        (f64::from(self.attack_ticks) / f64::from(delay)) < required
+        (f64::from(self.attack_ticks) + f64::from(tolerance)) / f64::from(delay) < required
+    }
+    /// `Player.cannotAttackWithItem(held, 0)`: the item's minimum attack
+    /// charge is not reached yet.
+    pub(super) fn cannot_attack_with_item(&self) -> bool {
+        self.cannot_attack_with_item_with(0)
     }
     fn player_at(&self) -> Option<[f64; 3]> {
         self.player
