@@ -100,6 +100,42 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
+- **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
+  folder before the game (the game starts only if it succeeds), a wrapper the game runs through
+  (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
+  `instances.json` (`horizon_launcher::launch`). The game stays one process the launcher follows:
+  on Unix `/bin/sh` runs the command and then `exec`s the wrapper and the game, whose words pass
+  through `"$@"` untouched; on Windows `cmd /C` runs `<command> && <game>`. Both the window's Play
+  and `play` use them. `horizon-launcher instance launch <instance> [--pre-launch …]
+  [--wrapper …] [--env …]` (an MCP agent needs `confirm: true`: it sets commands Play runs).
+  On Linux the panel also has switches for what the computer has: **GameMode** (`gamemoderun`
+  on the PATH), **MangoHud** (`mangohud`), and, with two graphics cards under
+  `/sys/class/drm`, the **dedicated graphics card** (`DRI_PRIME=1`, or NVIDIA's
+  `__NV_PRIME_RENDER_OFFLOAD`, `__VK_LAYER_NV_optimus` and `__GLX_VENDOR_LIBRARY_NAME` when its
+  driver is loaded). A switch whose tool is gone does nothing. `instance launch --gamemode
+  on|off --mangohud on|off --dedicated-gpu on|off`; `HORIZON_LAUNCHER_LINUX_TOOLS` makes any
+  system show them, for tests.
+- **Desktop shortcut**: Home's Instance row has **Shortcut**: a shortcut on the desktop that plays
+  the selected instance without opening the launcher (`horizon-launcher play --instance <id>`).
+  A `.desktop` file on Linux (also put in the applications menu, and marked trusted with `gio`
+  where it exists), a small app with Horizon's icon on macOS, a `.lnk` on Windows
+  (`horizon_launcher::shortcut`). **Remove shortcut** moves it to the trash; it is found by the
+  instance id inside it, so a rename doesn't lose it. `horizon-launcher instance shortcut
+  [instance] [--remove]`; `HORIZON_LAUNCHER_DESKTOP` points it at another folder.
+- **Accounts and quick switch**: the top bar's account chip opens a menu of everyone who can play:
+  each signed-in Microsoft account, the offline names the player keeps, and the name the game
+  made up (`horizon-player.txt`). Picking one plays as it from the next Play. Settings > Account
+  adds offline names (3 to 16 letters, digits or `_`; the game gets `--name`) and forgets them;
+  the Console's Share log takes them out of the log too. `horizon-launcher account offline
+  [NAME]`, `account select <name>` (an account or an offline name), `account forget-offline
+  <name>`.
+- **Skin and cape**: each offline name's **Skin…** in Settings > Account shows the front of its
+  skin and cape, takes a skin PNG (64×64, or the older 64×32) and a cape PNG (64×32), and picks
+  classic or slim arms. The launcher keeps copies in its `skins/` folder and gives the game
+  `HORIZON_OFFLINE_SKIN`, `HORIZON_OFFLINE_SKIN_MODEL` and `HORIZON_OFFLINE_CAPE` when that name
+  plays; the game draws the default skins until it reads them. A Microsoft account's skin and
+  cape: coming soon, with sign-in. `horizon-launcher account skin <name> [FILE] [--model
+  classic|slim] [--cape FILE] [--no-skin] [--no-cape]`.
 - **Console**: Home's Console shows the game's output of this run as it comes: a search (every
   word, any case), Follow to keep the newest line in view, Copy, and Open logs folder. Warnings
   and errors stand out. **Share log…** uploads the log to [mclo.gs](https://mclo.gs), a paste
