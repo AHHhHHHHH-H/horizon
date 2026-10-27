@@ -9979,6 +9979,10 @@ impl Game<'_> {
             let ticks_used =
                 owner.use_duration as f32 - (owner.use_item_remaining_ticks as f32 - a + 1.0);
             use horizon_client::first_person::ItemPose;
+            let kinetic = using.then(|| self.kinetic_of(&stack)).flatten();
+            let stab = self.swing.current.is_some_and(|s| {
+                s.hand == hand && s.animation.kind == 2 && !using
+            });
             let pose = match &*stack.item {
                 "minecraft:bow" if using => ItemPose::Bow { ticks_used },
                 "minecraft:crossbow" => {
@@ -9991,6 +9995,18 @@ impl Game<'_> {
                     }
                 }
                 "minecraft:trident" if using => ItemPose::Trident { ticks_used },
+                _ if using && kinetic.is_some() => {
+                    let [finish_raising, finish_swaying, finish_lowering, finish_raising_back] =
+                        kinetic.unwrap().animation_ticks();
+                    ItemPose::Spear {
+                        ticks_used,
+                        finish_raising,
+                        finish_swaying,
+                        finish_lowering,
+                        finish_raising_back,
+                        hit_feedback: (self.world.game_time - self.kinetic_hit_time) as f32,
+                    }
+                }
                 _ if using => {
                     let components = self
                         .pack
@@ -10017,6 +10033,7 @@ impl Game<'_> {
                     }
                 }
                 _ if spinning => ItemPose::SpinAttack,
+                _ if stab => ItemPose::SpearAttack,
                 _ => ItemPose::Swing,
             };
             let m = to_world

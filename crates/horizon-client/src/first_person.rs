@@ -8,6 +8,8 @@
 //!
 //! What those read and do in the world is behind [`HandWorld`].
 
+use horizon_core::geometry::trig::Mth;
+
 /// The ranged item state read by the first-person hand renderer.
 #[derive(Clone, Copy, Debug)]
 pub enum ItemPose {
@@ -31,6 +33,19 @@ pub enum ItemPose {
         charge_duration: f32,
         charged: bool,
     },
+    /// `ItemUseAnimation.SPEAR` (`SpearAnimations.firstPersonUse`): the
+    /// charge, sway and lower thresholds come from the item's
+    /// `kinetic_weapon`.
+    Spear {
+        ticks_used: f32,
+        finish_raising: f32,
+        finish_swaying: f32,
+        finish_lowering: f32,
+        finish_raising_back: f32,
+        hit_feedback: f32,
+    },
+    /// A `stab` swing (`SpearAnimations.firstPersonAttack`).
+    SpearAttack,
 }
 
 /// `submitArmWithItem`: the pose of an item in the hand on the `left` or
@@ -46,6 +61,29 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
         -0.52 - inverse_height * 0.6,
         -0.72,
     ));
+    if let ItemPose::Spear {
+        ticks_used,
+        finish_raising,
+        finish_swaying,
+        finish_lowering,
+        finish_raising_back,
+        hit_feedback,
+    } = pose
+    {
+        // The spear use path skips `applyItemArmTransform`'s equip height.
+        m = Mat4::from_translation(Vec3::new(invert * 0.56, -0.52, -0.72));
+        first_person_use(
+            &mut m,
+            invert,
+            ticks_used,
+            finish_raising,
+            finish_swaying,
+            finish_lowering,
+            finish_raising_back,
+            hit_feedback,
+        );
+        return m;
+    }
     if let ItemPose::Eat {
         remaining,
         duration,
@@ -74,6 +112,10 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
             * Mat4::from_translation(Vec3::new(invert * -0.4, 0.8, 0.3))
             * Mat4::from_rotation_y((invert * 65.0f32).to_radians())
             * Mat4::from_rotation_z((invert * -85.0f32).to_radians());
+    }
+    if matches!(pose, ItemPose::SpearAttack) {
+        first_person_attack(&mut m, invert, attack);
+        return m;
     }
     let charging = match pose {
         ItemPose::Bow { ticks_used } => {
@@ -135,6 +177,188 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
         }
     }
     m
+}
+
+/// `Mth.inverseLerp` clamped to 0..1 (`SpearAnimations.progress`).
+pub(crate) fn progress(time: f32, start: f32, end: f32) -> f32 {
+    if end == start {
+        return if time >= end { 1.0 } else { 0.0 };
+    }
+    ((time - start) / (end - start)).clamp(0.0, 1.0)
+}
+
+pub(crate) fn in_quad(x: f32) -> f32 {
+    x * x
+}
+pub(crate) fn out_quart(x: f32) -> f32 {
+    let x = 1.0 - x;
+    1.0 - x * x * x * x
+}
+pub(crate) fn out_cubic(x: f32) -> f32 {
+    let x = 1.0 - x;
+    1.0 - x * x * x
+}
+pub(crate) fn out_circ(x: f32) -> f32 {
+    (1.0 - (x - 1.0) * (x - 1.0)).max(0.0).sqrt()
+}
+pub(crate) fn in_circ(x: f32) -> f32 {
+    1.0 - (1.0 - x * x).max(0.0).sqrt()
+}
+pub(crate) fn in_out_sine(x: f32) -> f32 {
+    -((std::f32::consts::PI * x).mcos() - 1.0) / 2.0
+}
+pub(crate) fn in_out_expo(x: f32) -> f32 {
+    if x < 0.5 {
+        if x == 0.0 {
+            0.0
+        } else {
+            2.0f32.powf(20.0 * x - 10.0) / 2.0
+        }
+    } else if x == 1.0 {
+        1.0
+    } else {
+        (2.0 - 2.0f32.powf(-20.0 * x + 10.0)) / 2.0
+    }
+}
+pub(crate) fn in_out_elastic(x: f32) -> f32 {
+    if x == 0.0 || x == 1.0 {
+        return x;
+    }
+    let c5 = std::f32::consts::PI * 4.0 / 9.0;
+    let sin = ((20.0 * x - 11.125) * c5).msin();
+    if x < 0.5 {
+        -(2.0f32.powf(20.0 * x - 10.0) * sin) / 2.0
+    } else {
+        2.0f32.powf(-20.0 * x + 10.0) * sin / 2.0 + 1.0
+    }
+}
+pub(crate) fn in_out_back(x: f32) -> f32 {
+    if x < 0.5 {
+        4.0 * x * x * (7.189_819 * x - 2.594_909_4) / 2.0
+    } else {
+        let dt = 2.0 * x - 2.0;
+        (dt * dt * (3.594_909_4 * dt + 2.594_909_4) + 2.0) / 2.0
+    }
+}
+pub(crate) fn out_back(x: f32) -> f32 {
+    let x = x - 1.0;
+    1.0 + 2.701_58 * x * x * x + 1.701_58 * x * x
+}
+
+/// `SpearAnimations.hitFeedbackAmount`.
+pub(crate) fn hit_feedback_amount(ticks: f32) -> f32 {
+    0.4 * (out_quart(progress(ticks, 1.0, 3.0)) - in_out_sine(progress(ticks, 3.0, 10.0)))
+}
+
+/// `SpearAnimations.UseParams`.
+pub(crate) struct SpearUseParams {
+    pub raise: f32,
+    pub raise_start: f32,
+    pub raise_middle: f32,
+    pub raise_end: f32,
+    pub sway: f32,
+    pub lower: f32,
+    pub raise_back: f32,
+    pub sway_intensity: f32,
+    pub sway_slow: f32,
+    pub sway_fast: f32,
+}
+pub(crate) fn spear_use_params(
+    time: f32,
+    finish_raising: f32,
+    finish_swaying: f32,
+    finish_lowering: f32,
+    finish_raising_back: f32,
+) -> SpearUseParams {
+    let raise = progress(time, 0.0, finish_raising);
+    let raise_start = progress(raise, 0.0, 0.5);
+    let raise_middle = progress(raise, 0.5, 0.8);
+    let raise_end = progress(raise, 0.8, 1.0);
+    let sway = progress(time, finish_swaying - 20.0, finish_swaying);
+    let lower = out_cubic(in_out_elastic(progress(
+        time - 20.0,
+        finish_lowering - 40.0,
+        finish_lowering,
+    )));
+    let raise_back = progress(time, finish_raising_back - 5.0, finish_raising_back);
+    let sway_intensity = 2.0 * out_circ(sway) - 2.0 * in_circ(raise_back);
+    let sway_slow = ((time * 19.0).to_radians()).msin() * sway_intensity;
+    let sway_fast = ((time * 30.0).to_radians()).msin() * sway_intensity;
+    SpearUseParams {
+        raise,
+        raise_start,
+        raise_middle,
+        raise_end,
+        sway,
+        lower,
+        raise_back,
+        sway_intensity,
+        sway_slow,
+        sway_fast,
+    }
+}
+
+/// `SpearAnimations.firstPersonUse`.
+#[allow(clippy::too_many_arguments)]
+fn first_person_use(
+    m: &mut glam::Mat4,
+    invert: f32,
+    time: f32,
+    finish_raising: f32,
+    finish_swaying: f32,
+    finish_lowering: f32,
+    finish_raising_back: f32,
+    hit_feedback: f32,
+) {
+    let p = spear_use_params(
+        time,
+        finish_raising,
+        finish_swaying,
+        finish_lowering,
+        finish_raising_back,
+    );
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(
+        invert * (p.raise * 0.15 - p.raise_end * 0.05 - p.sway * 0.1 + p.sway_slow * 0.005),
+        p.raise * -0.075 + p.raise_middle * 0.075 + p.sway_fast * 0.01,
+        p.raise_start * 0.05 - p.raise_end * 0.05 + p.sway_slow * 0.005,
+    ));
+    // Axis.XP, around (0, 0.1, 0).
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.1, 0.0));
+    *m *= glam::Mat4::from_rotation_x(
+        (-65.0 * in_out_back(p.raise) - 35.0 * p.lower
+            + 100.0 * p.raise_back
+            - 0.5 * p.sway_fast)
+            .to_radians(),
+    );
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.1, 0.0));
+    // Axis.YN, around (invert * 0.15, 0, 0).
+    let yaw = invert * (-90.0 * progress(p.raise, 0.5, 0.55) + 90.0 * p.sway + 2.0 * p.sway_slow);
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(invert * 0.15, 0.0, 0.0));
+    *m *= glam::Mat4::from_rotation_y((-yaw).to_radians());
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(invert * -0.15, 0.0, 0.0));
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(
+        0.0,
+        -hit_feedback_amount(hit_feedback),
+        0.0,
+    ));
+}
+
+/// `SpearAnimations.firstPersonAttack`.
+fn first_person_attack(m: &mut glam::Mat4, invert: f32, attack: f32) {
+    let starting = in_out_sine(progress(attack, 0.0, 0.05));
+    let middle = out_back(progress(attack, 0.05, 0.2));
+    let ending = in_out_expo(progress(attack, 0.4, 1.0));
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(
+        invert * 0.1 * (starting - middle),
+        -0.075 * (starting - ending),
+        0.65 * (starting - middle),
+    ));
+    *m *= glam::Mat4::from_rotation_x((-70.0 * (starting - ending)).to_radians());
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(
+        0.0,
+        0.0,
+        -0.25 * (ending - middle),
+    ));
 }
 
 /// How `submitArmWithItem` holds a stack with a `minecraft:map_id`: in both
@@ -1053,6 +1277,31 @@ mod continuous_use_tests {
             item_pose(false, 0.0, 0.3, ItemPose::Trident { ticks_used: 5.0 })
         );
         assert_ne!(swing, item_pose(false, 0.0, 0.3, ItemPose::Using));
+    }
+    #[test]
+    fn spear_charges_sways_and_thrusts() {
+        let spear = |ticks_used| ItemPose::Spear {
+            ticks_used,
+            finish_raising: 15.0,
+            finish_swaying: 115.0,
+            finish_lowering: 215.0,
+            finish_raising_back: 315.0,
+            hit_feedback: 0.0,
+        };
+        let idle = item_pose(false, 0.0, 0.0, ItemPose::Swing);
+        assert_ne!(idle, item_pose(false, 0.0, 0.0, spear(0.0)));
+        assert_ne!(
+            item_pose(false, 0.0, 0.0, spear(10.0)),
+            item_pose(false, 0.0, 0.0, spear(20.0))
+        );
+        assert_ne!(
+            item_pose(false, 0.0, 0.0, spear(120.0)),
+            item_pose(false, 0.0, 0.0, spear(220.0))
+        );
+        assert_ne!(
+            item_pose(false, 0.0, 0.1, ItemPose::SpearAttack),
+            item_pose(false, 0.0, 0.6, ItemPose::SpearAttack)
+        );
     }
 }
 

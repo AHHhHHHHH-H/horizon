@@ -4075,6 +4075,7 @@ fn packages(baby: bool, seed: i64, farmer: bool) -> Vec<Entry> {
         },
     );
     add(5, h, look_minimal(seed));
+    add(99, h, B::UpdateActivity(false));
     v.sort_by_key(|e| (e.prio, e.act.slot()));
     v
 }
@@ -4216,7 +4217,7 @@ pub fn woken(m: &mut Mob, now: i64) {
 /// `Villager` hears a bell: `HEARD_BELL_TIME`, read by `ReactToBell`.
 pub fn heard_bell(m: &mut Mob, now: i64) {
     if brain(m).is_some() {
-        mem(m).heard_bell_time.set(now);
+        mem(m).heard_bell_time.set_ttl(now, 301);
     }
 }
 /// What other villagers see of this one's brain.

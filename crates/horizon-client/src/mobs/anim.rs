@@ -2,6 +2,9 @@
 //! (quadrupeds, humanoids, creepers, spiders, chickens...) applied to a map of
 //! part poses before the model is drawn.
 use super::{Mob, Part, keyframes::AnimationState, living::wrap};
+use crate::first_person::{
+    in_out_expo, in_out_sine, in_quad, out_back, progress, spear_use_params,
+};
 use horizon_core::geometry::trig::Mth;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_6, PI};
@@ -244,6 +247,8 @@ pub enum ArmPose {
     CrossbowCharge,
     /// Raising a trident to throw it (or to launch with Riptide).
     ThrowTrident,
+    /// `HumanoidModel.ArmPose.SPEAR`: charging a kinetic weapon.
+    Spear,
 }
 /// HumanoidModel.setupAnim with empty hands (endermen).
 pub fn humanoid_pub(p: &mut Poses, s: &State, _m: &Mob) {
@@ -295,6 +300,10 @@ pub struct Hum {
     pub swing_right_arm: Option<bool>,
     /// `mainArm` is the left one (`Mob.isLeftHanded`): a mob's swing uses it.
     pub left_main: bool,
+    /// A kinetic weapon being used: its phase ends and `ticksUsingItem`.
+    pub spear: Option<([f32; 4], f32)>,
+    /// The swing uses `SwingAnimationType.STAB`.
+    pub swing_stab: bool,
 }
 impl Hum {
     pub fn new(right: ArmPose, left: ArmPose) -> Self {
@@ -313,6 +322,8 @@ impl Hum {
             using_item: false,
             swing_right_arm: None,
             left_main: false,
+            spear: None,
+            swing_stab: false,
         }
     }
 }
@@ -388,7 +399,91 @@ fn pose_arm(p: &mut Poses, pose: ArmPose, right: bool, h: &Hum) {
         }
         ArmPose::CrossbowHold => crossbow_hold(p, hx, hy, right),
         ArmPose::CrossbowCharge => crossbow_charge(p, h.charge.0, h.charge.1, right),
+        ArmPose::Spear => third_person_hand_use(p, right, h),
     }
+}
+/// `SpearAnimations.thirdPersonHandUse`.
+fn third_person_hand_use(p: &mut Poses, right: bool, h: &Hum) {
+    let Some((finish, time)) = h.spear else {
+        return;
+    };
+    let arm = if right { "right_arm" } else { "left_arm" };
+    let invert = if right { 1.0 } else { -1.0 };
+    let (hx, hy) = (p.get("head")[3], p.get("head")[4]);
+    p.yrot(arm, -0.1 * invert + hy);
+    p.xrot(arm, -PI / 2.0 + hx + 0.8);
+    if h.fall_flying || h.swim > 0.0 {
+        let x = p.get(arm)[3] - 0.959_931_1;
+        p.xrot(arm, x);
+    }
+    let to_rad = std::f32::consts::PI / 180.0;
+    let y = to_rad * (p.get(arm)[4] / to_rad).clamp(-60.0, 60.0);
+    p.yrot(arm, y);
+    let x = to_rad * (p.get(arm)[3] / to_rad).clamp(-120.0, 30.0);
+    p.xrot(arm, x);
+    let params = spear_use_params(time, finish[0], finish[1], finish[2], finish[3]);
+    p.get(arm)[4] += -invert * params.sway_fast * to_rad * params.sway_intensity;
+    p.get(arm)[5] += -invert * params.sway_slow * to_rad * params.sway_intensity * 0.5;
+    p.get(arm)[3] += to_rad
+        * (-40.0 * params.raise_start
+            + 30.0 * params.raise_middle
+            - 20.0 * params.raise_end
+            + 20.0 * params.lower
+            + 10.0 * params.raise_back
+            + 0.6 * params.sway_slow * params.sway_intensity);
+}
+/// `SpearAnimations.thirdPersonUseItem`.
+pub fn third_person_use_item(
+    time: f32,
+    finish: [f32; 4],
+    swing: f32,
+    forward: f32,
+    hit: f32,
+    left: bool,
+) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    let attack = in_quad(progress(swing, 0.05, 0.2));
+    let retract = in_out_expo(progress(swing, 0.4, 1.0));
+    let p = spear_use_params(time, finish[0], finish[1], finish[2], finish[3]);
+    let invert = if left { -1.0 } else { 1.0 };
+    let raise_modified = 1.0 - out_back(1.0 - p.raise);
+    let mut m = Mat4::from_translation(Vec3::new(
+        0.0,
+        -hit * 0.4,
+        -forward * (raise_modified - p.raise_back) + hit,
+    ));
+    let x = (70.0 * (p.raise - p.raise_back) - 40.0 * (attack - retract)).to_radians();
+    m *= Mat4::from_translation(Vec3::new(0.0, -0.03125, 0.125))
+        * Mat4::from_rotation_x(-x)
+        * Mat4::from_translation(Vec3::new(0.0, 0.03125, -0.125));
+    let y = (invert * 90.0 * (p.raise - p.sway + 3.0 * retract + attack)).to_radians();
+    m *= Mat4::from_translation(Vec3::new(0.0, 0.0, 0.125))
+        * Mat4::from_rotation_y(y)
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.125));
+    m
+}
+/// `SpearAnimations.thirdPersonAttackItem`.
+pub fn third_person_attack_item(swing: f32, forward: f32) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    let attack = in_quad(progress(swing, 0.05, 0.2));
+    let retract = in_out_expo(progress(swing, 0.4, 1.0));
+    let x = (70.0 * (attack - retract)).to_radians();
+    Mat4::from_translation(Vec3::new(0.0, -0.125, 0.125))
+        * Mat4::from_rotation_x(-x)
+        * Mat4::from_translation(Vec3::new(0.0, 0.125, -0.125))
+        * Mat4::from_translation(Vec3::new(0.0, forward * (attack - retract), 0.0))
+}
+/// `SpearAnimations.thirdPersonAttackHand`.
+fn third_person_attack_hand(p: &mut Poses, swing: f32, left: bool) {
+    let body = p.get("body")[4];
+    p.get("right_arm")[4] -= body;
+    p.get("left_arm")[4] -= body;
+    p.get("left_arm")[3] -= body;
+    let prepare = in_out_sine(progress(swing, 0.0, 0.05));
+    let attack = in_quad(progress(swing, 0.05, 0.2));
+    let retract = in_out_expo(progress(swing, 0.4, 1.0));
+    let arm = if left { "left_arm" } else { "right_arm" };
+    p.get(arm)[3] += (90.0 * prepare - 120.0 * attack + 30.0 * retract).to_radians();
 }
 /// `HumanoidModel.setupAnim` (and `ZombieModel.setupAttackAnimation`).
 pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
@@ -434,6 +529,8 @@ pub(super) fn humanoid(p: &mut Poses, s: &State, h: &Hum) {
     let swing_left = h.swing_right_arm.map_or(h.left_main, |right| !right);
     if swing > 0.0 && h.weapon_swing {
         swing_weapon_down(p, swing, s.age, h.left_main);
+    } else if swing > 0.0 && h.swing_stab {
+        third_person_attack_hand(p, swing, swing_left);
     } else if swing > 0.0 {
         let mut body_y = (swing.sqrt() * PI * 2.0).msin() * 0.2;
         if swing_left {
@@ -689,6 +786,7 @@ pub fn setup(
             let using_main = m.extra.using_item > 0 && !m.extra.using_off_hand;
             let pose = if player {
                 match m.extra.main_hand.as_deref() {
+                    Some(_) if using_main && m.extra.spear_use.is_some() => ArmPose::Spear,
                     Some(_) if using_main && m.extra.blocking => ArmPose::Block,
                     Some("minecraft:bow") if using_main => ArmPose::Bow,
                     Some("minecraft:trident") if using_main => ArmPose::ThrowTrident,
@@ -731,6 +829,8 @@ pub fn setup(
             h.using_item = m.extra.using_item > 0;
             h.swing_right_arm = m.extra.swing_right_arm;
             h.left_main = m.main_arm_left();
+            h.spear = if using_main { m.extra.spear_use } else { None };
+            h.swing_stab = m.extra.swing_stab;
             humanoid(p, s, &h);
             if m.ai.aggressive && !bow {
                 // SkeletonModel melee pose.

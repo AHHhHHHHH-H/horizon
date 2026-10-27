@@ -122,6 +122,7 @@ pub(super) struct KineticWeapon {
     knockback_conditions: Option<Condition>,
     damage_conditions: Option<Condition>,
     damage_multiplier: f64,
+    forward_movement: f64,
     sound: Option<String>,
     hit_sound: Option<String>,
 }
@@ -145,9 +146,27 @@ impl KineticWeapon {
                 .get("damage_multiplier")
                 .and_then(Value::as_f64)
                 .unwrap_or(1.0),
+            forward_movement: value
+                .get("forward_movement")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
             sound: sound("sound"),
             hit_sound: sound("hit_sound"),
         }
+    }
+    /// `SpearAnimations.UseParams`'s phase ends: finish raising, swaying,
+    /// lowering and raising back.
+    pub(super) fn forward_movement(&self) -> f32 {
+        self.forward_movement as f32
+    }
+    pub(super) fn animation_ticks(&self) -> [f32; 4] {
+        let raising = self.delay_ticks as f32;
+        [
+            raising,
+            self.dismount_conditions.map_or(0, |c| c.max_duration_ticks) as f32 + raising,
+            self.knockback_conditions.map_or(0, |c| c.max_duration_ticks) as f32 + raising,
+            self.damage_conditions.map_or(0, |c| c.max_duration_ticks) as f32 + raising,
+        ]
     }
     /// The longest damage window among the conditions, after the delay.
     fn last_tick(&self) -> u32 {

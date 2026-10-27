@@ -332,7 +332,7 @@ impl Game<'_> {
         for (item, off_hand) in [(&mob.extra.main_hand, false), (&mob.extra.off_hand, true)] {
             let Some(item) = item else { continue };
             let left = off_hand != mob.main_arm_left();
-            let Some(t) =
+            let Some(mut t) =
                 render::held_item_transform(mob, alpha as f32, camera, self.res.mob_data(), left)
             else {
                 continue;
@@ -389,6 +389,27 @@ impl Game<'_> {
             } else {
                 horizon_assets::item_model::DisplayContext::ThirdPersonRightHand
             };
+            if local_player {
+                let anim = horizon_client::mobs::anim::state(mob, alpha as f32);
+                if mob.extra.swing_stab && mob.extra.swing_right_arm == Some(!left) {
+                    t *= horizon_client::mobs::anim::third_person_attack_item(
+                        anim.swing,
+                        mob.extra.spear_forward,
+                    );
+                }
+                if mob.extra.using_item > 0 && off_hand == mob.extra.using_off_hand {
+                    if let Some((finish, ticks)) = mob.extra.spear_use {
+                        t *= horizon_client::mobs::anim::third_person_use_item(
+                            ticks,
+                            finish,
+                            anim.swing,
+                            mob.extra.spear_forward,
+                            mob.extra.spear_hit,
+                            left,
+                        );
+                    }
+                }
+            }
             // `updateForLiving`: seeded by the entity id plus the context ordinal.
             let seed = mob.id as i32 + if left { 1 } else { 2 };
             let state = self.resolve_item(&stack, context, Some(&owner), seed);

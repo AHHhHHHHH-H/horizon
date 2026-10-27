@@ -781,6 +781,7 @@ impl Stroll {
     pub fn flying(speed: f64) -> Self {
         Self {
             air: true,
+            check_no_action: false,
             ..Self::new(speed)
         }
     }
