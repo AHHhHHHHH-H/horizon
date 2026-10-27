@@ -32,7 +32,7 @@ pub(super) struct ThrownPotion {
     owner: Option<Text>,
 }
 /// A mob's effect ids carry the `minecraft:` namespace.
-fn mob_effect_id(id: &str) -> Option<&'static str> {
+pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
     use std::{collections::HashMap, sync::OnceLock};
     static IDS: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     let id = id.trim_start_matches("minecraft:");
