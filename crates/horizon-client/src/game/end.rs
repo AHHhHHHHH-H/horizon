@@ -1010,7 +1010,9 @@ impl Game<'_> {
                 // unloaded).
                 let key = (gateway[0], gateway[1], gateway[2]);
                 let found = match self.world.block_entities.get(&key) {
-                    Some(BlockEntity::EndGateway(g)) => g.exit_portal.map(|e| (e, g.exact_teleport)),
+                    Some(BlockEntity::EndGateway(g)) => {
+                        g.exit_portal.map(|e| (e, g.exact_teleport))
+                    }
                     _ => None,
                 }
                 .or_else(|| self.gateway_exits().get(&gateway).copied());
