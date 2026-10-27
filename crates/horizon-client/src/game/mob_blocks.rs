@@ -397,17 +397,18 @@ impl Game<'_> {
                         mob.extra.spear_forward,
                     );
                 }
-                if mob.extra.using_item > 0 && off_hand == mob.extra.using_off_hand {
-                    if let Some((finish, ticks)) = mob.extra.spear_use {
-                        t *= horizon_client::mobs::anim::third_person_use_item(
-                            ticks,
-                            finish,
-                            anim.swing,
-                            mob.extra.spear_forward,
-                            mob.extra.spear_hit,
-                            left,
-                        );
-                    }
+                if mob.extra.using_item > 0
+                    && off_hand == mob.extra.using_off_hand
+                    && let Some((finish, ticks)) = mob.extra.spear_use
+                {
+                    t *= horizon_client::mobs::anim::third_person_use_item(
+                        ticks,
+                        finish,
+                        anim.swing,
+                        mob.extra.spear_forward,
+                        mob.extra.spear_hit,
+                        left,
+                    );
                 }
             }
             // `updateForLiving`: seeded by the entity id plus the context ordinal.
