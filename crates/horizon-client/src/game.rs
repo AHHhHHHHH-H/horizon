@@ -115,6 +115,8 @@ mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_recipes;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_world;
 mod mods;
 mod mount_menu;
 mod mounts;

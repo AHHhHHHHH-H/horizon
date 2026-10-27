@@ -65,6 +65,21 @@ interface game {
     /// distant terrain when LOD Distance is on), as of this tick. None when
     /// nothing is hit, and on the title screen.
     raycast: func(distance: f32) -> option<hit>;
+    record block-sample {
+        /// State string, e.g. minecraft:oak_log[axis=y].
+        state: string,
+        biome: string,
+        /// minecraft:empty, minecraft:water or minecraft:lava (including waterlogged blocks).
+        fluid: string,
+        block-light: u8,
+        sky-light: u8,
+    }
+    /// Reads a loaded block within 32 blocks of the player, at most 64 times
+    /// per mod per tick, shared by all hooks. None outside the world, beyond
+    /// that radius, without a player, or when the query budget is exhausted.
+    /// This never requests or generates chunks. API level 9.
+    sample-block: func(x: s32, y: s32, z: s32) -> option<block-sample>;
+
 }
 
 /// Capability `chat`: messages only the local player sees.

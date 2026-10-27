@@ -121,11 +121,22 @@ A block along the player's view.
 | `z` | `f64` |  |
 | `block` | `string` | `minecraft:stone`, ... |
 
+### record `block-sample`
+
+| Field | Type | |
+| --- | --- | --- |
+| `state` | `string` | State string, e.g. minecraft:oak_log[axis=y]. |
+| `biome` | `string` |  |
+| `fluid` | `string` | minecraft:empty, minecraft:water or minecraft:lava (including waterlogged blocks). |
+| `block-light` | `u8` |  |
+| `sky-light` | `u8` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
+| `sample-block` | `func(x: s32, y: s32, z: s32) -> option<block-sample>` | Reads a loaded block within 32 blocks of the player, at most 64 times per mod per tick, shared by all hooks. None outside the world, beyond that radius, without a player, or when the query budget is exhausted. This never requests or generates chunks. API level 9. |
 
 ## `chat`
 

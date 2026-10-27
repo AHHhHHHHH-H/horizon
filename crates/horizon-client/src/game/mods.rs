@@ -40,6 +40,8 @@ use {
 pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
+    #[cfg(feature = "mods")]
+    pub(super) world_tables: Option<std::sync::Arc<super::mod_world::Tables>>,
     /// Capability `input`: a claimed item's use while the button is down.
     #[cfg(feature = "mods")]
     pub(super) using: Option<super::mod_input::ModUse>,
@@ -475,6 +477,7 @@ impl Game<'_> {
         }
         let (recipes, known_recipes) = self.mod_recipes();
         Snapshot {
+            client_world: self.mod_world_snapshot(),
             player,
             clock,
             gui_size: self.gui_size(),

@@ -43,7 +43,7 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
-    game::{Clock, Hit, Player},
+    game::{BlockSample, Clock, Hit, Player},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -134,10 +134,17 @@ const STORAGE_MAX_KEYS: usize = 64;
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
+/// A read-only snapshot of the client's loaded world, never the remote server.
+/// Implementations must not generate chunks or perform disk/network I/O.
+pub trait ClientWorldView: std::fmt::Debug + Send + Sync {
+    fn sample(&self, x: i32, y: i32, z: i32) -> Option<BlockSample>;
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub player: Option<Player>,
+    pub client_world: Option<Arc<dyn ClientWorldView>>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
     pub gui_size: (f32, f32),
@@ -323,6 +330,7 @@ struct Running {
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
+    client_world: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
 }
@@ -433,6 +441,7 @@ struct State {
     /// needs its own budget.
     storage_budget: u64,
     particle_budget: usize,
+    world_query_budget: usize,
     limits: StoreLimits,
     world: WorldSlot,
 }
@@ -633,6 +642,7 @@ impl Mods {
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             particle_budget: 0,
+            world_query_budget: 0,
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -693,6 +703,7 @@ impl Mods {
             ui,
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
+            client_world: functions.iter().any(|f| f == "game.sample-block"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
         }))
     }
@@ -816,6 +827,7 @@ impl Mods {
         for entry in &mut self.entries {
             if let Some(run) = &mut entry.run {
                 run.store.data_mut().particle_budget = 32;
+                run.store.data_mut().world_query_budget = 64;
             }
         }
         self.each_client(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
@@ -977,6 +989,12 @@ impl Mods {
     }
     /// Some running mod calls `game.raycast`: the snapshot needs a
     /// [`Snapshot::view_hit`].
+    /// Whether a client mod needs a bounded loaded-world snapshot.
+    pub fn wants_client_world(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.client_world))
+    }
     pub fn wants_raycast(&self) -> bool {
         self.entries
             .iter()
@@ -1438,6 +1456,21 @@ impl mod_log::Host for State {
     }
 }
 impl game::Host for State {
+    fn sample_block(&mut self, x: i32, y: i32, z: i32) -> Option<BlockSample> {
+        if self.world_query_budget == 0 {
+            return None;
+        }
+        self.world_query_budget -= 1;
+        let player = self.snapshot.player.as_ref()?;
+        let distance = (f64::from(x) - player.x).powi(2)
+            + (f64::from(y) - player.y).powi(2)
+            + (f64::from(z) - player.z).powi(2);
+        if !distance.is_finite() || distance > 32.0_f64.powi(2) {
+            return None;
+        }
+        self.snapshot.client_world.as_ref()?.sample(x, y, z)
+    }
+
     fn get_player(&mut self) -> Option<Player> {
         self.snapshot.player.clone()
     }

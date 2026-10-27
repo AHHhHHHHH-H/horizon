@@ -725,3 +725,12 @@ if let Some(player) = horizon_mod_sdk::game::get_player() {
     }]);
 }
 ```
+
+### Client loaded-world queries (API level 9)
+
+`game::sample_block(x, y, z)` returns a block state, biome, fluid, block light
+and sky light from chunks this client already has. It cannot read a remote
+server's unloaded terrain or trigger chunk generation. The view holds at most
+25 nearby immutable chunk references and only exists while a running mod imports
+this function. Queries share a limit of 64 per mod per tick and a 32-block
+radius; missing/out-of-range data and exhausted budgets return `None`.

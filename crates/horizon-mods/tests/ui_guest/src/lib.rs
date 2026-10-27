@@ -107,6 +107,7 @@ impl Mod for Guest {
             "render_clear",
             "render_shake",
             "particles",
+            "sample_block",
             "input_claim",
             "input_poll",
             "input_held",
@@ -467,6 +468,18 @@ impl Mod for Guest {
                         browser::Event::Back => "back".into(),
                         browser::Event::Tab(i) => format!("tab {i}"),
                     });
+                }
+            }
+            "sample_block" => {
+                let xyz: Vec<i32> = args
+                    .split_whitespace()
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                if xyz.len() == 3 {
+                    let count = (0..65)
+                        .filter(|_| game::sample_block(xyz[0], xyz[1], xyz[2]).is_some())
+                        .count();
+                    chat::show(&format!("samples {count}"));
                 }
             }
             "particles" => {

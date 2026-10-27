@@ -1374,3 +1374,45 @@ fn world_particles_share_a_global_tick_budget_across_drains() {
     mods.tick(2);
     assert_eq!(count(&mut mods), 256);
 }
+
+#[test]
+fn client_world_queries_are_read_only_nearby_and_tick_bounded() {
+    #[derive(Debug)]
+    struct World;
+    impl horizon_mods::ClientWorldView for World {
+        fn sample(&self, _: i32, _: i32, _: i32) -> Option<horizon_mods::BlockSample> {
+            Some(horizon_mods::BlockSample {
+                state: "minecraft:stone".into(),
+                biome: "minecraft:plains".into(),
+                fluid: "minecraft:empty".into(),
+                block_light: 0,
+                sky_light: 15,
+            })
+        }
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_client_world());
+    let mut snapshot = player();
+    snapshot.client_world = Some(std::sync::Arc::new(World));
+    mods.set_snapshot(snapshot);
+    let sample = |mods: &mut Mods, xyz: &str| {
+        assert!(mods.command(&format!("sample_block {xyz}")));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    mods.tick(1);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 64");
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 0");
+    mods.tick(2);
+    assert_eq!(sample(&mut mods, "2147483647 64 -3"), "samples 0");
+    mods.tick(3);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 64");
+    mods.set_snapshot(Snapshot::default());
+    mods.tick(4);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 0");
+}
