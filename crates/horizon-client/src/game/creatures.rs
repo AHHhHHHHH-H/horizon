@@ -49,6 +49,9 @@ pub(super) struct Creatures {
     /// Mace smash knockback on the other players from a guest's turn, waiting
     /// for it to end (game/mace.rs).
     pub smash_pushes: Vec<super::mace::SmashPush>,
+    /// Sweep attacks from a guest's turn, waiting for it to end
+    /// (game/lan_pvp.rs).
+    pub sweeps: Vec<super::lan_pvp::Sweep>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
     /// The wandering trader spawner's clock.
