@@ -69,7 +69,7 @@ impl ProjectileKind {
     /// The width and height of its entity type's `sized(...)`.
     pub fn size(&self) -> f64 {
         match self {
-            Self::Arrow { .. } => 0.5,
+            Self::Arrow { .. } | Self::Trident => 0.5,
             Self::Snowball
             | Self::Egg
             | Self::EnderPearl
