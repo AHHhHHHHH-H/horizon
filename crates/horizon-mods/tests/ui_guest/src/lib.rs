@@ -109,6 +109,8 @@ impl Mod for Guest {
             "particles",
             "configured_particles",
             "colored_lights",
+            "post_effects",
+            "emissive",
             "sample_block",
             "local_sound",
             "atmosphere",
@@ -541,6 +543,55 @@ impl Mod for Guest {
                         .filter(|_| game::sample_block(xyz[0], xyz[1], xyz[2]).is_some())
                         .count();
                     chat::show(&format!("samples {count}"));
+                }
+            }
+            "post_effects" => {
+                let mut bloom = render::Bloom {
+                    strength: 0.5,
+                    threshold: 0.5,
+                    radius: 2.0,
+                };
+                match args {
+                    "nan" => bloom.strength = f32::NAN,
+                    "radius" => bloom.radius = 100.0,
+                    "threshold" => bloom.threshold = -1.0,
+                    _ => {}
+                }
+                let effects = if args == "clear" {
+                    vec![]
+                } else if args == "rays" {
+                    vec![render::PostEffect::Godrays(render::Godrays {
+                        strength: 0.5,
+                        light_x: 0.5,
+                        light_y: 0.5,
+                        color: 0xFFAA55,
+                    })]
+                } else {
+                    vec![render::PostEffect::Bloom(bloom); if args == "many" { 3 } else { 1 }]
+                };
+                chat::show(&format!("{:?}", render::set_post_effects(&effects)));
+                if args == "panic" {
+                    panic!("after post effects");
+                }
+            }
+            "emissive" => {
+                let materials = match args {
+                    "foreign" => vec![render::EmissiveMaterial {
+                        base: "minecraft:block/diamond_ore".into(),
+                        overlay: "other:emissive/ore".into(),
+                    }],
+                    "bad" => vec![render::EmissiveMaterial {
+                        base: "../ore".into(),
+                        overlay: "test_ui_guest:emissive/ore".into(),
+                    }],
+                    _ => vec![],
+                };
+                chat::show(&format!(
+                    "{:?}",
+                    render::set_emissive_materials(&materials, args != "clear")
+                ));
+                if args == "panic" {
+                    panic!("after emissive");
                 }
             }
             "colored_lights" => {

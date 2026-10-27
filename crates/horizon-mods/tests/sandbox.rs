@@ -49,6 +49,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "beacons",
                 "-p",
+                "effect-lab",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -73,12 +75,18 @@ fn mods_dir() -> &'static Path {
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
+            ("effect_lab", example("effect-lab")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
-            let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
+            let component = componentize(&core).unwrap();
+            let hmod = if name == "effect_lab" {
+                Package::write_files(&manifest,Some(&component),&[("assets/effect_lab/textures/particle/spark.png",
+                    include_bytes!("../../horizon-mod-sdk/examples/effect-lab/assets/effect_lab/textures/particle/spark.png")),
+                    ("assets/effect_lab/textures/emissive/stone.png",include_bytes!("../../horizon-mod-sdk/examples/effect-lab/assets/effect_lab/textures/emissive/stone.png"))]).unwrap()
+            } else { Package::write(&manifest, &component).unwrap() };
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
         }
         dir
@@ -1432,6 +1440,84 @@ fn colored_lights_validate_atomically_and_follow_owner_and_dimension() {
     assert_eq!(mods.colored_lights().count(), 0);
     said(&mut mods, "colored_lights panic");
     assert_eq!(mods.colored_lights().count(), 0);
+}
+
+#[test]
+fn emissive_and_post_controls_validate_and_cleanup_without_renderer() {
+    fn said(mods: &mut Mods, command: &str) -> Vec<String> {
+        assert!(mods.command(command));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(said(&mut mods, "post_effects")[0].contains("no world"));
+    assert!(said(&mut mods, "emissive")[0].contains("no world"));
+    mods.set_snapshot(player());
+    assert_eq!(said(&mut mods, "post_effects"), ["Ok(())"]);
+    assert_eq!(mods.post_effects().count(), 1);
+    for bad in ["nan", "radius", "threshold", "many"] {
+        assert!(said(&mut mods, &format!("post_effects {bad}"))[0].starts_with("Err"));
+        assert_eq!(mods.post_effects().count(), 1);
+    }
+    assert_eq!(said(&mut mods, "post_effects rays"), ["Ok(())"]);
+    assert_eq!(said(&mut mods, "emissive"), ["Ok(())"]);
+    assert!(mods.emissive_suffixes());
+    for bad in ["foreign", "bad"] {
+        assert!(said(&mut mods, &format!("emissive {bad}"))[0].starts_with("Err"));
+        assert!(mods.emissive_suffixes());
+    }
+    let mut next = player();
+    next.player.as_mut().unwrap().dimension = "minecraft:the_end".into();
+    mods.set_snapshot(next);
+    assert_eq!(mods.post_effects().count(), 0);
+    assert!(!mods.emissive_suffixes());
+    said(&mut mods, "post_effects");
+    said(&mut mods, "emissive");
+    said(&mut mods, "post_effects panic");
+    assert_eq!(mods.post_effects().count(), 0);
+    assert!(!mods.emissive_suffixes());
+}
+
+#[test]
+fn effect_lab_package_contains_original_asset_settings_and_working_controls() {
+    let path = mods_dir().join("effect_lab.hmod");
+    let package = Package::read(&path).unwrap();
+    let content = horizon_mods::Content::read(&path, &package.manifest).unwrap();
+    assert!(
+        content
+            .files
+            .iter()
+            .any(|p| p == "assets/effect_lab/textures/particle/spark.png")
+    );
+    let mut mods = load("effect_lab.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    assert!(mods.command("effect_lab off"));
+    mods.drain();
+    mods.tick(1);
+    assert_eq!(mods.colored_lights().count(), 0);
+    assert!(mods.command("effect_lab on"));
+    mods.drain();
+    mods.tick(4);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::SpriteParticles { particles,.. } if particles.len()==1))
+    );
+    assert_eq!(mods.colored_lights().count(), 1);
+    assert!(mods.emissive_suffixes());
+    assert_eq!(mods.post_effects().count(), 1);
+    assert!(mods.entries()[0].has_ui_settings());
+    assert!(mods.command("effect_lab off"));
+    mods.drain();
+    assert_eq!(mods.colored_lights().count(), 0);
+    assert!(!mods.emissive_suffixes());
+    assert_eq!(mods.post_effects().count(), 0);
 }
 
 #[test]
