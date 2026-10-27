@@ -3096,6 +3096,12 @@ impl Game<'_> {
             .items()
             .get(&item)
             .is_some_and(|i| i.max_damage > 0);
+        let parrot_poisonous = self
+            .res
+            .items()
+            .item_tags
+            .get("minecraft:parrot_poisonous_food")
+            .is_some_and(|t| t.contains(&*item));
         let acting = self.acting_player_uuid();
         let m = &mut self.mobs[index];
         if !m.alive() {
@@ -3315,6 +3321,20 @@ impl Game<'_> {
                     m.position.z.floor() as i32 >> 4,
                 ));
             }
+            // Parrot.mobInteract: the owner makes a tame parrot on the ground
+            // sit or stand (poisonous food is handled apart).
+            Species::Parrot
+                if m.extra.tame
+                    && m.extra.owner == Some(acting)
+                    && m.on_ground
+                    && !parrot_poisonous =>
+            {
+                m.extra.sitting = !m.extra.sitting;
+                self.world.modified.insert((
+                    m.position.x.floor() as i32 >> 4,
+                    m.position.z.floor() as i32 >> 4,
+                ));
+            }
             Species::Cat if !m.extra.tame && is_food => {
                 consume = true;
                 m.persistent = true;
@@ -3377,7 +3397,7 @@ impl Game<'_> {
                 let tamed = m.random.next_int_bound(10).unwrap_or(1) == 0;
                 if tamed {
                     m.extra.tame = true;
-                    m.extra.owner = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+                    m.extra.owner = Some(acting);
                 }
                 let kind = if tamed { "heart" } else { "smoke" };
                 // TamableAnimal.spawnTamingParticles (entity event 7 or 6).
