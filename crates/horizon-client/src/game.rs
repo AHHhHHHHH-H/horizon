@@ -165,6 +165,7 @@ mod shield;
 mod sign_edit;
 mod sniffers;
 mod spawner;
+mod spear;
 mod spill;
 mod startup_menu;
 mod station_control;
@@ -1402,6 +1403,11 @@ struct Game<'a> {
     sculk: sculk::SculkState,
     raiding: raids::Raiding,
     attack_ticks: u32,
+    /// Mobs a kinetic weapon (a spear) last stabbed, and when (game time),
+    /// for `KineticWeapon.contactCooldownTicks` and `recentKineticEnemies`.
+    spear_hits: HashMap<u32, i64>,
+    /// The last kinetic hit feedback sound (`lastKineticHitFeedbackTime`).
+    kinetic_hit_time: i64,
     /// The main hand's item at the last player tick, whose attack damage and
     /// speed modifiers apply (`LivingEntity.detectEquipmentUpdates`): a hotbar
     /// swap just before an attack keeps them, with the new item's enchantments
@@ -3933,11 +3939,12 @@ impl Game<'_> {
         }
         if !on_block
             && (self.raise_shield(self.held_slot())
+                || self.use_spear(&stack)
                 || self.use_fishing_rod(&stack)
-            || self.use_crossbow(&stack)
-            || self.use_trident(&stack)
-            || self.boost_firework(&stack)
-            || self.use_empty_map(&stack)
+                || self.use_crossbow(&stack)
+                || self.use_trident(&stack)
+                || self.boost_firework(&stack)
+                || self.use_empty_map(&stack)
                 || self.use_book(&stack)
                 // Block items (heads, carved pumpkins) aimed at a block are
                 // placed first (useItemOn before useItem).
@@ -4209,6 +4216,9 @@ impl Game<'_> {
             self.using = Some((slot, ticks + 1));
             return;
         }
+        if self.tick_spear(slot, ticks, &stack) {
+            return;
+        }
         if &*stack.item == "minecraft:spyglass" {
             // SpyglassItem.USE_DURATION, then finishUsingItem.
             if ticks + 1 >= 1200 {
@@ -4244,6 +4254,7 @@ impl Game<'_> {
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
     /// when its hand changed), a spyglass stops scoping.
     pub(super) fn release_used_item(&mut self, stack: &ItemStack, ticks: u32, hand_changed: bool) {
+        self.spear_hits.clear();
         match &*stack.item {
             "minecraft:bow" if !hand_changed => self.release_bow(ticks),
             "minecraft:trident" if !hand_changed => self.release_trident(ticks),
@@ -12939,6 +12950,8 @@ impl<'a> Game<'a> {
             sculk: Default::default(),
             raiding: Default::default(),
             attack_ticks: 100,
+            spear_hits: HashMap::new(),
+            kinetic_hit_time: -11,
             attack_item: None,
             last_hurt_by_player: HashMap::new(),
             died: HashSet::new(),

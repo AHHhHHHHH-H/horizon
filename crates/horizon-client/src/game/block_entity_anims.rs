@@ -12,7 +12,7 @@ use horizon_client::{
     collisions::{SceneCollisions, no_collision_empty},
     containers::BlockEntity,
     effects::EffectInstance,
-    mobs::{Damage, DamageKind},
+    mobs::{Damage, DamageKind, Species, villager_brain},
     particles::{ParticleOptions, ParticleType},
     save::number,
     skins,
@@ -49,6 +49,16 @@ impl Game<'_> {
             }
             Some(Ticker::Bell) => {
                 let gathered = self.bell_gather(pos);
+                if a == 1 {
+                    for id in &gathered {
+                        if let Some(m) = self.mobs.iter_mut().find(|m| u64::from(m.id) == *id)
+                            && m.alive()
+                            && m.species() == Species::Villager
+                        {
+                            villager_brain::heard_bell(m, time);
+                        }
+                    }
+                }
                 self.be_anims
                     .bells
                     .entry(pos)

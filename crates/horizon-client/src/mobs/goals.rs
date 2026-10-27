@@ -318,6 +318,21 @@ impl Mob {
             m.default_check(w, f64::from(h), p).then_some(p)
         })
     }
+    /// `DefaultRandomPos.getPos` for a flying mob: a nearby air block, without
+    /// the land goal's stable-destination requirement.
+    pub fn air_random_pos(&mut self, w: &MobWorld, h: i32, v: i32) -> Option<[f64; 3]> {
+        self.pick_best(w, |m| {
+            let d = m.random_direction(h, v);
+            let p = m.toward(f64::from(h), d);
+            (p[1] >= crate::chunk::MIN_Y
+                && p[1] < 320
+                && !m.restricted(f64::from(h), p)
+                && !w.solid(p[0], p[1], p[2])
+                && w.fluid(p[0], p[1], p[2]) != crate::blocks::Fluid::Water
+                && m.malus(w.path_type_static(p[0], p[1], p[2])) == 0.0)
+                .then_some(p)
+        })
+    }
     /// DefaultRandomPos.getPosAway
     pub fn default_random_pos_away(
         &mut self,
@@ -734,6 +749,8 @@ pub struct Stroll {
     pub water_avoiding: Option<f32>,
     /// RandomSwimmingGoal: BehaviorUtils.getRandomSwimmablePos.
     pub swim: bool,
+    /// WaterAvoidingRandomFlyingGoal: choose a nearby air position.
+    air: bool,
     pub force: bool,
     wanted: [f64; 3],
 }
@@ -745,6 +762,7 @@ impl Stroll {
             check_no_action: true,
             water_avoiding: None,
             swim: false,
+            air: false,
             force: false,
             wanted: [0.0; 3],
         }
@@ -761,7 +779,10 @@ impl Stroll {
     }
     /// WaterAvoidingRandomFlyingGoal (a nearby air position).
     pub fn flying(speed: f64) -> Self {
-        Self::new(speed)
+        Self {
+            air: true,
+            ..Self::new(speed)
+        }
     }
     /// RandomSwimmingGoal(speed, interval)
     pub fn swimming(speed: f64, interval: i32) -> Self {
@@ -805,6 +826,7 @@ impl Goal for Stroll {
                     m.default_random_pos(cx.w, 10, 7)
                 }
             }
+            None if self.air => m.air_random_pos(cx.w, 10, 7),
             None if self.swim => {
                 let mut p = m.default_random_pos(cx.w, 10, 7);
                 let mut count = 0;

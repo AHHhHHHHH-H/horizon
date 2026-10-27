@@ -173,9 +173,7 @@ impl Mob {
                         self.ai.yya = if yd > 0.0 { speed } else { -speed };
                     }
                 } else {
-                    if !hovers {
-                        self.no_gravity = false;
-                    }
+                    self.no_gravity = hovers;
                     self.ai.yya = 0.0;
                     self.ai.zza = 0.0;
                 }

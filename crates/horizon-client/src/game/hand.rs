@@ -398,18 +398,20 @@ impl HandWorld for GameHands<'_, '_> {
         self.game.creative
     }
     fn cannot_attack(&mut self) -> bool {
-        false
+        self.game.cannot_attack_with_item()
     }
     fn piercing_weapon(&mut self) -> bool {
-        false
+        self.game.piercing_weapon()
     }
     fn attack_animation(&mut self) -> SwingAnimation {
-        SwingAnimation::DEFAULT
+        self.game.attack_animation()
     }
     fn interact_animation(&mut self, _: Hand) -> SwingAnimation {
         SwingAnimation::DEFAULT
     }
-    fn piercing_attack(&mut self, _: SwingAnimation) {}
+    fn piercing_attack(&mut self, animation: SwingAnimation) {
+        self.game.piercing_attack(animation);
+    }
     fn attack_entity(&mut self) -> bool {
         self.game.attack()
     }
