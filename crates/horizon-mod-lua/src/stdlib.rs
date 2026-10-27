@@ -27,15 +27,15 @@ pub fn install(ctx: Context<'_>) -> Result<(), Error<'_>> {
         ctx,
         "rep",
         function(ctx, |ctx, args| {
-            let s = string_arg(&args, 0).ok_or_else(|| {
+            let s = bytes_arg(&args, 0).ok_or_else(|| {
                 lua_error(ctx, "bad argument #1 to 'rep' (string expected)".into())
             })?;
             let n = args.get(1).and_then(|v| v.to_integer()).unwrap_or(0).max(0) as usize;
-            let sep = string_arg(&args, 2).unwrap_or_default();
+            let sep = bytes_arg(&args, 2).unwrap_or_default();
             if (s.len() + sep.len()).saturating_mul(n) > 1 << 20 {
                 return Err(lua_error(ctx, "resulting string too large".into()));
             }
-            Ok(vec![text(ctx, &vec![s; n].join(&sep))])
+            Ok(vec![bytes(ctx, &vec![s; n].join(&sep[..]))])
         }),
     )?;
     let table = match ctx.get_global("table") {
@@ -127,7 +127,7 @@ pub fn install(ctx: Context<'_>) -> Result<(), Error<'_>> {
                     "bad argument #1 to 'concat' (table expected)".into(),
                 ));
             };
-            let sep = string_arg(&args, 1).unwrap_or_default();
+            let sep = bytes_arg(&args, 1).unwrap_or_default();
             let first = args.get(2).and_then(|v| v.to_integer()).unwrap_or(1);
             let last = args
                 .get(3)
@@ -136,17 +136,30 @@ pub fn install(ctx: Context<'_>) -> Result<(), Error<'_>> {
             let mut parts = Vec::new();
             for i in first..=last {
                 let v = t.get(ctx, i);
-                parts.push(string_arg(&[v], 0).ok_or_else(|| {
+                parts.push(bytes_arg(&[v], 0).ok_or_else(|| {
                     lua_error(
                         ctx,
                         format!("invalid value (at index {i}) in table for 'concat'"),
                     )
                 })?);
             }
-            Ok(vec![text(ctx, &parts.join(&sep))])
+            Ok(vec![bytes(ctx, &parts.join(&sep[..]))])
         }),
     )?;
     Ok(())
+}
+
+/// A string or number argument as bytes: Lua strings are byte strings, so `rep` and `concat`
+/// keep bytes that are not UTF-8 (binary values from `horizon.storage`, for one) as they are.
+fn bytes_arg(args: &[Value], i: usize) -> Option<Vec<u8>> {
+    match args.get(i).copied()? {
+        Value::String(s) => Some(s.as_bytes().to_vec()),
+        _ => string_arg(args, i).map(String::into_bytes),
+    }
+}
+
+fn bytes<'gc>(ctx: Context<'gc>, b: &[u8]) -> Value<'gc> {
+    Value::String(piccolo::String::from_slice(&ctx, b))
 }
 
 /// A string or number argument as text, as Lua coerces them.

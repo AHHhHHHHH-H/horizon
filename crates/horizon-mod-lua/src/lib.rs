@@ -561,4 +561,14 @@ mod tests {
         end"#;
         assert_eq!(run(script), Ok(Some("a,b|c|ab-ab-ab".into())));
     }
+
+    #[test]
+    fn rep_and_concat_keep_bytes() {
+        let script = r#"function on_command()
+            local r = string.rep("\255", 2, "\0")
+            local c = table.concat({"\254", 7, "\128"}, "\255")
+            return tostring(r == "\255\0\255" and #r == 3) .. " " .. tostring(c == "\254\255" .. "7\255\128" and #c == 5)
+        end"#;
+        assert_eq!(run(script), Ok(Some("true true".into())));
+    }
 }
