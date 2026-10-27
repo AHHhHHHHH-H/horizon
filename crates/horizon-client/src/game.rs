@@ -2445,6 +2445,7 @@ impl Game<'_> {
             health: 5,
             fire_ticks: 0,
             thrower: None,
+            target: None,
             id: self.next_entity,
             stack,
             position: p,
@@ -2668,6 +2669,7 @@ impl Game<'_> {
             ],
         );
         let feet = [p.position.x, p.position.y, p.position.z];
+        let own = self.level.ensure_player_uuid();
         let mut kept = Vec::with_capacity(items.len());
         for mut item in items {
             let b = item.bounds();
@@ -2677,7 +2679,8 @@ impl Game<'_> {
                 && b.max_position().y > min[1]
                 && b.min_position().z < max[2]
                 && b.max_position().z > min[2];
-            if touching && item.pickup_delay == 0 {
+            // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
+            if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
                 let before = item.stack.count;
                 let kind = item.stack.item.clone();
                 match self.give(item.stack.clone()) {
