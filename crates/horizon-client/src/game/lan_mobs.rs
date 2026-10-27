@@ -393,6 +393,7 @@ mod tests {
             alive: true,
             creative,
             sneaking: false,
+            swimming: false,
             look: [0.0; 3],
             main_hand: None,
             off_hand: None,
