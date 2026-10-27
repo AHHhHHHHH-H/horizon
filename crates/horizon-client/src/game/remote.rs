@@ -1374,7 +1374,16 @@ impl Game<'_> {
         on_ground: bool,
         far_snaps: bool,
     ) {
-        let mob = self.mobs.iter_mut().find(|m| m.id == id as u32);
+        // The dragon is drawn from its own state (game/dragon.rs), which
+        // tick_remote_dragon eases to the server's moves through `lerps`. Its
+        // copy in the mob list draws nothing: given the move, it kept the
+        // dragon where it spawned (#2083).
+        let dragon = self.dragon.as_ref().is_some_and(|d| d.id as i32 == id);
+        let mob = self
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id as u32)
+            .filter(|_| !dragon);
         let tracked = self
             .remote
             .as_ref()
@@ -1389,16 +1398,6 @@ impl Game<'_> {
                     .map(|m| [m.position.x, m.position.y, m.position.z])
             })
             .unwrap_or([0.0; 3]);
-        // The dragon is drawn from its own state (game/dragon.rs), not from
-        // the generic mob list: the server's moves move that one.
-        if super::dragon::follows_the_server(
-            &mut self.dragon,
-            id,
-            path.as_ref().map(Path::end),
-            rotation,
-        ) {
-            return;
-        }
         if let Some(r) = self.remote.as_mut() {
             if let Some(t) = r.entities.get_mut(&id) {
                 t.position = position;
