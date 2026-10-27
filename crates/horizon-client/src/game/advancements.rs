@@ -779,6 +779,22 @@ impl Game<'_> {
         let it = item_view(stack);
         self.trigger(name, |c, w| adv::item_entity(c, &me, target, &it, w));
     }
+    /// `EnchantedItemTrigger`: the enchanted item and the levels it cost.
+    pub(super) fn trigger_enchanted_item(&mut self, stack: &ItemStack, levels: i32) {
+        let me = self.player_entity();
+        let it = item_view(stack);
+        self.trigger("minecraft:enchanted_item", move |c, w| {
+            let pctx = adv::Entities {
+                this: Some(&me),
+                origin: me.position,
+                tool: None,
+                block_pos: None,
+            };
+            adv::conditions(&c["player"], &pctx, w)
+                && adv::item(&c["item"], &it, w)
+                && adv::range_i(&c["levels"], i64::from(levels))
+        });
+    }
     /// `TradeTrigger`: the villager and the item the trade gave.
     pub(super) fn trigger_trade(&mut self, villager: &EntityView, stack: &ItemStack) {
         let me = self.player_entity();
