@@ -3708,6 +3708,7 @@ impl Game<'_> {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
         }
         if running {
+            self.guardian_bubbles();
             // The dragon: LivingEntity's interpolation, inside its aiStep.
             let dragon_lerp = self
                 .dragon
