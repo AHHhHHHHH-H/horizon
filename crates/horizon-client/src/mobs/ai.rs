@@ -1312,7 +1312,7 @@ pub fn despawn_check(m: &mut Mob, w: &MobWorld) -> bool {
 pub fn requires_custom_persistence(m: &Mob) -> bool {
     super::riders::keeps_alive(m)
         || m.extra.leash.is_some()
-        || super::raider::state(m).is_some_and(|s| s.raid_id.is_some())
+        || super::raider::in_raid(m)
         || m.species() == Species::Enderman && m.extra.carried.is_some()
         || super::nautilus::is_nautilus(m.species()) && m.extra.tame
         || m.species() == Species::SulfurCube
