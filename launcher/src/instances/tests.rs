@@ -149,6 +149,18 @@ fn names_stay_unique_and_packs_are_not_copied() {
     // An empty group is no group.
     let grouped = edit_in(&home, &data, "Survival", |m| m.group = Some(" ".into())).unwrap();
     assert_eq!(grouped.group, None);
+    // An import named like an instance: both can still change everything but their names.
+    let mut store = Store::load(&data);
+    store.instances.entry(port.id.clone()).or_default().name = Some("Survival".into());
+    store.save(&data).unwrap();
+    let launched = edit_in(&home, &data, "survival", |m| {
+        m.launch.wrapper = "nice".into()
+    })
+    .unwrap();
+    assert_eq!(launched.launch.wrapper, "nice");
+    assert!(edit_in(&home, &data, "survival-2", |m| m.name =
+        Some("survival".into()))
+    .is_err());
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -200,4 +212,61 @@ fn icons_are_a_texture_name_or_a_colour() {
     assert!(diamond.ends_with("item/diamond.png"));
     assert_eq!(Icon::Texture("stone".into()).texture(&root), None);
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn an_instance_keeps_its_own_version_until_it_follows_updates_again() {
+    let root = scratch("version");
+    let (home, data) = (root.join("horizon"), root.join("launcher"));
+    player_home(&home);
+    create_in(&home, &data, "Old world", None).unwrap();
+    let pinned = edit_in(&home, &data, "Old world", |m| {
+        m.version = Some("v0.1.0".into())
+    })
+    .unwrap();
+    assert_eq!(pinned.version.as_deref(), Some("v0.1.0"));
+    // Renaming keeps it; the other instances follow the launcher's version.
+    let renamed = edit_in(&home, &data, "old-world", |m| m.name = Some("Older".into())).unwrap();
+    assert_eq!(renamed.version.as_deref(), Some("v0.1.0"));
+    assert!(list_in(&home, &data)
+        .iter()
+        .filter(|i| i.id != "old-world")
+        .all(|i| i.version.is_none()));
+    let follows = edit_in(&home, &data, "Older", |m| m.version = None).unwrap();
+    assert_eq!(follows.version, None);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn play_time_adds_up_per_instance_and_survives_a_rename() {
+    let root = scratch("play-time");
+    let (home, data) = (root.join("home"), root.join("data"));
+    fs::create_dir_all(home.join(OWN).join("skyblock")).unwrap();
+    let ended = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    record_play_in(&data, "skyblock", Duration::from_secs(25 * 60 + 10), ended).unwrap();
+    edit_in(&home, &data, "skyblock", |m| m.name = Some("Sky".into())).unwrap();
+    let later = ended + Duration::from_secs(3600);
+    record_play_in(&data, "skyblock", Duration::from_secs(40 * 60), later).unwrap();
+    let all = list_in(&home, &data);
+    let sky = find_in(&all, "Sky").unwrap();
+    assert_eq!(sky.played, Duration::from_secs(65 * 60 + 10));
+    assert_eq!(sky.last_played, Some(later));
+    let default = find_in(&all, DEFAULT).unwrap();
+    assert_eq!(
+        (default.played, default.last_played),
+        (Duration::ZERO, None)
+    );
+    // Never played: nothing written for it.
+    let text = fs::read_to_string(data.join(FILE)).unwrap();
+    assert!(!text.contains("horizon"), "{text}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn play_time_reads_as_minutes_then_hours() {
+    let t = |s| play_time(Duration::from_secs(s));
+    assert_eq!(t(59), "under a minute");
+    assert_eq!(t(12 * 60 + 59), "12 min");
+    assert_eq!(t(3 * 3600 + 5 * 60), "3 h 05 min");
+    assert_eq!(t(140 * 3600 + 7 * 60), "140 h");
 }

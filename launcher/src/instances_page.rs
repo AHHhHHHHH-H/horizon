@@ -77,7 +77,26 @@ impl Launcher {
         list.iter().find(|i| i.id == id).or(list.first())
     }
 
-    fn select_instance(&mut self, instance: &Instance) {
+    /// The installed version `instance` plays: its own, else the launcher's.
+    pub(super) fn version_of(&self, instance: &Instance) -> Option<&String> {
+        match &instance.version {
+            Some(own) => self.installed.iter().find(|t| *t == own),
+            None => self.launcher_version(),
+        }
+    }
+
+    /// Keeps the selected instance on `tag`, or lets it follow the launcher's version.
+    pub(super) fn pin_version(&mut self, tag: Option<String>) {
+        let Some(id) = self.selected_instance().map(|i| i.id.clone()) else {
+            return;
+        };
+        match instances::edit(&id, |m| m.version = tag) {
+            Ok(_) => self.reload_instances(),
+            Err(e) => self.client_error = Some(e),
+        }
+    }
+
+    pub(super) fn select_instance(&mut self, instance: &Instance) {
         self.settings.instance =
             (instance.kind != InstanceKind::Default).then(|| instance.id.clone());
         self.settings.save();
@@ -154,15 +173,6 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let t = self.theme;
-        let tag = self.selected().cloned();
-        let prepared = tag.as_deref().is_some_and(backend::is_prepared);
-        let status = if tag.is_none() {
-            "No version installed"
-        } else if prepared {
-            "Ready"
-        } else {
-            "Needs preparing"
-        };
         let selected = self.selected_instance().map(|i| i.id.clone());
         let on_packs = self.page == Page::Mods && self.mods.on_modpacks();
         let mut out = Vec::new();
@@ -174,20 +184,28 @@ impl Launcher {
                     out.push(heading(g.to_uppercase()).into_any_element());
                 }
             }
+            let tag = self.version_of(&i).cloned();
+            let prepared = tag.as_deref().is_some_and(backend::is_prepared);
             let (open, sub) = match i.kind {
                 InstanceKind::Default | InstanceKind::Own => (
                     self.page == Page::Play && selected.as_ref() == Some(&i.id),
-                    status.to_string(),
+                    match (&tag, &i.version) {
+                        (None, Some(own)) => trf("{version} is not installed", &[("version", own)]),
+                        (None, None) => tr("No version installed").into(),
+                        (Some(_), _) if !prepared => tr("Needs preparing").into(),
+                        (Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
+                        (Some(_), None) => tr("Ready").into(),
+                    },
                 ),
                 InstanceKind::Port => {
                     let slug = &i.id["port:".len()..];
                     let summary = self.packs.iter().find(|p| p.slug == slug);
                     (
                         on_packs && self.pack_open.as_deref() == Some(slug),
-                        summary.map_or_else(|| "Modpack".into(), |p| p.summary()),
+                        summary.map_or_else(|| tr("Modpack").into(), |p| p.summary()),
                     )
                 }
-                InstanceKind::Pack => (false, "From Horizon's registry".into()),
+                InstanceKind::Pack => (false, tr("From Horizon's registry").into()),
             };
             let dot = matches!(i.kind, InstanceKind::Default | InstanceKind::Own).then(|| {
                 div()
@@ -523,7 +541,8 @@ impl Launcher {
         )
     }
 
-    /// The Play page's row for the selected instance: its folder, and changing or copying it.
+    /// The Play page's row for the selected instance: its folder, and changing, copying or
+    /// exporting it.
     pub(super) fn instance_row(&mut self, n: usize, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let instance = self.selected_instance()?.clone();
@@ -532,9 +551,13 @@ impl Launcher {
             instance.clone(),
             instance.name.clone(),
         );
+        // Under the name, wrapping: six actions don't fit beside it at the window's narrowest.
         let actions = div()
             .flex()
+            .flex_wrap()
             .gap(px(8.))
+            .mt(px(6.))
+            .ml(px(-14.))
             .child(
                 button("instance-edit", "Edit…", Kind::Ghost, &t).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
@@ -556,6 +579,39 @@ impl Launcher {
                 )),
             )
             .child(
+                button(
+                    "instance-export",
+                    if self.export.is_some() {
+                        "Close export"
+                    } else {
+                        "Export…"
+                    },
+                    Kind::Ghost,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_export();
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    "instance-launch",
+                    if self.launch.is_some() {
+                        "Close launch"
+                    } else {
+                        "Launch…"
+                    },
+                    Kind::Ghost,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_launch();
+                    cx.notify();
+                })),
+            )
+            .child(self.shortcut_button(&instance, cx))
+            .child(
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
@@ -565,11 +621,44 @@ impl Launcher {
             );
         Some(index_row(
             n,
-            "Instance",
-            Some(div().child(instance.name.clone()).into_any_element()),
-            Some(actions.into_any_element()),
+            tr("Instance"),
+            Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(10.))
+                            .child(instance.name.clone())
+                            .child(
+                                text(theme::CAPTION)
+                                    .text_color(t.muted)
+                                    .child(played_line(&instance)),
+                            ),
+                    )
+                    .children(self.shortcut_note(&instance.id))
+                    .child(actions)
+                    .into_any_element(),
+            ),
+            None,
             &t,
         ))
+    }
+}
+
+/// "3 h 05 min in total · last played today", or "Not played yet".
+fn played_line(instance: &Instance) -> String {
+    match instance.last_played {
+        Some(when) => trf(
+            "{time} in total · last played {when}",
+            &[
+                ("time", &instances::play_time(instance.played)),
+                ("when", &worlds_page::ago(when)),
+            ],
+        ),
+        None => tr("Not played yet").into(),
     }
 }
 
