@@ -139,8 +139,10 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
+            | Target::Crystal(id)
+            | Target::Dragon(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
-            // Orbs and projectiles are addressed by index and have no UUID here.
+            // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
         }
     }
