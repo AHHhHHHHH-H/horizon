@@ -541,8 +541,7 @@ impl Game<'_> {
                     .enumerate()
                     // The kinds /data can write (entity_nbt).
                     .filter(|(_, p)| {
-                        p.arrow.is_some()
-                            || matches!(p.kind, K::LargeFireball { .. } | K::SmallFireball)
+                        p.is_arrow() || matches!(p.kind, K::LargeFireball { .. } | K::SmallFireball)
                     })
                     .map(|(i, _)| Target::Projectile(i)),
             );
@@ -1896,8 +1895,7 @@ impl Game<'_> {
             return false;
         }
         self.world.block_entities.insert(key, new);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let _ = self.world.set(pos[0], pos[1], pos[2], state);
+        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         true
     }
     /// RandomizableContainer.tryLoadLootTable for a tag a command gives a

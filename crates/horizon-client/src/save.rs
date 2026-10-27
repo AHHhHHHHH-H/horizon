@@ -643,6 +643,16 @@ pub fn encode_block_entity(
                 entries.push(("custom_name", name.clone()));
             }
         }
+        // TheEndGatewayBlockEntity.saveAdditional.
+        BlockEntity::EndGateway(g) => {
+            entries.push(("Age", Tag::Long(g.age)));
+            if let Some(exit) = g.exit_portal {
+                entries.push(("exit_portal", Tag::IntArray(exit.to_vec())));
+            }
+            if g.exact_teleport {
+                entries.push(("ExactTeleport", Tag::Byte(1)));
+            }
+        }
         BlockEntity::Spawner(s) => entries.extend(s.save()),
         BlockEntity::TrialSpawner(s) => entries.extend(s.save()),
         BlockEntity::Vault(v) => entries.extend(v.save()),
@@ -702,11 +712,24 @@ fn roll_loaded_loot(
         biome,
     ))
 }
+/// `TheEndGatewayBlockEntity.loadAdditional`.
+pub fn decode_end_gateway(tag: &Tag) -> crate::containers::EndGateway {
+    crate::containers::EndGateway {
+        age: number(tag.get("Age")).unwrap_or(0),
+        exit_portal: tag
+            .get("exit_portal")
+            .and_then(crate::block_entity_nbt::gateway_exit),
+        exact_teleport: number(tag.get("ExactTeleport")).unwrap_or(0) != 0,
+    }
+}
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;
     let int = |k: &str| number(tag.get(k)).map(|v| v as i32);
     let id = text(tag.get("id"))?;
     let pos = (int("x")?, int("y")?, int("z")?);
+    if id == "minecraft:end_gateway" {
+        return Some((pos, BlockEntity::EndGateway(decode_end_gateway(tag))));
+    }
     if id == "minecraft:jukebox" {
         let record = tag.get("RecordItem").and_then(item_from_nbt);
         let ticks = number(tag.get("ticks_since_song_started")).unwrap_or(0);
@@ -846,6 +869,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Lectern(_)
         | BlockEntity::Banner(_)
         | BlockEntity::CreakingHeart(_)
+        | BlockEntity::EndGateway(_)
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector => {}
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
@@ -2435,28 +2459,7 @@ fn write_saved_data(world: &Path, name: &str, data: Tag) -> Result<()> {
         Tag::compound([("data", data), ("DataVersion", Tag::Int(DATA_VERSION))]),
     )
 }
-pub fn uuid_text(u: [i32; 4]) -> String {
-    let hex: String = u.iter().map(|v| format!("{:08x}", *v as u32)).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
-}
-pub fn uuid_from_text(s: &str) -> Option<[i32; 4]> {
-    let hex: String = s.chars().filter(|c| *c != '-').collect();
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut out = [0i32; 4];
-    for (i, v) in out.iter_mut().enumerate() {
-        *v = u32::from_str_radix(&hex[i * 8..i * 8 + 8], 16).ok()? as i32;
-    }
-    Some(out)
-}
+pub use horizon_client_core::uuid::{uuid_from_text, uuid_text};
 /// A random (version 4) UUID as vanilla's four-int form.
 pub fn random_uuid() -> [i32; 4] {
     let t = std::time::SystemTime::now()
@@ -4661,6 +4664,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn end_gateway_block_entity_round_trips() {
+        use crate::containers::{BlockEntity, EndGateway};
+        let plain = BlockEntity::for_block("minecraft:end_gateway").expect("gateway");
+        assert!(matches!(&plain, BlockEntity::EndGateway(g) if *g == EndGateway::default()));
+        for exit in [None, Some([8, 100, 0])] {
+            for exact in [false, true] {
+                let gateway = EndGateway {
+                    age: 201,
+                    exit_portal: exit,
+                    exact_teleport: exact,
+                };
+                let tag = encode_block_entity(
+                    (702, 100, 0),
+                    &BlockEntity::EndGateway(gateway.clone()),
+                    "minecraft:end_gateway",
+                );
+                assert_eq!(
+                    text(tag.get("id")).as_deref(),
+                    Some("minecraft:end_gateway")
+                );
+                assert_eq!(tag.get("Age"), Some(&Tag::Long(201)));
+                assert_eq!(
+                    tag.get("exit_portal"),
+                    exit.map(|p| Tag::IntArray(p.to_vec())).as_ref()
+                );
+                assert_eq!(
+                    tag.get("ExactTeleport"),
+                    exact.then_some(Tag::Byte(1)).as_ref()
+                );
+                let (pos, back) = decode_block_entity(&tag).expect("gateway");
+                assert_eq!(pos, (702, 100, 0));
+                assert!(matches!(back, BlockEntity::EndGateway(g) if g == gateway));
+            }
+        }
+    }
+
+    #[test]
+    fn end_gateway_exit_requires_spawnable_bounds() {
+        for (exit, valid) in [
+            (vec![-30_000_000, -20_000_000, -30_000_000], true),
+            (vec![29_999_999, 19_999_999, 29_999_999], true),
+            (vec![30_000_000, 0, 0], false),
+            (vec![0, 0, 30_000_000], false),
+            (vec![-30_000_001, 0, 0], false),
+            (vec![0, 0, -30_000_001], false),
+            (vec![0, 20_000_000, 0], false),
+            (vec![0, -20_000_001, 0], false),
+            (vec![i32::MIN, 0, 0], false),
+            (vec![0, 100], false),
+        ] {
+            let tag = Tag::compound([
+                ("id", string("minecraft:end_gateway")),
+                ("x", Tag::Int(702)),
+                ("y", Tag::Int(100)),
+                ("z", Tag::Int(0)),
+                ("exit_portal", Tag::IntArray(exit)),
+            ]);
+            let (_, crate::containers::BlockEntity::EndGateway(g)) =
+                decode_block_entity(&tag).unwrap()
+            else {
+                panic!("gateway");
+            };
+            assert_eq!(g.exit_portal.is_some(), valid);
+            let canonical = crate::block_entity_nbt::canonical(&tag).expect("gateway NBT");
+            assert_eq!(canonical.get("exit_portal").is_some(), valid);
+        }
+        assert_eq!(
+            decode_end_gateway(&Tag::Compound(Compound::new())),
+            crate::containers::EndGateway::default()
+        );
+    }
+
+    #[test]
     fn skull_block_entity_keeps_its_profile() {
         // A placed `player_head` as vanilla saves it: the owning player's
         // `profile` survives load, encode and `canonical`.
@@ -5124,6 +5200,30 @@ mod tests {
             panic!("a furnace back");
         };
         assert_eq!(back.recipes_used.get("minecraft:cooked_porkchop"), Some(&3));
+    }
+    /// The world's save (Level.write) writes the rules as they are now, and a
+    /// world opened again reads them back (#74).
+    #[test]
+    fn level_save_keeps_changed_rules() {
+        use crate::gamerules::{GameRules, Value};
+        let dir =
+            std::env::temp_dir().join(format!("horizon-gamerules-level-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut level = super::Level::default();
+        level.write(&dir).unwrap();
+        // Rules changed while playing, then saved and loaded again.
+        let mut rules = GameRules::load(&dir);
+        assert_eq!(rules, GameRules::default());
+        assert!(rules.set("advance_time", Value::Bool(false)));
+        assert!(rules.set("advance_weather", Value::Bool(false)));
+        assert!(rules.set("random_tick_speed", Value::Int(0)));
+        level.game_rules = rules.by_name();
+        level.write(&dir).unwrap();
+        assert_eq!(GameRules::load(&dir), rules);
+        let read = super::Level::read(&dir).unwrap();
+        assert_eq!(read.game_rules, rules.by_name());
+        assert_eq!(read.game_rule("advance_time"), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A save written before the key was namespaced holds an id twice, once bare: vanilla
