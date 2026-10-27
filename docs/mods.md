@@ -86,7 +86,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id |
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
-| `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
+| `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: the mod's saved state (settings, progress), in a per-mod folder of up to 256 files and 16 MiB, at most 1 MiB written per call; a server owner changes both in `server.toml` (`[mods]`). Not for resources: [where a mod's files go](#where-a-mods-files-go) |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
@@ -100,6 +100,19 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | `frame(seconds)` | each rendered frame |
 | `command(name, args) -> result<option<string>, string>` | `/name args` typed in chat, for a command the mod registered |
 | `chat(text)` | each chat line the player receives, as plain text |
+
+### Where a mod's files go
+
+A mod ships everything it *is* in its `.hmod`, and keeps only what it *saves* in `storage`:
+
+| What | Where | Why |
+|---|---|---|
+| Textures, models, sounds, language files, block states | `assets/<id>/...` in the `.hmod` | the game loads them with the mod, as a resource pack's files; no quota but the package's (16 MiB a file, 512 MiB in all) |
+| Recipes, loot tables, tags, blocks and items | `data/<id>/...` in the `.hmod` | read before the world loads ([content mods](#content-mods-api-02)) |
+| Settings, progress, a cache the mod rebuilds | `storage` | the only part that changes while playing: 16 MiB and 256 files per mod |
+
+`assets/` and `data/` need capability `registries` and `api = "0.2"`, with code or without. A gun mod's model,
+textures and sounds are package assets; its `storage` holds, say, the player's chosen sight.
 
 Commands: vanilla's command names win. A mod asking for `/give` does not get
 it (logged), and two mods cannot share a name (the first one loaded keeps it).
@@ -122,8 +135,31 @@ loading. Ordered by what the first native ports need:
 | `registries` | new blocks, items, entities and recipes, mostly data: JSON models, textures, loot and recipes in the `.hmod`'s `assets/` and `data/` | server side; see [Multiplayer](#multiplayer) |
 | `server` | world events (entity spawn/death), game rules, world read/write, typed server commands | after [server mods 0.3](#server-mods-api-03-experimental)'s players, chat, blocks and commands |
 | `net` | a mod's own client↔server channel (custom payloads) | only between the two halves of the same mod |
+| `packets` | server mods: a read-only, typed view of the play packets the server receives | design below; not built |
 
 There is no file, socket, process or raw-input interface, on purpose.
+
+### No sockets: what to use instead
+
+A mod never opens a socket, not even to the game's own connection: it could talk to anything on the player's
+network, and the sandbox could no longer say what a mod does. What a mod usually wants a socket for is covered
+by:
+
+- **`net`** (planned): the mod's own channel between its client and server halves, as custom payloads on the
+  game's connection. The server half decides what the client half may do.
+- **Typed events**: the hooks above (`tick`, `chat`, `command`; a server mod's joins, chat, commands, blocks
+  broken and placed). A missing event is a new hook, added like the others.
+
+**`packets` (design; ask before building it).** If a real mod needs more than those, the next step is a
+read-only capability for **server mods** first:
+
+- A typed view of the play packets the server *receives* (movement, use and attack, container clicks, held
+  item), delivered as a hook after the server handled them. The mod can't change, drop or send a packet.
+- Never chat, commands, signatures, keys, login or configuration packets: what a player types or proves about
+  their account stays out of reach.
+- Opt-in: `capabilities = ["packets"]`, listed on the mod's page ("May see what players do: movement, clicks,
+  items used"); off for client mods, which see only their own player through `game` and `input`.
+- Rate-capped like `world` (a fixed number per tick, the oldest dropped) and free when no mod has it.
 
 ## Choosing the runtime
 
