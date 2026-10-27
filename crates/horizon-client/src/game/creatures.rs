@@ -52,6 +52,10 @@ pub(super) struct Creatures {
     /// Sweep attacks from a guest's turn, waiting for it to end
     /// (game/lan_pvp.rs).
     pub sweeps: Vec<super::lan_pvp::Sweep>,
+    /// The players a fishing hook can catch, taken as the hooks tick, and
+    /// the pulls on them waiting for the hub (game/fishing.rs).
+    pub hook_targets: Vec<super::fishing::HookTarget>,
+    pub hook_pulls: Vec<(u32, horizon_core::geometry::Vec3)>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
     /// The wandering trader spawner's clock.
