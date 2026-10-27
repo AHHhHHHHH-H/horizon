@@ -238,9 +238,43 @@ impl Composed {
     }
 }
 
+/// What a stage is built from: a pack's file (with the pack's shared files), or a mod's
+/// shader (`crate::mods`).
+pub struct Source<'a> {
+    pub kind: StageKind,
+    /// What its files may use: the stage's prelude, and a mod's `params`.
+    pub prelude: String,
+    /// WGSL put before the file, in order: (file, text).
+    pub shared: &'a [(&'a str, &'a str)],
+    pub file: &'a str,
+    pub text: &'a str,
+}
+
 /// The WGSL of the stage `kind` whose own file is `file`: the prelude, the
 /// pack's shared files in order, the file, then the entry points.
 pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
+    let shared: Vec<(&str, &str)> = pack
+        .manifest
+        .shared
+        .iter()
+        .filter(|s| *s != file)
+        .map(|s| (s.as_str(), pack.source(s).unwrap_or_default()))
+        .collect();
+    compose_source(
+        &Source {
+            kind,
+            prelude: kind.prelude(),
+            shared: &shared,
+            file,
+            text: pack.source(file).unwrap_or_default(),
+        },
+        true,
+    )
+}
+
+/// The WGSL of `source`: the prelude, the shared files, the file and, when
+/// `entries`, the stage's entry points.
+pub fn compose_source(source: &Source, entries: bool) -> Composed {
     let mut composed = Composed {
         text: String::new(),
         parts: Vec::new(),
@@ -255,11 +289,13 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             .parts
             .push((name.to_owned(), start..composed.text.len()));
     };
-    push("<prelude>", &kind.prelude());
-    for shared in pack.manifest.shared.iter().filter(|s| *s != file) {
-        push(shared, pack.source(shared).unwrap_or_default());
+    push("<prelude>", &source.prelude);
+    for (file, text) in source.shared {
+        push(file, text);
     }
-    push(file, pack.source(file).unwrap_or_default());
-    push("<entries>", kind.entries());
+    push(source.file, source.text);
+    if entries {
+        push("<entries>", source.kind.entries());
+    }
     composed
 }
