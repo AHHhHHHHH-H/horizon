@@ -12,7 +12,10 @@ pub fn suffixes(root: &Path) -> Vec<String> {
         && let Ok(text) = std::fs::read_to_string(path)
     {
         for line in text.lines().take(128) {
-            if let Some(("suffix.emissive", value)) = line.trim().split_once('=') {
+            if let Some((key, value)) = line.trim().split_once('=') {
+                if key.trim() != "suffix.emissive" {
+                    continue;
+                }
                 let value = value.trim();
                 if !value.is_empty()
                     && value.len() <= 32
@@ -65,6 +68,9 @@ pub fn load(root: &Path, sprites: &mut Sprites) {
         }
         let size = |n| u32::from_be_bytes(bytes[n..n + 4].try_into().unwrap());
         if !(1..=64).contains(&size(16)) || !(1..=64).contains(&size(20)) {
+            continue;
+        }
+        if crate::hud::decode_bytes(&bytes).is_err() {
             continue;
         }
         if sprites.insert(root, &id).is_ok() {
@@ -128,5 +134,39 @@ mod tests {
             ),
             vec![[2, 3, 0, 0]]
         );
+    }
+    #[test]
+    fn suffix_properties_are_bounded_and_cannot_name_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-emissive-properties-{}",
+            std::process::id()
+        ));
+        let dir = root.join("assets/minecraft/optifine");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("emissive.properties");
+        std::fs::write(
+            &file,
+            "suffix.emissive = _glow\nsuffix.emissive=../../bad\n",
+        )
+        .unwrap();
+        assert_eq!(suffixes(&root), vec!["_e", "_emissive", "_glow"]);
+        std::fs::write(&file, "x".repeat(4097)).unwrap();
+        assert_eq!(suffixes(&root), vec!["_e", "_emissive"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn mapping_budget_is_fixed_even_with_many_owners() {
+        let mut layers = BTreeMap::new();
+        for i in 0..200 {
+            layers.insert(format!("minecraft:block/{i}"), i);
+            layers.insert(format!("a:emissive/{i}"), i + 1000);
+        }
+        let maps = mappings(
+            &layers,
+            (0..200).map(|i| (format!("minecraft:block/{i}"), format!("a:emissive/{i}"))),
+            &[],
+        );
+        assert_eq!(maps.len(), MAX);
+        assert!(maps.windows(2).all(|w| w[0][0] < w[1][0]));
     }
 }

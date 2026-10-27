@@ -17,6 +17,11 @@ are ported or that every API is complete. No custom client was installed.
 - [x] API 14: owner-scoped configurable particles using vanilla sprite sets,
   explicit color/size/lifetime/physics and live caps (256/owner, 1024 total).
   Pending and live particles are removed on owner failure, disable or reload.
+- [x] API 15: bounded colored-light owners and normal terrain/entity shaders.
+- [x] API 16: owned static particle images and bounded packaged-asset admission.
+- [x] API 17: owned terrain emissive overlays and resource-pack suffix conventions.
+- [x] API 18: owner-scoped bounded bloom and depth-aware radial filters,
+  additive composition, world color/depth inputs and target cleanup.
 - [x] SDK bindings, API-level detection and generated reference for these functions.
 - [x] Real WebAssembly sandbox regression tests for these functions.
 
@@ -26,21 +31,26 @@ are ported or that every API is complete. No custom client was installed.
 - API 0.2 packaged assets (`registries`) and namespace/path/size validation.
 - Native WGSL shader-pack validation and scene/depth/frame inputs.
 
-These are existing facilities. Wiring shader packs to sandboxed mod owners and
-proving the full asset/settings lifecycle for the requested effects is still work.
+These are existing facilities. API 18 uses separate bounded built-in filters;
+it does not grant sandboxed owners arbitrary shader-pack programs.
 
-## Not implemented yet
+## Contract and validation boundaries
 
-- [ ] Custom particle sprite/physics/lifetime declarations and their asset lifecycle.
-  Physics/lifetime controls are implemented by API 14; custom sprite images and
-  packaged-asset lifecycle remain unimplemented. This item is not complete.
-- [ ] Emissive overlay/material registration and resource-pack suffix conventions.
-- [ ] Bounded colored-light sources and renderer integration.
-- [ ] Mod-owned post-processing chains, scene/depth inputs and cleanup/composition.
-- [ ] Complete effect examples packaged as `.hmod`, including settings/assets.
-- [ ] Visual integration fixtures for in-frame, server-thread and multiplayer clients.
-- [ ] CPU/GPU profiling and resource-lifetime verification for the remaining effects.
-- [ ] Six complete mod/resource-pack adaptations (none is claimed complete).
+The implemented contracts and caps are in [visual-effects.md](visual-effects.md).
+These are bounded client APIs, not an unrestricted shader framework:
+
+- Static custom particle images, not arbitrary animated particle scripts.
+- Terrain emissive overlays, not entity/item material replacement.
+- Camera-local unshadowed colored illumination, not world light propagation.
+- Built-in bloom/radial filters, not arbitrary WGSL or user-defined shader graphs.
+- Post filters yield while a shader pack owns post-processing.
+
+- [x] Original Effect Lab example, packaged with assets and persistent settings.
+- [x] Native integration fixture code for in-frame, server-thread and TCP guests.
+- [x] GPU readback test for filter composition, depth and resource cleanup.
+- [ ] Run the final native fixtures and CPU/GPU profiling on the final build.
+- [ ] Final full repository checks after the API 18 changes.
+- [ ] Six complete mod/resource-pack adaptations (separate work; none claimed complete).
 
 ## Validation checkpoint
 

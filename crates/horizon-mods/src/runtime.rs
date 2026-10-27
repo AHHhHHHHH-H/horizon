@@ -263,12 +263,13 @@ pub enum Output {
         dimension: String,
         particles: Vec<ConfiguredParticle>,
     },
-    /// A bounded local sound; pending requests belong to their mod.
+    /// Bounded owner-scoped particles using packaged sprite assets.
     SpriteParticles {
         mod_id: String,
         dimension: String,
         particles: Vec<SpriteParticle>,
     },
+    /// A bounded local sound; pending requests belong to their mod.
     Sound {
         mod_id: String,
         dimension: String,

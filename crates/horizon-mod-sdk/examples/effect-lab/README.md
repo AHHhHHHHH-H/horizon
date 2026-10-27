@@ -10,6 +10,7 @@ Effects in its Settings, or use `/effect_lab on` (`off` clears the controls).
 The toggle is saved in the mod's storage; default is off.
 
 This shows a blue local light, original floating spark sprites, gentle bloom,
-and opt-in `_e`/`_emissive` overlays if the active resource pack has them.
+an original blue patterned stone overlay, and opt-in `_e`/`_emissive` overlays
+if the active resource pack has them.
 Bloom pauses while a shader pack owns post-processing. No assets are copied
 from Minecraft or other mods. Reload content assets/restart after changing PNGs.
