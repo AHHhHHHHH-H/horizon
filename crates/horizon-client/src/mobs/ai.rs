@@ -182,6 +182,7 @@ pub fn register(m: &mut Mob) {
         Family::Aquatic => aquatic::register(m),
         Family::Generic if m.species() == Species::Armadillo => super::armadillo::register(m),
         Family::Generic if m.species() == Species::Frog => super::frog::register(m),
+        Family::Generic if m.species() == Species::Fox => super::fox::register(m),
         Family::Generic => {
             generic(m);
             if m.species() == Species::Rabbit {
@@ -746,6 +747,9 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
             .is_some_and(|t| t.position.distance_squared(m.position) > 121.0);
         super::witch::ai_step(m, events, far);
     }
+    if m.species() == Species::Fox {
+        super::fox::pre_ai_step(m);
+    }
     // AbstractHorse.aiStep: the tail swishes now and then (moveTail).
     if super::equine::is_equine(m.species()) {
         super::equine::tail_tick(m);
@@ -1129,6 +1133,7 @@ fn species_ai_step(
         Species::Armadillo => super::armadillo::tick(m),
         Species::Frog => super::frog::tick(m),
         Species::Goat => super::goat::tick(m),
+        Species::Fox => super::fox::ai_step(m, w, events),
         Species::Turtle => super::turtle::ai_step(m, w, events),
         Species::Sheep if m.extra.anim_ticks > 0 => {
             m.extra.anim_ticks -= 1;
