@@ -409,4 +409,31 @@ mod tests {
         };
         assert!(bare.layers.is_empty());
     }
+
+    #[test]
+    fn a_generated_bee_nest_keeps_its_bees() {
+        // BeehiveDecorator's bees reach the block entity (from #2542 by FusselTV).
+        let bee = |ticks: i32| {
+            Tag::compound([
+                (
+                    "entity_data",
+                    Tag::compound([("id", Tag::String("minecraft:bee".into()))]),
+                ),
+                ("ticks_in_hive", Tag::Int(ticks)),
+                ("min_ticks_in_hive", Tag::Int(600)),
+            ])
+        };
+        let Tag::Compound(nbt) = Tag::compound([
+            ("id", Tag::String("minecraft:beehive".into())),
+            ("bees", Tag::List(vec![bee(12), bee(345)])),
+        ]) else {
+            unreachable!()
+        };
+        let Some(BlockEntity::Beehive(hive)) = generated_block_entity("minecraft:bee_nest", &nbt)
+        else {
+            panic!("a bee nest makes a beehive block entity");
+        };
+        let ticks: Vec<i32> = hive.bees.iter().map(|b| b.ticks_in_hive).collect();
+        assert_eq!(ticks, [12, 345]);
+    }
 }
