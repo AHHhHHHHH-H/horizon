@@ -58,6 +58,8 @@ pub(super) struct Creatures {
     pub trader: super::wandering_trader::Spawner,
     /// The cat spawner's countdown (`CatSpawner.nextTick`).
     pub cat_tick: i32,
+    /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
+    pub shoulder_time: std::collections::HashMap<[i32; 4], i64>,
     /// Particles from a guest's turn, waiting for it to end
     /// (`lan_send_particles`: options, centre, spread, speed, count).
     pub lan_particles: Vec<(
@@ -1275,6 +1277,7 @@ impl Game<'_> {
                 }
                 MobEvent::BecomeStatue { mob } => self.golem_become_statue(mob),
                 MobEvent::EnterHive { mob, hive } => self.bee_enter_hive(mob, hive),
+                MobEvent::ParrotToShoulder { mob } => self.parrot_to_shoulder(mob),
                 MobEvent::Infested { mob } => self.mob_infested(mob),
                 MobEvent::Gift { target, item } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
