@@ -7945,8 +7945,11 @@ impl Game<'_> {
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);
         // Mobs and their projectiles (a span each).
         self.mob_geometry(camera, alpha, &mut out);
-        // In first person only a shader pack's shadow pass draws the player.
-        self.mark_player(out.len(), self.camera_type.first_person());
+        // In first person only a shader pack's shadow pass draws the player, unless it sleeps.
+        self.mark_player(
+            out.len(),
+            self.camera_type.first_person() && self.sleeping.is_none(),
+        );
         self.player_model_geometry(camera, self.clock.camera_fraction(), &mut out);
         self.mark_entity(out.len(), "minecraft:player");
         self.guest_model_geometry(camera, alpha, &mut out);
