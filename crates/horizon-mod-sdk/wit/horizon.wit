@@ -82,6 +82,27 @@ interface game {
 
 }
 
+/// Capability `audio` (experimental): bounded local positional sounds.
+interface audio {
+    record sound {
+        /// A namespaced sound event from the active vanilla/mod resource packs.
+        id: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Finite, 0..1.
+        volume: f32,
+        /// Finite, 0.5..2.
+        pitch: f32,
+    }
+    /// Queues a local sound within 32 blocks of the player. Returns false for
+    /// invalid input, no player, or more than 8 requests per mod per tick.
+    /// Across all mods at most 64 requests are delivered per tick. Missing
+    /// sound events are silent; nothing is downloaded or sent to a server.
+    /// Disabling/crashing the owner drops pending requests. API level 10.
+    play: func(sound: sound) -> bool;
+}
+
 /// Capability `chat`: messages only the local player sees.
 interface chat {
     /// Shown in chat after the mod's name, like a system message.
@@ -831,6 +852,7 @@ interface server-events {
 /// A client mod: runs in the player's game.
 world horizon-mod {
     import log;
+    import audio;
     import game;
     import chat;
     import hud;

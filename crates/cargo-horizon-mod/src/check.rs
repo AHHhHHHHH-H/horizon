@@ -281,6 +281,7 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("placed recipe {book_id}{}", if all { " (all)" } else { "" })
             }
             Output::Give { item, count, .. } => format!("gave {count} {item}"),
+            Output::Sound { sound, .. } => format!("queued local sound {}", sound.id),
             Output::Particles { particles, .. } => {
                 format!("queued {} local particle(s)", particles.len())
             }

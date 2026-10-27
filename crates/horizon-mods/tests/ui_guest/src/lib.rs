@@ -16,7 +16,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    Mod, Registration, audio, browser, chat, command, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -108,6 +108,7 @@ impl Mod for Guest {
             "render_shake",
             "particles",
             "sample_block",
+            "local_sound",
             "input_claim",
             "input_poll",
             "input_held",
@@ -468,6 +469,29 @@ impl Mod for Guest {
                         browser::Event::Back => "back".into(),
                         browser::Event::Tab(i) => format!("tab {i}"),
                     });
+                }
+            }
+            "local_sound" => {
+                let p = game::get_player();
+                let mut s = audio::Sound {
+                    id: "minecraft:block.note_block.harp".into(),
+                    x: p.as_ref().map_or(0.0, |p| p.x),
+                    y: p.as_ref().map_or(0.0, |p| p.y),
+                    z: p.as_ref().map_or(0.0, |p| p.z),
+                    volume: 0.5,
+                    pitch: 1.0,
+                };
+                match args {
+                    "nan" => s.volume = f32::NAN,
+                    "pitch" => s.pitch = 10.0,
+                    "far" => s.x += 33.0,
+                    "path" => s.id = "minecraft:../private".into(),
+                    _ => {}
+                }
+                let accepted = (0..9).filter(|_| audio::play(&s)).count();
+                chat::show(&format!("sounds {accepted}"));
+                if args == "panic" {
+                    panic!("after sound");
                 }
             }
             "sample_block" => {

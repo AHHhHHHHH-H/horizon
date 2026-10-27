@@ -729,6 +729,19 @@ impl Game<'_> {
                     self.mods.shake.add(strength, seconds);
                     continue;
                 }
+                Output::Sound {
+                    dimension, sound, ..
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        self.audio.play(
+                            &sound.id,
+                            Some([sound.x, sound.y, sound.z]),
+                            sound.volume,
+                            sound.pitch,
+                        );
+                    }
+                    continue;
+                }
                 Output::Particles {
                     dimension,
                     particles,

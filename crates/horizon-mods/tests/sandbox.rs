@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "audio"]
+experimental = ["ui", "render", "input", "recipes", "audio"]
 "#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
@@ -241,8 +241,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "audio"]
+experimental = ["ui", "render", "input", "recipes", "audio"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1415,4 +1415,29 @@ fn client_world_queries_are_read_only_nearby_and_tick_bounded() {
     mods.set_snapshot(Snapshot::default());
     mods.tick(4);
     assert_eq!(sample(&mut mods, "12 64 -3"), "samples 0");
+}
+
+#[test]
+fn local_audio_is_validated_rate_limited_and_discarded_on_failure() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let play = |mods: &mut Mods, arg: &str| {
+        assert!(mods.command(&format!("local_sound {arg}")));
+        mods.drain()
+            .into_iter()
+            .filter(|out| matches!(out, Output::Sound { .. }))
+            .count()
+    };
+    assert_eq!(play(&mut mods, ""), 0);
+    mods.set_snapshot(player());
+    for (i, invalid) in ["nan", "pitch", "far", "path"].into_iter().enumerate() {
+        mods.tick(i as u64);
+        assert_eq!(play(&mut mods, invalid), 0);
+    }
+    mods.tick(10);
+    assert_eq!(play(&mut mods, ""), 8);
+    assert_eq!(play(&mut mods, ""), 0);
+    mods.tick(11);
+    assert_eq!(play(&mut mods, ""), 8);
+    mods.tick(12);
+    assert_eq!(play(&mut mods, "panic"), 0);
 }

@@ -19,12 +19,13 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
+| `audio` | [`audio`](#audio) | play local sounds near you |
 
 ## World `horizon-mod`
 
 A client mod: runs in the player's game.
 
-- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `log`, `audio`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `events`
 
 ## World `horizon-server-mod`
@@ -38,7 +39,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `audio`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -137,6 +138,27 @@ A block along the player's view.
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
 | `sample-block` | `func(x: s32, y: s32, z: s32) -> option<block-sample>` | Reads a loaded block within 32 blocks of the player, at most 64 times per mod per tick, shared by all hooks. None outside the world, beyond that radius, without a player, or when the query budget is exhausted. This never requests or generates chunks. API level 9. |
+
+## `audio`
+
+Access: capability `audio`.
+
+Capability `audio` (experimental): bounded local positional sounds.
+
+### record `sound`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | A namespaced sound event from the active vanilla/mod resource packs. |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `volume` | `f32` | Finite, 0..1. |
+| `pitch` | `f32` | Finite, 0.5..2. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `play` | `func(sound: sound) -> bool` | Queues a local sound within 32 blocks of the player. Returns false for invalid input, no player, or more than 8 requests per mod per tick. Across all mods at most 64 requests are delivered per tick. Missing sound events are silent; nothing is downloaded or sent to a server. Disabling/crashing the owner drops pending requests. API level 10. |
 
 ## `chat`
 

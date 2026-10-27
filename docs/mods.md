@@ -734,3 +734,15 @@ server's unloaded terrain or trigger chunk generation. The view holds at most
 25 nearby immutable chunk references and only exists while a running mod imports
 this function. Queries share a limit of 64 per mod per tick and a 32-block
 radius; missing/out-of-range data and exhausted budgets return `None`.
+
+### Positional audio (API level 10, experimental)
+
+Declare `capabilities = ["audio"]` and `experimental = ["audio"]` to call
+`audio::play(&Sound)`. This plays an existing sound event from the active
+resource packs locally, with a position, volume (0..1) and pitch (0.5..2).
+The host rejects non-finite values, malformed resource IDs and locations
+more than 32 blocks away. Each mod has eight attempts per tick; all mods
+share 64 delivered sounds per tick. Pending requests are discarded when
+the owner stops or the player leaves the dimension. No remote command,
+network access or automatic asset download is involved. Already playing
+one-shot sounds finish through the normal audio engine and mixer settings.

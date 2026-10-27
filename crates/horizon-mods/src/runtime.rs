@@ -19,6 +19,7 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
+        additional_derives: [PartialEq],
     });
 }
 /// The server mods' world: `log` and `storage` are the client world's.
@@ -42,6 +43,7 @@ mod ui_bindings {
         world: "ui-host",
     });
 }
+pub use bindings::horizon::mods::audio::Sound as LocalSound;
 pub use bindings::horizon::mods::{
     game::{BlockSample, Clock, Hit, Player},
     hud::{Corner, Line},
@@ -49,7 +51,7 @@ pub use bindings::horizon::mods::{
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+    horizon::mods::{audio, chat, command, game, hud, log as mod_log, storage},
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
@@ -252,6 +254,12 @@ pub enum Output {
         dimension: String,
         particles: Vec<WorldParticle>,
     },
+    /// A bounded local sound; pending requests belong to their mod.
+    Sound {
+        mod_id: String,
+        dimension: String,
+        sound: LocalSound,
+    },
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
     PlaceRecipe { book_id: i32, all: bool },
@@ -440,6 +448,7 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    sound_budget: usize,
     particle_budget: usize,
     world_query_budget: usize,
     limits: StoreLimits,
@@ -454,6 +463,7 @@ pub struct Mods {
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
+    sound_budget: usize,
     particle_budget: usize,
     world: WorldSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
@@ -641,6 +651,7 @@ impl Mods {
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            sound_budget: 0,
             particle_budget: 0,
             world_query_budget: 0,
             limits: StoreLimitsBuilder::new()
@@ -824,9 +835,11 @@ impl Mods {
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
         self.particle_budget = 256;
+        self.sound_budget = 64;
         for entry in &mut self.entries {
             if let Some(run) = &mut entry.run {
                 run.store.data_mut().particle_budget = 32;
+                run.store.data_mut().sound_budget = 8;
                 run.store.data_mut().world_query_budget = 64;
             }
         }
@@ -1292,6 +1305,19 @@ impl Mods {
     pub fn drain(&mut self) -> Vec<Output> {
         let mut out = Vec::new();
         for mut event in std::mem::take(&mut self.out) {
+            if let Output::Sound { mod_id, .. } = &event {
+                if self.sound_budget == 0
+                    || !self.entries.iter().any(|entry| {
+                        entry
+                            .run
+                            .as_ref()
+                            .is_some_and(|run| run.store.data().id == *mod_id)
+                    })
+                {
+                    continue;
+                }
+                self.sound_budget -= 1;
+            }
             if let Output::Particles {
                 mod_id, particles, ..
             } = &mut event
@@ -1455,6 +1481,51 @@ impl mod_log::Host for State {
         log::log!(level, "[mod {}] {}", self.id, clip(message));
     }
 }
+impl audio::Host for State {
+    fn play(&mut self, sound: LocalSound) -> bool {
+        if self.sound_budget == 0 {
+            return false;
+        }
+        self.sound_budget -= 1;
+        let Some(player) = &self.snapshot.player else {
+            return false;
+        };
+        let id_ok = sound.id.len() <= 256
+            && sound.id.split_once(':').is_some_and(|(ns, path)| {
+                !ns.is_empty()
+                    && !path.is_empty()
+                    && ns.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                    })
+                    && path.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b)
+                    })
+                    && path
+                        .split('/')
+                        .all(|p| !p.is_empty() && p != "." && p != "..")
+            });
+        let d2 = (sound.x - player.x).powi(2)
+            + (sound.y - player.y).powi(2)
+            + (sound.z - player.z).powi(2);
+        if !id_ok
+            || !d2.is_finite()
+            || d2 > 32.0_f64.powi(2)
+            || !sound.volume.is_finite()
+            || !(0.0..=1.0).contains(&sound.volume)
+            || !sound.pitch.is_finite()
+            || !(0.5..=2.0).contains(&sound.pitch)
+        {
+            return false;
+        }
+        self.out.push(Output::Sound {
+            mod_id: self.id.clone(),
+            dimension: player.dimension.clone(),
+            sound,
+        });
+        true
+    }
+}
+
 impl game::Host for State {
     fn sample_block(&mut self, x: i32, y: i32, z: i32) -> Option<BlockSample> {
         if self.world_query_budget == 0 {
