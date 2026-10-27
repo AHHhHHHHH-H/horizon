@@ -4555,9 +4555,11 @@ impl Game<'_> {
             return true;
         }
         // MultiPlayerGameMode.piercingAttack: a spear stab, not a normal
-        // attack swing. The server runs the same check with tolerance 5.
+        // attack swing. The server runs the same check with tolerance 5;
+        // use the same tolerance here so the client never rejects a stab the
+        // server would accept (the client's attack-tick charge lags behind).
         if self.piercing_weapon() {
-            if self.cannot_attack_with_item() {
+            if self.cannot_attack_with_item_with(5) {
                 return false;
             }
             self.send(S::PlayerAction(play::PlayerAction {
