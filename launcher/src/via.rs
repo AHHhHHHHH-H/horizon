@@ -15,12 +15,19 @@
 //! The [`Proxy`] it returns stops ViaProxy when dropped: keep it alive until the game exits.
 //!
 //! Accounts: a server in online mode needs a Microsoft account, and ViaProxy is the one that joins
-//! it, so the account has to be added to ViaProxy itself (run its jar once and use the Accounts
-//! tab). The launcher's own sign-in is not shared with it, on purpose: ViaProxy keeps its accounts
-//! in plain text in its own folder, and Horizon's are in the system's keychain. When ViaProxy has
-//! an account, runs use it (`auth-method: account`); `HORIZON_VIA_AUTH=none|account` overrides.
-use crate::backend;
-use serde_json::Value;
+//! it. A run uses, in this order:
+//!
+//! 1. the launcher's own Microsoft account (the one that plays, [`account::proxy_account`]): its
+//!    Minecraft token goes into a `saves.json` in a folder of its own for this run, readable by
+//!    this user only and deleted when the run ends. The Microsoft refresh token never leaves the
+//!    keychain, and the token handed over lasts at most a day (see [`account::viaproxy_entry`]);
+//! 2. else an account added in ViaProxy itself (run its jar once and use the Accounts tab), kept in
+//!    `saves.json` in [`folder`];
+//! 3. else none, which only joins servers in offline mode.
+//!
+//! `HORIZON_VIA_AUTH` overrides: `none`, `account` (ViaProxy's own account) or `launcher`.
+use crate::{account, backend};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
@@ -39,7 +46,8 @@ const JAVA_MAJOR: i64 = 17;
 const READY: Duration = Duration::from_secs(60);
 /// The biggest download taken for ViaProxy's jar (it is about 30 MB).
 const MAX_JAR: u64 = 128 * 1024 * 1024;
-/// The environment variable that forces the authentication: `none` or `account`.
+/// The environment variable that forces the authentication: `none`, `account` (the account saved
+/// in ViaProxy) or `launcher` (the launcher's own account).
 pub const AUTH_ENV: &str = "HORIZON_VIA_AUTH";
 
 /// ViaProxy's folder in the launcher's data: the jar, its log, its saved accounts.
@@ -133,12 +141,53 @@ pub fn has_account() -> bool {
         .is_some_and(|saves| saves["accounts"].as_array().is_some_and(|a| !a.is_empty()))
 }
 
-fn use_account() -> bool {
-    match std::env::var(AUTH_ENV).ok().as_deref() {
-        Some("none") => false,
-        Some("account") => true,
-        _ => has_account(),
+/// Who ViaProxy joins the server as.
+#[derive(PartialEq)]
+enum Auth {
+    /// Nobody: servers in offline mode only.
+    None,
+    /// The account saved in ViaProxy's own folder.
+    Saved,
+    /// The launcher's account: its name and its entry for a `saves.json` made for this run.
+    Launcher { name: String, entry: Value },
+}
+
+impl std::fmt::Debug for Auth {
+    // The entry holds a Minecraft token: never shown.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Auth::None => f.write_str("Auth::None"),
+            Auth::Saved => f.write_str("Auth::Saved"),
+            Auth::Launcher { name, .. } => write!(f, "Auth::Launcher({name}, <hidden>)"),
+        }
     }
+}
+
+/// The choice from the override, whether ViaProxy has an account of its own, and (asked only when
+/// needed, it can take a moment) the launcher's account.
+fn pick_auth(
+    forced: Option<&str>,
+    saved: bool,
+    launcher: impl FnOnce() -> Option<(String, Value)>,
+) -> Auth {
+    match forced {
+        Some("none") => Auth::None,
+        Some("account") => Auth::Saved,
+        Some("launcher") => match launcher() {
+            Some((name, entry)) => Auth::Launcher { name, entry },
+            None => Auth::None,
+        },
+        _ => match launcher() {
+            Some((name, entry)) => Auth::Launcher { name, entry },
+            None if saved => Auth::Saved,
+            None => Auth::None,
+        },
+    }
+}
+
+fn choose_auth() -> Auth {
+    let forced = std::env::var(AUTH_ENV).ok();
+    pick_auth(forced.as_deref(), has_account(), account::proxy_account)
 }
 
 /// The jar to download in a GitHub release: the one `.jar` that isn't the Java 8 build, sources or
@@ -236,6 +285,8 @@ pub struct Proxy {
     child: Child,
     port: u16,
     config: PathBuf,
+    /// The run's own folder, when it holds the launcher's account: removed with the process.
+    private: Option<PathBuf>,
 }
 
 impl Proxy {
@@ -250,7 +301,56 @@ impl Drop for Proxy {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = fs::remove_file(&self.config);
+        if let Some(dir) = &self.private {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
+}
+
+/// Removes the folders of runs that ended without cleaning up (the launcher was killed): a
+/// `run-<port>` folder whose port nobody listens on and that is older than a start can take, so a
+/// run still starting up in another launcher window stays.
+fn sweep_stale(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(port) = name
+            .strip_prefix("run-")
+            .and_then(|p| p.parse::<u16>().ok())
+        else {
+            continue;
+        };
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let running = TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok();
+        let settled = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m.elapsed().is_ok_and(|age| age > READY * 2));
+        if entry.path().is_dir() && settled && !running {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// A folder only this user can open, with the `saves.json` that holds the launcher's account.
+fn write_private_saves(dir: &Path, entry: &Value) -> Result<(), String> {
+    let _ = fs::remove_dir_all(dir);
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir).map_err(|e| e.to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options
+        .open(dir.join("saves.json"))
+        .map_err(|e| e.to_string())?;
+    let body = json!({ "accountsV4": [entry], "ui": {} });
+    std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Starts ViaProxy for `target` (an address) as Minecraft `version`, and returns it once it
@@ -263,25 +363,52 @@ pub fn start(target: &str, version: &str, log: &dyn Fn(String)) -> Result<Proxy,
     let bind = free_port()?;
     let dir = folder();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let name = format!("run-{bind}.yml");
-    let account = use_account();
-    fs::write(
-        dir.join(&name),
-        config_yaml(bind, &host, port, &version, account),
-    )
-    .map_err(|e| format!("ViaProxy's settings could not be written: {e}"))?;
-    if !account {
+    sweep_stale(&dir);
+    let auth = choose_auth();
+    let yaml = config_yaml(bind, &host, port, &version, auth != Auth::None);
+    // With the launcher's account ViaProxy runs in a folder of its own for this run (it reads
+    // `saves.json` from where it runs), and the settings go in there too.
+    let (cwd, name, private) = match &auth {
+        Auth::Launcher { name: who, entry } => {
+            let run = dir.join(format!("run-{bind}"));
+            if let Err(e) = write_private_saves(&run, entry) {
+                let _ = fs::remove_dir_all(&run);
+                return Err(format!("The launcher's account could not be given to ViaProxy: {e}"));
+            }
+            log(format!("Joining as {who}, the launcher's Microsoft account."));
+            (run.clone(), "viaproxy.yml".to_string(), Some(run))
+        }
+        _ => (dir.clone(), format!("run-{bind}.yml"), None),
+    };
+    let cleanup = |private: &Option<PathBuf>| {
+        if let Some(run) = private {
+            let _ = fs::remove_dir_all(run);
+        }
+    };
+    if let Err(e) = fs::write(cwd.join(&name), yaml) {
+        cleanup(&private);
+        return Err(format!("ViaProxy's settings could not be written: {e}"));
+    }
+    if auth == Auth::None {
         log(format!(
-            "ViaProxy has no Microsoft account, so only servers in offline mode can be joined. \
-             For an online-mode server run `java -jar \"{}\"` once and add one in its Accounts tab.",
+            "No Microsoft account to join with, so only servers in offline mode can be joined. \
+             For an online-mode server sign in to the launcher with an account that owns the game \
+             (`horizon-launcher account sign-in`), or run `java -jar \"{}\"` once and add one in \
+             ViaProxy's Accounts tab.",
             jar.display()
         ));
     }
-    let out = fs::File::create(log_file()).map_err(|e| e.to_string())?;
-    let err = out.try_clone().map_err(|e| e.to_string())?;
+    let files = fs::File::create(log_file()).and_then(|out| Ok((out.try_clone()?, out)));
+    let (err, out) = match files {
+        Ok(files) => files,
+        Err(e) => {
+            cleanup(&private);
+            return Err(e.to_string());
+        }
+    };
     let mut command = crate::process::command(java);
     command
-        .current_dir(&dir)
+        .current_dir(&cwd)
         .arg("-jar")
         .arg(&jar)
         .arg("config")
@@ -290,13 +417,18 @@ pub fn start(target: &str, version: &str, log: &dyn Fn(String)) -> Result<Proxy,
         .stdout(out)
         .stderr(err);
     log(format!("Starting ViaProxy for {target} as Minecraft {version}…"));
-    let child = command
-        .spawn()
-        .map_err(|e| format!("Java could not be started for ViaProxy: {e}"))?;
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            cleanup(&private);
+            return Err(format!("Java could not be started for ViaProxy: {e}"));
+        }
+    };
     let mut proxy = Proxy {
         child,
         port: bind,
-        config: dir.join(&name),
+        config: cwd.join(&name),
+        private,
     };
     wait_ready(&mut proxy)?;
     Ok(proxy)

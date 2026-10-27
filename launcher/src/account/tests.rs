@@ -638,3 +638,44 @@ fn offline_names_switch_with_accounts() {
         r#"{"accounts":[],"selected":null}"#
     );
 }
+
+#[test]
+fn the_viaproxy_entry_carries_the_minecraft_token_and_nothing_secret_else() {
+    let s = secrets("mc-token-1", true);
+    let entry = viaproxy_entry(&notch(), &s);
+    assert_eq!(
+        entry["accountType"],
+        "net.raphimc.viaproxy.saves.impl.accounts.MicrosoftAccount"
+    );
+    assert_eq!(entry["minecraftToken"]["token"], "mc-token-1");
+    assert_eq!(entry["minecraftToken"]["type"], "Bearer");
+    assert_eq!(
+        entry["minecraftToken"]["expireTimeMs"],
+        s.minecraft_expires_at * 1000
+    );
+    // ViaProxy writes the UUID with dashes.
+    assert_eq!(
+        entry["minecraftProfile"]["id"],
+        "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+    );
+    assert_eq!(entry["minecraftProfile"]["name"], "Notch");
+    // The Microsoft refresh token stays in the keychain; the chain behind the Minecraft token is
+    // empty and already expired, so ViaProxy never tries to renew through it.
+    assert!(!entry.to_string().contains("ms-refresh-1"));
+    for step in ["msaToken", "xblDeviceToken", "xblUserToken", "xblTitleToken", "javaXstsToken"] {
+        assert_eq!(entry[step]["expireTimeMs"], 0, "{step}");
+        assert_eq!(entry[step]["_saveVersion"], 1, "{step}");
+    }
+    assert_eq!(entry["msaToken"]["refreshToken"], "");
+    // ViaProxy asks for the player certificates itself.
+    assert!(entry.get("minecraftPlayerCertificates").is_none());
+}
+
+#[test]
+fn the_viaproxy_entry_keeps_an_odd_uuid_as_it_is() {
+    let mut a = notch();
+    a.uuid = "not-a-uuid".into();
+    let entry = viaproxy_entry(&a, &secrets("t", true));
+    assert_eq!(entry["minecraftProfile"]["id"], "not-a-uuid");
+}
+

@@ -98,3 +98,73 @@ fn a_release_without_a_checksum_still_gives_its_jar() {
 fn a_free_port_is_found() {
     assert!(free_port().unwrap() > 0);
 }
+
+fn launcher_account() -> Option<(String, Value)> {
+    Some(("Notch".into(), json!({ "minecraftToken": {} })))
+}
+
+#[test]
+fn the_launchers_account_is_used_first() {
+    let auth = pick_auth(None, true, launcher_account);
+    assert!(matches!(auth, Auth::Launcher { ref name, .. } if name == "Notch"));
+    assert!(matches!(pick_auth(Some("other"), false, launcher_account), Auth::Launcher { .. }));
+}
+
+#[test]
+fn without_the_launchers_account_the_saved_one_or_none() {
+    assert_eq!(pick_auth(None, true, || None), Auth::Saved);
+    assert_eq!(pick_auth(None, false, || None), Auth::None);
+}
+
+#[test]
+fn the_override_decides_and_only_asks_the_launcher_when_it_must() {
+    let never = || -> Option<(String, Value)> { panic!("the launcher's account was asked for") };
+    assert_eq!(pick_auth(Some("none"), true, never), Auth::None);
+    assert_eq!(pick_auth(Some("account"), false, never), Auth::Saved);
+    assert!(matches!(pick_auth(Some("launcher"), true, launcher_account), Auth::Launcher { .. }));
+    // Forced to the launcher's account with none to give: not ViaProxy's own.
+    assert_eq!(pick_auth(Some("launcher"), true, || None), Auth::None);
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("horizon-via-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn the_run_folder_holds_the_account_for_this_user_only() {
+    let base = scratch("saves");
+    let run = base.join("run-40000");
+    let entry = json!({ "minecraftProfile": { "name": "Notch" } });
+    write_private_saves(&run, &entry).unwrap();
+    let saves: Value = serde_json::from_slice(&fs::read(run.join("saves.json")).unwrap()).unwrap();
+    assert_eq!(saves["accountsV4"], json!([entry]));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&run), 0o700);
+        assert_eq!(mode(&run.join("saves.json")), 0o600);
+    }
+    // A leftover of the same name is replaced, not appended to.
+    write_private_saves(&run, &json!({ "again": true })).unwrap();
+    let saves: Value = serde_json::from_slice(&fs::read(run.join("saves.json")).unwrap()).unwrap();
+    assert_eq!(saves["accountsV4"], json!([{ "again": true }]));
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn a_run_still_starting_is_not_swept() {
+    let base = scratch("sweep");
+    // Nothing listens on port 1, but the folder is new: its ViaProxy may still be starting.
+    let fresh = base.join("run-1");
+    let other = base.join("keep-me");
+    fs::create_dir_all(&fresh).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    sweep_stale(&base);
+    assert!(fresh.is_dir() && other.is_dir());
+    let _ = fs::remove_dir_all(base);
+}
+
