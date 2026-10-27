@@ -111,6 +111,7 @@ impl Mod for Guest {
             "local_sound",
             "atmosphere",
             "nearby",
+            "world_events",
             "input_claim",
             "input_poll",
             "input_held",
@@ -472,6 +473,14 @@ impl Mod for Guest {
                         browser::Event::Tab(i) => format!("tab {i}"),
                     });
                 }
+            }
+            "world_events" => {
+                let events = game::poll_world_events();
+                chat::show(&format!(
+                    "events {} first {}",
+                    events.len(),
+                    events.first().map_or(0, |e| e.tick)
+                ));
             }
             "nearby" => {
                 let radius = args.parse().unwrap_or(f32::NAN);

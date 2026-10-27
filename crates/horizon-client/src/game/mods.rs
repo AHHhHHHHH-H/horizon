@@ -42,6 +42,8 @@ pub(super) struct ModsState {
     pub(super) mods: Mods,
     #[cfg(feature = "mods")]
     pub(super) world_tables: Option<std::sync::Arc<super::mod_world::Tables>>,
+    #[cfg(feature = "mods")]
+    pub(super) world_observer: super::mod_world::Observer,
     /// Capability `input`: a claimed item's use while the button is down.
     #[cfg(feature = "mods")]
     pub(super) using: Option<super::mod_input::ModUse>,
@@ -614,6 +616,7 @@ impl Game<'_> {
         self.tick_mod_use();
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
+        self.observe_mod_world_events();
         self.mods.mods.tick(self.ticks);
         self.show_mod_output();
     }

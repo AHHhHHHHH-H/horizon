@@ -219,3 +219,168 @@ impl Game<'_> {
         nearby.into_iter().map(|(_, e)| e).collect()
     }
 }
+
+#[derive(Clone, Copy)]
+struct Actor {
+    ground: bool,
+    water: bool,
+    lava: bool,
+    velocity: [f64; 3],
+}
+#[derive(Default)]
+pub(super) struct Observer {
+    dimension: String,
+    actors: HashMap<Option<u32>, Actor>,
+    container: bool,
+    last_interaction: Option<[i32; 3]>,
+}
+impl Game<'_> {
+    pub(super) fn mod_observed_event(
+        &mut self,
+        kind: horizon_mods::WorldEventKind,
+        entity: Option<u32>,
+        at: [f64; 3],
+        detail: String,
+        speed: f32,
+    ) {
+        if !self.mods.mods.wants_world_events() || self.title.is_some() {
+            return;
+        }
+        self.mods
+            .mods
+            .observed_world_event(horizon_mods::WorldEvent {
+                kind,
+                entity,
+                x: at[0],
+                y: at[1],
+                z: at[2],
+                detail,
+                speed,
+                tick: self.ticks,
+            });
+    }
+    pub(super) fn mod_block_interaction(&mut self, pos: [i32; 3]) {
+        if !self.mods.mods.wants_world_events() {
+            return;
+        }
+        self.mods.world_observer.last_interaction = Some(pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let name = self.res.facts().get(state).name.to_string();
+        self.mod_observed_event(
+            horizon_mods::WorldEventKind::BlockInteracted,
+            None,
+            pos.map(|v| f64::from(v) + 0.5),
+            name,
+            0.0,
+        );
+    }
+    pub(super) fn mod_block_change(&mut self, pos: [i32; 3]) {
+        if !self.mods.mods.wants_world_events() {
+            return;
+        }
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let name = self.res.facts().get(state).name.to_string();
+        self.mod_observed_event(
+            horizon_mods::WorldEventKind::BlockChanged,
+            None,
+            pos.map(|v| f64::from(v) + 0.5),
+            name,
+            0.0,
+        );
+    }
+    pub(super) fn observe_mod_world_events(&mut self) {
+        use horizon_mods::WorldEventKind as K;
+        if !self.mods.mods.wants_world_events() || self.title.is_some() {
+            self.mods.world_observer = Observer::default();
+            return;
+        }
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        let position = player.position;
+        let mut actors = Vec::new();
+        actors.push((
+            None,
+            position.components(),
+            "minecraft:player".to_owned(),
+            Actor {
+                ground: player.ground.on_ground,
+                water: player.fluids.was_touching_water,
+                lava: player.is_in_lava(),
+                velocity: player.velocity.components(),
+            },
+        ));
+        for m in self
+            .mobs
+            .iter()
+            .filter(|m| {
+                (m.position.x - position.x).powi(2)
+                    + (m.position.y - position.y).powi(2)
+                    + (m.position.z - position.z).powi(2)
+                    <= 32.0_f64.powi(2)
+            })
+            .take(128)
+        {
+            actors.push((
+                Some(m.id),
+                m.position.components(),
+                m.kind.id.clone(),
+                Actor {
+                    ground: m.on_ground,
+                    water: m.fluids.in_water,
+                    lava: m.fluids.in_lava,
+                    velocity: m.velocity.components(),
+                },
+            ));
+        }
+        let dimension = self.dim.id();
+        let observer = &mut self.mods.world_observer;
+        if observer.dimension != dimension {
+            *observer = Observer {
+                dimension: dimension.into(),
+                ..Observer::default()
+            };
+        }
+        let mut events = Vec::new();
+        let mut now = HashMap::new();
+        for (id, at, detail, actor) in actors {
+            if let Some(old) = observer.actors.get(&id) {
+                let speed = old.velocity.iter().map(|v| v * v).sum::<f64>().sqrt() as f32;
+                for (changed, kind) in [
+                    (!old.ground && actor.ground, K::Landed),
+                    (!old.water && actor.water, K::EnteredWater),
+                    (!old.lava && actor.lava, K::EnteredLava),
+                ] {
+                    if changed {
+                        events.push((kind, id, at, detail.clone(), speed));
+                    }
+                }
+            }
+            now.insert(id, actor);
+        }
+        observer.actors = now;
+        let container = self.screen == super::Screen::Inventory
+            && (self.container.is_some() || self.station.is_some());
+        if container && !observer.container {
+            let block = self
+                .container
+                .map(|(x, y, z)| [x, y, z])
+                .or(observer.last_interaction);
+            let at = block.map_or(position.components(), |p| p.map(|v| f64::from(v) + 0.5));
+            let detail = block
+                .map(|p| {
+                    self.res
+                        .facts()
+                        .get(self.world.block(p[0], p[1], p[2]))
+                        .name
+                        .to_string()
+                })
+                .unwrap_or_else(|| "container".into());
+            events.push((K::ContainerOpened, None, at, detail, 0.0));
+        }
+        observer.container = container;
+        for (kind, id, at, detail, speed) in events {
+            self.mod_observed_event(kind, id, at, detail, speed);
+        }
+    }
+}

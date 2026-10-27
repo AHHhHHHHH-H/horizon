@@ -1502,3 +1502,57 @@ fn entity_queries_are_bounded_to_visible_client_data() {
     mods.set_snapshot(Snapshot::default());
     assert_eq!(query(&mut mods, "32"), "entities 0");
 }
+
+#[test]
+fn observed_events_are_nearby_bounded_ordered_and_reset_on_world_change() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_world_events());
+    mods.set_snapshot(player());
+    for tick in 0..300 {
+        mods.observed_world_event(horizon_mods::WorldEvent {
+            kind: horizon_mods::WorldEventKind::Landed,
+            entity: None,
+            x: 12.5,
+            y: 64.0,
+            z: -3.25,
+            detail: "minecraft:player".into(),
+            speed: 1.0,
+            tick,
+        });
+    }
+    let poll = |mods: &mut Mods| {
+        assert!(mods.command("world_events"));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(poll(&mut mods), "events 128 first 172");
+    assert_eq!(poll(&mut mods), "events 0 first 0");
+    mods.observed_world_event(horizon_mods::WorldEvent {
+        kind: horizon_mods::WorldEventKind::Eating,
+        entity: None,
+        x: f64::NAN,
+        y: 64.0,
+        z: 0.0,
+        detail: "bad".into(),
+        speed: 0.0,
+        tick: 301,
+    });
+    assert_eq!(poll(&mut mods), "events 0 first 0");
+    mods.observed_world_event(horizon_mods::WorldEvent {
+        kind: horizon_mods::WorldEventKind::Eating,
+        entity: None,
+        x: 12.5,
+        y: 64.0,
+        z: -3.25,
+        detail: "minecraft:apple".into(),
+        speed: 0.0,
+        tick: 302,
+    });
+    mods.set_snapshot(Snapshot::default());
+    assert_eq!(poll(&mut mods), "events 0 first 0");
+}

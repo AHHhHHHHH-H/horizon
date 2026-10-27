@@ -45,7 +45,7 @@ mod ui_bindings {
 }
 pub use bindings::horizon::mods::audio::Sound as LocalSound;
 pub use bindings::horizon::mods::{
-    game::{BlockSample, Clock, Hit, NearbyEntity, Player},
+    game::{BlockSample, Clock, Hit, NearbyEntity, Player, WorldEvent, WorldEventKind},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -342,6 +342,7 @@ struct Running {
     raycasts: bool,
     client_world: bool,
     entity_queries: bool,
+    world_events: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
 }
@@ -455,6 +456,7 @@ struct State {
     sound_budget: usize,
     particle_budget: usize,
     world_query_budget: usize,
+    world_events: std::collections::VecDeque<WorldEvent>,
     limits: StoreLimits,
     world: WorldSlot,
 }
@@ -659,6 +661,7 @@ impl Mods {
             sound_budget: 0,
             particle_budget: 0,
             world_query_budget: 0,
+            world_events: Default::default(),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -721,6 +724,7 @@ impl Mods {
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             client_world: functions.iter().any(|f| f == "game.sample-block"),
             entity_queries: functions.iter().any(|f| f == "game.nearby-entities"),
+            world_events: functions.iter().any(|f| f == "game.poll-world-events"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
         }))
     }
@@ -740,7 +744,19 @@ impl Mods {
     }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
+        let changed_world = self.snapshot.player.as_ref().map(|p| &p.dimension)
+            != snapshot.player.as_ref().map(|p| &p.dimension);
         self.snapshot = Arc::new(snapshot);
+        if changed_world {
+            for entry in &mut self.entries {
+                if let Some(run) = &mut entry.run {
+                    let state = run.store.data_mut();
+                    state.world_events.clear();
+                    state.atmosphere = None;
+                    state.snapshot = self.snapshot.clone();
+                }
+            }
+        }
     }
 
     /// Calls `f` on every running mod whose hooks `wants`, with `fuel`.
@@ -1016,6 +1032,38 @@ impl Mods {
             .filter_map(|e| e.run.as_ref())
             .filter_map(|run| run.store.data().atmosphere.as_ref())
             .find_map(|(d, value)| (d == dimension).then_some(value))
+    }
+    pub fn wants_world_events(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.world_events))
+    }
+    /// Fan out only bounded events visible near the local player.
+    pub fn observed_world_event(&mut self, mut event: WorldEvent) {
+        let Some(p) = &self.snapshot.player else {
+            return;
+        };
+        let d2 = (event.x - p.x).powi(2) + (event.y - p.y).powi(2) + (event.z - p.z).powi(2);
+        if !d2.is_finite() || d2 > 32.0_f64.powi(2) {
+            return;
+        }
+        event.detail = clip(event.detail);
+        event.speed = if event.speed.is_finite() {
+            event.speed.clamp(0.0, 4.0)
+        } else {
+            0.0
+        };
+        for entry in &mut self.entries {
+            if let Some(run) = &mut entry.run
+                && run.world_events
+            {
+                let queue = &mut run.store.data_mut().world_events;
+                if queue.len() == 128 {
+                    queue.pop_front();
+                }
+                queue.push_back(event.clone());
+            }
+        }
     }
     pub fn wants_entities(&self) -> bool {
         self.entries
@@ -1547,6 +1595,9 @@ impl audio::Host for State {
 }
 
 impl game::Host for State {
+    fn poll_world_events(&mut self) -> Vec<WorldEvent> {
+        self.world_events.drain(..).collect()
+    }
     fn nearby_entities(&mut self, radius: f32) -> Vec<NearbyEntity> {
         if self.world_query_budget == 0 || !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
             return Vec::new();

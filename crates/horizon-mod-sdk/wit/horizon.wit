@@ -100,6 +100,25 @@ interface game {
     /// No server-only or unloaded entities are exposed. API level 12.
     nearby-entities: func(radius: f32) -> list<nearby-entity>;
 
+    enum world-event-kind { landed, entered-water, entered-lava, block-interacted, block-changed, container-opened, eating }
+    record world-event {
+        kind: world-event-kind,
+        /// None means the local player; otherwise a client entity ID.
+        entity: option<u32>,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Item/block ID or container label; at most 256 characters.
+        detail: string,
+        /// Prior movement speed for landings/fluid entry, 0..4 blocks/tick.
+        speed: f32,
+        tick: u64,
+    }
+    /// Drains up to 128 locally observed events, oldest first. Overflow drops
+    /// oldest events. Initial entity sightings do not synthesize a landing.
+    /// Events never reveal unloaded/server-only state. API level 13.
+    poll-world-events: func() -> list<world-event>;
+
 }
 
 /// Capability `audio` (experimental): bounded local positional sounds.

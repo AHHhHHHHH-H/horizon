@@ -2977,6 +2977,8 @@ impl Game<'_> {
     }
     /// Level.setBlock(pos, state, UPDATE_ALL) with neighbour/shape updates.
     fn level_set(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
+        #[cfg(feature = "mods")]
+        let before = self.world.block(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| {
             b.set_block(
                 level,
@@ -2986,6 +2988,10 @@ impl Game<'_> {
                 level_flags::UPDATE_ALL,
             );
         });
+        #[cfg(feature = "mods")]
+        if before != self.world.block(pos[0], pos[1], pos[2]) {
+            self.mod_block_change(pos);
+        }
         self.process_level_events()
     }
     fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
@@ -3995,7 +4001,14 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        self.with_player_actor(|game| game.break_block_as_player(pos))
+        #[cfg(feature = "mods")]
+        let before = self.world.block(pos[0], pos[1], pos[2]);
+        let result = self.with_player_actor(|game| game.break_block_as_player(pos));
+        #[cfg(feature = "mods")]
+        if before != self.world.block(pos[0], pos[1], pos[2]) {
+            self.mod_block_change(pos);
+        }
+        result
     }
     fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
         if !self
@@ -4235,6 +4248,10 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        #[cfg(feature = "mods")]
+        if let Some(hit) = block_hit {
+            self.mod_block_interaction(hit.pos);
+        }
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);

@@ -7,7 +7,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 
 | In `capabilities` | Grants | The player reads "May …" |
 | --- | --- | --- |
-| `game-read` | [`game`](#game) | see your position, health and the time |
+| `game-read` | [`game`](#game) | see your position, health, time and nearby loaded world |
 | `chat` | [`chat`](#chat) | show you chat messages |
 | `hud` | [`hud`](#hud) | draw text on your screen |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
@@ -149,6 +149,31 @@ A block along the player's view.
 | `on-ground` | `bool` |  |
 | `burning` | `bool` |  |
 
+### enum `world-event-kind`
+
+| Case | |
+| --- | --- |
+| `landed` |  |
+| `entered-water` |  |
+| `entered-lava` |  |
+| `block-interacted` |  |
+| `block-changed` |  |
+| `container-opened` |  |
+| `eating` |  |
+
+### record `world-event`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `world-event-kind` |  |
+| `entity` | `option<u32>` | None means the local player; otherwise a client entity ID. |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `detail` | `string` | Item/block ID or container label; at most 256 characters. |
+| `speed` | `f32` | Prior movement speed for landings/fluid entry, 0..4 blocks/tick. |
+| `tick` | `u64` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
@@ -156,6 +181,7 @@ A block along the player's view.
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
 | `sample-block` | `func(x: s32, y: s32, z: s32) -> option<block-sample>` | Reads a loaded block within 32 blocks of the player, at most 64 times per mod per tick, shared by all hooks. None outside the world, beyond that radius, without a player, or when the query budget is exhausted. This never requests or generates chunks. API level 9. |
 | `nearby-entities` | `func(radius: f32) -> list<nearby-entity>` | Up to 128 nearest loaded living entities, dropped items, experience orbs, boats and minecarts (the local player is get-player). Radius is finite, 0..32 blocks. Uses the shared 64-query per-tick budget. No server-only or unloaded entities are exposed. API level 12. |
+| `poll-world-events` | `func() -> list<world-event>` | Drains up to 128 locally observed events, oldest first. Overflow drops oldest events. Initial entity sightings do not synthesize a landing. Events never reveal unloaded/server-only state. API level 13. |
 
 ## `audio`
 

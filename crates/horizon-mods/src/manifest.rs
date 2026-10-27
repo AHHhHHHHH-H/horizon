@@ -163,7 +163,7 @@ impl Capability {
     pub fn describe(self) -> &'static str {
         match self {
             Capability::Audio => "play local sounds near you",
-            Capability::GameRead => "see your position, health and the time",
+            Capability::GameRead => "see your position, health, time and nearby loaded world",
             Capability::Chat => "show you chat messages",
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",

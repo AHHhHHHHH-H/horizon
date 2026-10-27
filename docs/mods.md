@@ -768,3 +768,15 @@ size, grounded state and burning flag. The local player stays in `get_player`.
 Only a finite radius in 0..32 blocks is accepted, and calls share the
 64-query per-tick budget with block sampling. No server-only entity state
 is requested. The snapshot is built only while a running mod imports it.
+
+### Observed client events (API level 13)
+
+`game::poll_world_events()` drains at most 128 events visible to this client
+within 32 blocks. Overflow removes the oldest entries. Landings and water/lava
+entry come from successive local-player and nearby-mob states; initial sightings
+do not create a false landing. Events also report block interaction attempts,
+observed block updates, local container opening and local eating-particle
+animations. An interaction is an attempt, not proof the server accepted it.
+Container events use the last interacted block when the remote menu does not
+carry a location. No server-only events are synthesized. Queues are per mod,
+disappear with their owner, and clear on dimension/world changes.
