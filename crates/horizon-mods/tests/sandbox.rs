@@ -1333,6 +1333,76 @@ fn world_particles_are_local_bounded_and_discarded_on_failure() {
 }
 
 #[test]
+fn configured_particles_validate_parameters_and_share_vanilla_request_quota() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for invalid in [
+        "nan", "size", "life", "zero", "color", "gravity", "friction", "far",
+    ] {
+        assert!(mods.command(&format!("configured_particles {invalid}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+        );
+    }
+    assert!(mods.command("configured_particles"));
+    let out = mods.drain();
+    let particles = out
+        .iter()
+        .find_map(|o| match o {
+            Output::ConfiguredParticles { particles, .. } => Some(particles),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(particles.len(), 32);
+    assert_eq!(particles[0].color, 0x55CCAA);
+    assert_eq!(particles[0].lifetime, 40);
+    assert!(mods.command("particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::Particles { .. }))
+    );
+    mods.frame(0.01);
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.tick(2);
+    assert!(mods.command("particles"));
+    mods.drain();
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.tick(3);
+    assert!(mods.command("configured_particles panic"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+}
+
+#[test]
 fn world_particles_share_a_global_tick_budget_across_drains() {
     let folder = mods_dir().join("particle-budget");
     std::fs::create_dir_all(&folder).unwrap();
@@ -1361,18 +1431,21 @@ fn world_particles_share_a_global_tick_budget_across_drains() {
     mods.set_snapshot(snapshot);
     mods.tick(1); // 9 mods each request 32; only 256 may reach the engine.
     let count = |mods: &mut Mods| {
-        mods.drain()
-            .into_iter()
-            .filter_map(|o| match o {
-                Output::Particles { particles, .. } => Some(particles.len()),
-                _ => None,
-            })
-            .sum::<usize>()
+        let mut vanilla = 0;
+        let mut configured = 0;
+        for o in mods.drain() {
+            match o {
+                Output::Particles { particles, .. } => vanilla += particles.len(),
+                Output::ConfiguredParticles { particles, .. } => configured += particles.len(),
+                _ => {}
+            }
+        }
+        (vanilla, configured)
     };
-    assert_eq!(count(&mut mods), 256);
-    assert_eq!(count(&mut mods), 0);
+    assert_eq!(count(&mut mods), (128, 128));
+    assert_eq!(count(&mut mods), (0, 0));
     mods.tick(2);
-    assert_eq!(count(&mut mods), 256);
+    assert_eq!(count(&mut mods), (128, 128));
 }
 
 #[test]

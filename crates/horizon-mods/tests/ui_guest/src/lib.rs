@@ -107,6 +107,7 @@ impl Mod for Guest {
             "render_clear",
             "render_shake",
             "particles",
+            "configured_particles",
             "sample_block",
             "local_sound",
             "atmosphere",
@@ -541,6 +542,46 @@ impl Mod for Guest {
                     chat::show(&format!("samples {count}"));
                 }
             }
+            "configured_particles" => {
+                let Some(player) = game::get_player() else {
+                    chat::show(&render::emit_configured_particles(&[]).to_string());
+                    return Ok(None);
+                };
+                let mut p = render::ConfiguredParticle {
+                    particle: render::WorldParticle {
+                        kind: render::AmbientParticle::EndRod,
+                        x: player.x,
+                        y: player.y,
+                        z: player.z,
+                        velocity_x: 0.1,
+                        velocity_y: 0.0,
+                        velocity_z: 0.0,
+                    },
+                    color: 0x55CCAA,
+                    alpha: 0.5,
+                    size: 0.2,
+                    lifetime: 40,
+                    gravity: 0.5,
+                    friction: 0.9,
+                    collision: true,
+                    full_bright: true,
+                };
+                match args {
+                    "nan" => p.alpha = f32::NAN,
+                    "size" => p.size = 2.0,
+                    "life" => p.lifetime = 201,
+                    "zero" => p.lifetime = 0,
+                    "color" => p.color = 0x1000000,
+                    "gravity" => p.gravity = f32::INFINITY,
+                    "friction" => p.friction = -0.1,
+                    "far" => p.particle.x += 33.0,
+                    _ => {}
+                }
+                chat::show(&render::emit_configured_particles(&vec![p; 100]).to_string());
+                if args == "panic" {
+                    panic!("after configured particles");
+                }
+            }
             "particles" => {
                 let Some(player) = game::get_player() else {
                     chat::show(&render::emit_particles(&[]).to_string());
@@ -582,6 +623,28 @@ impl Mod for Guest {
     fn tick(&mut self, _tick: u64) {
         // A synthetic dimension used only by the aggregate particle-budget fixture.
         if let Some(p) = game::get_player().filter(|p| p.dimension == "test:particles") {
+            render::emit_configured_particles(&vec![
+                render::ConfiguredParticle {
+                    particle: render::WorldParticle {
+                        kind: render::AmbientParticle::EndRod,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        velocity_x: 0.0,
+                        velocity_y: 0.0,
+                        velocity_z: 0.0
+                    },
+                    color: 0xFFFFFF,
+                    alpha: 1.0,
+                    size: 0.1,
+                    lifetime: 10,
+                    gravity: 0.0,
+                    friction: 1.0,
+                    collision: false,
+                    full_bright: true,
+                };
+                16
+            ]);
             render::emit_particles(&vec![
                 render::WorldParticle {
                     kind: render::AmbientParticle::Smoke,
@@ -592,7 +655,7 @@ impl Mod for Guest {
                     velocity_y: 0.0,
                     velocity_z: 0.0,
                 };
-                32
+                16
             ]);
         }
         if let Some((book, all, id)) = self.pending.take() {
