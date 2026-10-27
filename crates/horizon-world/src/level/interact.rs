@@ -605,7 +605,8 @@ impl Behaviours {
         sim.game_event_state(pos, "minecraft:block_change", next);
     }
 
-    /// The state change of `RedStoneOreBlock.attack` when mining begins.
+    /// `BlockBehaviour.attack` when mining begins: `RedStoneOreBlock.attack`
+    /// lights the ore, `DragonEggBlock.attack` teleports the egg.
     pub fn attack_block<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
@@ -614,6 +615,9 @@ impl Behaviours {
     ) {
         let mut sim = self.sim(level, ticks);
         let state = sim.state(pos);
+        if self.data(state).chain.contains(&Class::DragonEgg) {
+            sim.dragon_egg_teleport(pos, state);
+        }
         if self.data(state).chain.contains(&Class::RedStoneOre)
             && !self.table.bool(state, self.props.lit)
         {
