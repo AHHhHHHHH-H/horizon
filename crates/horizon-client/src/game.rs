@@ -12039,7 +12039,9 @@ impl Game<'_> {
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
+            mod_post_effects: &self.mod_post_effects(),
             colored_lights: &self.mod_colored_lights(camera),
+            emissive_materials: &self.mod_emissive_materials(),
             lightning: horizon_client::gfx::lightning::Input {
                 bolts: &bolts,
                 uv: [
@@ -14940,7 +14942,9 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
+        mod_post_effects: &[],
         colored_lights: &[],
+        emissive_materials: &[],
         clouds: None,
         lightning: Default::default(),
         additive: &[],

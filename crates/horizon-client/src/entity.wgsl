@@ -24,6 +24,8 @@ struct Globals {
     dynamic_lights: array<vec4<f32>, 16>,
     colored_lights: array<array<vec4<f32>, 2>, 16>,
     colored_count: vec4<u32>,
+    emissive_materials: array<vec4<u32>, 128>,
+    emissive_count: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

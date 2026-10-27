@@ -52,6 +52,14 @@ impl ModParticle {
 }
 
 impl ParticleEngine {
+    /// Local diagnostics for integration fixtures (live plus pending).
+    pub fn mod_particle_count(&self) -> usize {
+        self.particles
+            .iter()
+            .chain(&self.pending)
+            .filter(|p| p.mod_owner.is_some())
+            .count()
+    }
     /// Static packaged sprite already admitted to the atlas. No allocation of
     /// new texture storage per emission, and no sprite from another namespace.
     pub fn add_mod_sprite_particle(

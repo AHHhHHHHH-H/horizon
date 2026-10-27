@@ -313,6 +313,12 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
+    pub(super) fn mod_post_effects(&self) -> Vec<horizon_client::gfx::ModPostEffect> {
+        Vec::new()
+    }
+    pub(super) fn mod_emissive_materials(&self) -> Vec<[u32; 4]> {
+        Vec::new()
+    }
     pub(super) fn mod_colored_lights(
         &self,
         _camera: glam::DVec3,
@@ -474,6 +480,51 @@ impl Game<'_> {
         if running != wanted {
             self.start_mods();
         }
+    }
+    pub(super) fn mod_post_effects(&self) -> Vec<horizon_client::gfx::ModPostEffect> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        self.mods
+            .mods
+            .post_effects()
+            .map(|e| {
+                use horizon_client::gfx::ModPostEffect as E;
+                match e {
+                    horizon_mods::PostEffect::Bloom(b) => E {
+                        params: [0.0, b.strength, b.threshold, b.radius],
+                        ..E::default()
+                    },
+                    horizon_mods::PostEffect::Godrays(g) => E {
+                        params: [1.0, g.strength, 0.0, 0.0],
+                        light: [
+                            g.light_x,
+                            g.light_y,
+                            ((g.color >> 16) & 255) as f32 / 255.0,
+                            ((g.color >> 8) & 255) as f32 / 255.0,
+                        ],
+                        color: [(g.color & 255) as f32 / 255.0, 0.0, 0.0, 0.0],
+                    },
+                }
+            })
+            .collect()
+    }
+    pub(super) fn mod_emissive_materials(&self) -> Vec<[u32; 4]> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        horizon_client::mod_emissive::mappings(
+            &self.pack.render.sprite_layers,
+            self.mods
+                .mods
+                .emissive_materials()
+                .map(|m| (m.base.clone(), m.overlay.clone())),
+            if self.mods.mods.emissive_suffixes() {
+                &self.pack.render.emissive_suffixes
+            } else {
+                &[]
+            },
+        )
     }
     pub(super) fn mod_colored_lights(
         &self,
