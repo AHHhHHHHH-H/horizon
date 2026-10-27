@@ -1576,6 +1576,8 @@ struct Game<'a> {
     /// The head of the bed while sleeping; the visual timer also survives waking.
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
+    /// `SleepStatus`'s active and sleeping players at the last announcement.
+    sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
     /// A player carried through a portal, re-placed once the destination loads.
@@ -5263,6 +5265,7 @@ impl Game<'_> {
         self.tick_friends();
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
+        self.announce_sleep_status();
         horizon_client::spans::time("tick_portal", || self.tick_nether_portal())?;
         if running {
             horizon_client::spans::time("tick_end", || self.tick_end())?;
@@ -10711,6 +10714,8 @@ impl Game<'_> {
                 self.wake_up();
             }
             self.wake_guests();
+            // SleepStatus.removeAllSleepers: waking everyone is not announced.
+            self.sleep_seen.1 = 0;
         }
     }
     fn creative_origin(batch: &HudBatch) -> (f32, f32) {
@@ -13369,6 +13374,7 @@ impl<'a> Game<'a> {
             lightning_seen: [0; 2],
             sleeping: None,
             sleep_timer: 0,
+            sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
             travelling: None,

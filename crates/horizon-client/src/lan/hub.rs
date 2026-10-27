@@ -501,6 +501,13 @@ impl Hub {
             g.sender.send(body.clone());
         }
     }
+    /// `ServerPlayer.sendOverlayMessage` to every guest (the action bar).
+    pub fn overlay_message(&self, content: Tag) {
+        self.broadcast(&C::SystemChat(play::SystemChat {
+            content,
+            overlay: true,
+        }));
+    }
     /// A chat message from the host (a disguised chat: the host has no
     /// connection to sign with).
     pub fn chat(&self, sender: &str, text: &str) {
