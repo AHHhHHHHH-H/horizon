@@ -1435,6 +1435,48 @@ fn colored_lights_validate_atomically_and_follow_owner_and_dimension() {
 }
 
 #[test]
+fn sprite_particles_require_owned_content_namespaces() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let path = mods_dir().join("sprite-owner.hmod");
+    let manifest = UI_MANIFEST
+        .replace("api = \"0.1\"", "api = \"0.2\"")
+        .replace("capabilities = [", "capabilities = [\"registries\", ");
+    std::fs::write(&path, Package::write(&manifest, &wasm).unwrap()).unwrap();
+    let mut mods = Mods::load(&[path], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for args in ["sprite_foreign", "sprite_parent", "sprite_bad"] {
+        assert!(mods.command(&format!("configured_particles {args}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::SpriteParticles { .. }))
+        );
+    }
+    assert!(mods.command("configured_particles sprite"));
+    assert!(
+        mods.drain().iter().any(
+            |o| matches!(o, Output::SpriteParticles { particles, .. } if particles.len() == 32)
+        )
+    );
+    let mut no_content = load("horizon_mods_test_ui_guest.hmod");
+    no_content.set_snapshot(player());
+    no_content.tick(1);
+    assert!(no_content.command("configured_particles sprite"));
+    assert!(
+        !no_content
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::SpriteParticles { .. }))
+    );
+}
+
+#[test]
 fn world_particles_share_a_global_tick_budget_across_drains() {
     let folder = mods_dir().join("particle-budget");
     std::fs::create_dir_all(&folder).unwrap();

@@ -607,7 +607,26 @@ impl Mod for Guest {
                     "far" => p.particle.x += 33.0,
                     _ => {}
                 }
-                chat::show(&render::emit_configured_particles(&vec![p; 100]).to_string());
+                if args.starts_with("sprite") {
+                    let sprite = match args {
+                        "sprite_foreign" => "other:particle/spark",
+                        "sprite_parent" => "test_ui_guest:particle/../spark",
+                        "sprite_bad" => "test_ui_guest:particle/",
+                        _ => "test_ui_guest:particle/spark",
+                    };
+                    chat::show(
+                        &render::emit_sprite_particles(&vec![
+                            render::SpriteParticle {
+                                particle: p,
+                                sprite: sprite.into()
+                            };
+                            100
+                        ])
+                        .to_string(),
+                    );
+                } else {
+                    chat::show(&render::emit_configured_particles(&vec![p; 100]).to_string());
+                }
                 if args == "panic" {
                     panic!("after configured particles");
                 }

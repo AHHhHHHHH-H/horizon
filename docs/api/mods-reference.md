@@ -540,6 +540,13 @@ Explicit physics with a vanilla sprite set, not that type's behaviour. Custom im
 | `radius` | `f32` | Radius in blocks, 0.25..16; linear falloff to zero at the edge. |
 | `intensity` | `f32` | 0..1. Adds local visual illumination; never changes gameplay light. |
 
+### record `sprite-particle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `particle` | `configured-particle` |  |
+| `sprite` | `string` | Owned namespace:particle/path, from assets/<namespace>/textures/ particle/path.png in the mod's registries content. Static PNG only. |
+
 ### record `atmosphere`
 
 | Field | Type | |
@@ -592,6 +599,7 @@ Explicit physics with a vanilla sprite set, not that type's behaviour. Custom im
 | `emit-particles` | `func(particles: list<world-particle>) -> u32` | Queues at most 32 particles per mod per game tick, shared by all hooks. Returns the accepted count. Only the first 32 entries are examined. Non-finite values, velocity components outside -1..1, positions beyond 32 blocks from the player, and calls without a player are ignored. The client drops requests outside loaded chunks and draws at most 256 mod particles per tick across all mods. No server packets are sent. Disabling or crashing a mod discards its queued requests; particles already spawned expire normally. Requires Mod API level 8. |
 | `emit-configured-particles` | `func(particles: list<configured-particle>) -> u32` | Shares emit-particles' per-mod and global request quotas, distance and loaded-chunk limits. Invalid records are ignored. Returns the queued count, not a guarantee of display: player settings and live caps apply. At most 256 live configured particles per owner and 1024 across mods. Disabling, reloading or crashing removes these particles immediately; dimension changes clear them too. Does not emit light into the world. Requires Mod API level 14 and capability render. |
 | `set-colored-lights` | `func(lights: list<colored-light>) -> result<_, string>` | Replaces this owner's lights (up to 8). Requires a player, positions within 32 blocks, finite values and valid bounds; invalid lists leave the previous list unchanged. Empty clears. Renderer selects at most 16 nearest sources globally in loaded chunks. Lights do not cast shadows or modify world light propagation. Terrain and entities use the normal renderer only; material-replacing shader packs may override the result. Cleared on owner stop/reload and world/dimension changes. API level 15. |
+| `emit-sprite-particles` | `func(particles: list<sprite-particle>) -> u32` | Configured physics with a static packaged sprite instead of the kind's vanilla sprite set. Only this mod's content namespaces may be used. Shares all particle quotas. Missing or oversized images are not drawn. Atlas admits at most 64 custom particle images per namespace, 256 total, each at most 64x64. Assets follow the content reload/restart lifecycle; live particles follow their owner's lifecycle. API level 16. |
 | `set-atmosphere` | `func(value: option<atmosphere>) -> result<_, string>` | Sets this mod's visual atmosphere for the current dimension. None clears it. The first running mod with an override wins; it disappears on disable, failure or dimension change. Does not change gameplay lighting or weather. Invalid values leave the previous override intact. API level 11. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |

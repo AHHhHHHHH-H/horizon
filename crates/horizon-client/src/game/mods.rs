@@ -7,6 +7,41 @@
 //! without it the game links no wasmtime, and every hook does nothing.
 //! Content mods (`content_root`) load in every build.
 use super::Game;
+#[cfg(feature = "mods")]
+fn configured_particle(
+    p: horizon_mods::ConfiguredParticle,
+) -> horizon_client::particles::ModParticle {
+    use horizon_client::particles::{ModParticle, ParticleType as P};
+    use horizon_mods::AmbientParticle as A;
+    let at = p.particle;
+    let kind = match at.kind {
+        A::Smoke => P::Smoke,
+        A::Flame => P::Flame,
+        A::Bubble => P::Bubble,
+        A::Splash => P::Splash,
+        A::EndRod => P::EndRod,
+        A::CherryLeaves => P::CherryLeaves,
+        A::WhiteAsh => P::WhiteAsh,
+        A::SporeBlossomAir => P::SporeBlossomAir,
+    };
+    ModParticle {
+        kind,
+        position: [at.x, at.y, at.z],
+        velocity: [at.velocity_x, at.velocity_y, at.velocity_z],
+        rgba: [
+            ((p.color >> 16) & 255) as f32 / 255.0,
+            ((p.color >> 8) & 255) as f32 / 255.0,
+            (p.color & 255) as f32 / 255.0,
+            p.alpha,
+        ],
+        size: p.size,
+        lifetime: p.lifetime,
+        gravity: p.gravity,
+        friction: p.friction,
+        collision: p.collision,
+        full_bright: p.full_bright,
+    }
+}
 use horizon_client::{
     command::{Dispatcher, vanilla},
     extras_hud::Corners,
@@ -774,6 +809,27 @@ impl Game<'_> {
                             sound.volume,
                             sound.pitch,
                         );
+                    }
+                    continue;
+                }
+                Output::SpriteParticles {
+                    mod_id,
+                    dimension,
+                    particles,
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            let at = &p.particle.particle;
+                            if !self.world.chunks.contains_key(&(
+                                (at.x.floor() as i32).div_euclid(16),
+                                (at.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            let spec = configured_particle(p.particle);
+                            self.particles
+                                .add_mod_sprite_particle(&mod_id, &spec, &p.sprite);
+                        }
                     }
                     continue;
                 }

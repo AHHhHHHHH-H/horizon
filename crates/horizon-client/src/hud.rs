@@ -249,7 +249,39 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> Vec<PackedImage> {
         .flatten()
         .collect();
     out.sort_unstable_by_key(|(order, _)| *order);
-    out.into_iter().map(|(_, image)| image).collect()
+    let mut images: Vec<_> = out.into_iter().map(|(_, image)| image).collect();
+    // Bounded static particle assets from content namespaces, without requiring
+    // an atlas alias declaration. Vanilla's existing packing stays unchanged.
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
+    let mut total = 0;
+    for id in &textures {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        if ns == "minecraft" || !path.starts_with("particle/") || total >= 256 {
+            continue;
+        }
+        let count = counts.entry(ns).or_default();
+        if *count >= 64 || have.contains(id.as_str()) {
+            continue;
+        }
+        let file = atlas_sources::texture_path(root, id, "textures");
+        let Some((w, h)) = png_size(&file) else {
+            continue;
+        };
+        if !(1..=64).contains(&w)
+            || !(1..=64).contains(&h)
+            || fs::metadata(&file).map_or(true, |m| m.len() > 1 << 20)
+        {
+            continue;
+        }
+        if let Ok((w, h, data)) = decode(&file) {
+            images.push((id.clone(), w, h, data));
+            *count += 1;
+            total += 1;
+        }
+    }
+    images
 }
 impl HudAtlas {
     /// A font glyph's atlas cell (8x8 GUI pixels) and advance.
@@ -1686,6 +1718,26 @@ mod tests {
             .unwrap()
             .write_image_data(&pixels)
             .unwrap();
+    }
+    #[test]
+    fn custom_particle_images_are_namespaced_and_size_bounded() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-particle-assets-{}", std::process::id()));
+        let particle = root.join("assets/effects/textures/particle");
+        fs::create_dir_all(&particle).unwrap();
+        write_strip(
+            &particle.join("spark.png"),
+            8,
+            8,
+            &[[255, 100, 0, 128]],
+            None,
+        );
+        write_strip(&particle.join("large.png"), 65, 1, &[[255; 4]], None);
+        let sprites = atlas_sprites(&root, &[]);
+        assert_eq!(sprites.len(), 1);
+        assert_eq!(sprites[0].0, "effects:particle/spark");
+        assert_eq!((sprites[0].1, sprites[0].2), (8, 8));
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn a_pack_texture_keeps_the_default_textures_gui_size() {

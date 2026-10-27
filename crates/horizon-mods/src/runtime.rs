@@ -83,8 +83,8 @@ pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, I
 pub use render_bindings::horizon::mods::render::{
     AmbientParticle, Atmosphere as ModAtmosphere, ColoredLight, ConfiguredParticle,
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, WorldParticle, Zoom as ModZoom,
+    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape,
+    SpriteParticle, SpriteShape, TextShape, WorldParticle, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -263,6 +263,11 @@ pub enum Output {
         particles: Vec<ConfiguredParticle>,
     },
     /// A bounded local sound; pending requests belong to their mod.
+    SpriteParticles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<SpriteParticle>,
+    },
     Sound {
         mod_id: String,
         dimension: String,
@@ -451,6 +456,7 @@ struct State {
     far_terrain: Option<ModFarTerrain>,
     atmosphere: Option<(String, ModAtmosphere)>,
     colored_lights: Vec<ColoredLight>,
+    sprite_namespaces: Vec<String>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -662,6 +668,11 @@ impl Mods {
             far_terrain: None,
             atmosphere: None,
             colored_lights: Vec::new(),
+            sprite_namespaces: if m.capabilities.contains(&crate::Capability::Registries) {
+                m.owned_namespaces().map(str::to_owned).collect()
+            } else {
+                Vec::new()
+            },
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -1403,9 +1414,9 @@ impl Mods {
                 self.sound_budget -= 1;
             }
             let particle_owner = match &event {
-                Output::Particles { mod_id, .. } | Output::ConfiguredParticles { mod_id, .. } => {
-                    Some(mod_id)
-                }
+                Output::Particles { mod_id, .. }
+                | Output::ConfiguredParticles { mod_id, .. }
+                | Output::SpriteParticles { mod_id, .. } => Some(mod_id),
                 _ => None,
             };
             if let Some(mod_id) = particle_owner {
@@ -1423,6 +1434,10 @@ impl Mods {
                         particles.len()
                     }
                     Output::ConfiguredParticles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    Output::SpriteParticles { particles, .. } => {
                         particles.truncate(self.particle_budget);
                         particles.len()
                     }
@@ -2046,7 +2061,60 @@ fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
             <= 32.0_f64.powi(2)
 }
 
+fn valid_configured_particle(p: &ConfiguredParticle, player: &Player) -> bool {
+    let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+    valid_world_particle(&p.particle, player)
+        && p.color <= 0xFFFFFF
+        && bounded(p.alpha, 0.0, 1.0)
+        && bounded(p.size, 0.005, 1.0)
+        && (1..=200).contains(&p.lifetime)
+        && bounded(p.gravity, -1.0, 1.0)
+        && bounded(p.friction, 0.0, 1.0)
+}
+
+fn valid_particle_sprite(sprite: &str, namespaces: &[String]) -> bool {
+    let Some((namespace, path)) = sprite.split_once(':') else {
+        return false;
+    };
+    sprite.len() <= 192
+        && namespaces.iter().any(|ns| ns == namespace)
+        && path.starts_with("particle/")
+        && path.len() > 9
+        && path.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+        })
+}
+
 impl render::Host for State {
+    fn emit_sprite_particles(&mut self, particles: Vec<SpriteParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| {
+                valid_configured_particle(&p.particle, player)
+                    && valid_particle_sprite(&p.sprite, &self.sprite_namespaces)
+            })
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::SpriteParticles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
     fn set_colored_lights(&mut self, lights: Vec<ColoredLight>) -> Result<(), String> {
         if lights.is_empty() {
             self.colored_lights.clear();
@@ -2076,19 +2144,10 @@ impl render::Host for State {
         let Some(player) = &self.snapshot.player else {
             return 0;
         };
-        let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
         let accepted: Vec<_> = particles
             .into_iter()
             .take(32)
-            .filter(|p| {
-                valid_world_particle(&p.particle, player)
-                    && p.color <= 0xFFFFFF
-                    && bounded(p.alpha, 0.0, 1.0)
-                    && bounded(p.size, 0.005, 1.0)
-                    && (1..=200).contains(&p.lifetime)
-                    && bounded(p.gravity, -1.0, 1.0)
-                    && bounded(p.friction, 0.0, 1.0)
-            })
+            .filter(|p| valid_configured_particle(p, player))
             .take(self.particle_budget)
             .collect();
         let count = accepted.len();

@@ -499,6 +499,19 @@ interface render {
     /// renderer only; material-replacing shader packs may override the result.
     /// Cleared on owner stop/reload and world/dimension changes. API level 15.
     set-colored-lights: func(lights: list<colored-light>) -> result<_, string>;
+    record sprite-particle {
+        particle: configured-particle,
+        /// Owned namespace:particle/path, from assets/<namespace>/textures/
+        /// particle/path.png in the mod's registries content. Static PNG only.
+        sprite: string,
+    }
+    /// Configured physics with a static packaged sprite instead of the kind's
+    /// vanilla sprite set. Only this mod's content namespaces may be used.
+    /// Shares all particle quotas. Missing or oversized images are not drawn.
+    /// Atlas admits at most 64 custom particle images per namespace, 256 total,
+    /// each at most 64x64. Assets follow the content reload/restart lifecycle;
+    /// live particles follow their owner's lifecycle. API level 16.
+    emit-sprite-particles: func(particles: list<sprite-particle>) -> u32;
     record atmosphere {
         /// Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values.
         sky-color: option<u32>,

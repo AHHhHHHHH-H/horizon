@@ -52,6 +52,26 @@ impl ModParticle {
 }
 
 impl ParticleEngine {
+    /// Static packaged sprite already admitted to the atlas. No allocation of
+    /// new texture storage per emission, and no sprite from another namespace.
+    pub fn add_mod_sprite_particle(
+        &mut self,
+        owner: &str,
+        spec: &ModParticle,
+        sprite: &str,
+    ) -> bool {
+        if !self.atlas.contains_key(sprite) {
+            return false;
+        }
+        if !self.add_mod_particle(owner, spec) {
+            return false;
+        }
+        let p = self.pending.last_mut().expect("just queued a particle");
+        p.sprite = Sprite::Named(sprite.to_owned());
+        p.set = None;
+        p.behaviour = Behaviour::Base;
+        true
+    }
     /// Retain only particles of live mod owners, including pending particles.
     /// Called after hooks, reload and enable/disable; vanilla particles survive.
     pub fn retain_mod_particles(&mut self, mut live: impl FnMut(&str) -> bool) {
@@ -144,6 +164,30 @@ mod tests {
         assert_eq!(p.light, Light::FullBright);
         assert!(matches!(p.behaviour, Behaviour::Animated));
         assert!(!p.pre_tick);
+    }
+    #[test]
+    fn custom_sprite_must_be_loaded_and_is_static_and_owner_scoped() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        assert!(!engine.add_mod_sprite_particle("a", &spec(), "a:particle/spark"));
+        engine.atlas.insert(
+            "a:particle/spark".into(),
+            (
+                Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 8,
+                    h: 8,
+                },
+                true,
+            ),
+        );
+        assert!(engine.add_mod_sprite_particle("a", &spec(), "a:particle/spark"));
+        assert!(matches!(&engine.pending[0].sprite, Sprite::Named(n) if n == "a:particle/spark"));
+        assert!(engine.pending[0].set.is_none());
+        engine.retain_mod_particles(|_| false);
+        assert!(engine.pending.is_empty());
     }
 
     #[test]
