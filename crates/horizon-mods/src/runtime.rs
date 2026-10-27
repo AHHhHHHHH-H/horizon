@@ -81,7 +81,7 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    AmbientParticle, Atmosphere as ModAtmosphere, Corner as RenderCorner,
+    AmbientParticle, Atmosphere as ModAtmosphere, ConfiguredParticle, Corner as RenderCorner,
     FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
     Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape, TextShape,
     WorldParticle, Zoom as ModZoom,
@@ -255,6 +255,12 @@ pub enum Output {
         mod_id: String,
         dimension: String,
         particles: Vec<WorldParticle>,
+    },
+    /// Owner-scoped particles with explicit physics and vanilla sprite sets.
+    ConfiguredParticles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<ConfiguredParticle>,
     },
     /// A bounded local sound; pending requests belong to their mod.
     Sound {
@@ -1386,10 +1392,13 @@ impl Mods {
                 }
                 self.sound_budget -= 1;
             }
-            if let Output::Particles {
-                mod_id, particles, ..
-            } = &mut event
-            {
+            let particle_owner = match &event {
+                Output::Particles { mod_id, .. } | Output::ConfiguredParticles { mod_id, .. } => {
+                    Some(mod_id)
+                }
+                _ => None,
+            };
+            if let Some(mod_id) = particle_owner {
                 if !self.entries.iter().any(|entry| {
                     entry
                         .run
@@ -1398,9 +1407,19 @@ impl Mods {
                 }) {
                     continue;
                 }
-                particles.truncate(self.particle_budget);
-                self.particle_budget -= particles.len();
-                if particles.is_empty() {
+                let count = match &mut event {
+                    Output::Particles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    Output::ConfiguredParticles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    _ => unreachable!(),
+                };
+                self.particle_budget -= count;
+                if count == 0 {
                     continue;
                 }
             }
@@ -2018,6 +2037,36 @@ fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
 }
 
 impl render::Host for State {
+    fn emit_configured_particles(&mut self, particles: Vec<ConfiguredParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| {
+                valid_world_particle(&p.particle, player)
+                    && p.color <= 0xFFFFFF
+                    && bounded(p.alpha, 0.0, 1.0)
+                    && bounded(p.size, 0.005, 1.0)
+                    && (1..=200).contains(&p.lifetime)
+                    && bounded(p.gravity, -1.0, 1.0)
+                    && bounded(p.friction, 0.0, 1.0)
+            })
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::ConfiguredParticles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
     fn set_atmosphere(&mut self, value: Option<ModAtmosphere>) -> Result<(), String> {
         let Some(value) = value else {
             self.atmosphere = None;

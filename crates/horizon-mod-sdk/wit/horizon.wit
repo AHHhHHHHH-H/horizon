@@ -454,6 +454,32 @@ interface render {
     /// Disabling or crashing a mod discards its queued requests; particles
     /// already spawned expire normally. Requires Mod API level 8.
     emit-particles: func(particles: list<world-particle>) -> u32;
+    /// Explicit physics with a vanilla sprite set, not that type's behaviour.
+    /// Custom image assets are not supported by this function.
+    record configured-particle {
+        particle: world-particle,
+        /// RGB tint, 0xRRGGBB, and alpha 0..1.
+        color: u32,
+        alpha: f32,
+        /// Quad half-size in blocks, 0.005..1; constant over its lifetime.
+        size: f32,
+        /// 1..200 game ticks.
+        lifetime: u32,
+        /// -1..1; acceleration is -0.04 * gravity blocks/tick squared.
+        gravity: f32,
+        /// Velocity multiplier after each move, 0..1.
+        friction: f32,
+        collision: bool,
+        full-bright: bool,
+    }
+    /// Shares emit-particles' per-mod and global request quotas, distance and
+    /// loaded-chunk limits. Invalid records are ignored. Returns the queued
+    /// count, not a guarantee of display: player settings and live caps apply.
+    /// At most 256 live configured particles per owner and 1024 across mods.
+    /// Disabling, reloading or crashing removes these particles immediately;
+    /// dimension changes clear them too. Does not emit light into the world.
+    /// Requires Mod API level 14 and capability render.
+    emit-configured-particles: func(particles: list<configured-particle>) -> u32;
     record atmosphere {
         /// Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values.
         sky-color: option<u32>,

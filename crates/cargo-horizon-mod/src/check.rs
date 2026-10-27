@@ -285,6 +285,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::Particles { particles, .. } => {
                 format!("queued {} local particle(s)", particles.len())
             }
+            Output::ConfiguredParticles { particles, .. } => {
+                format!("queued {} configured particle(s)", particles.len())
+            }
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }

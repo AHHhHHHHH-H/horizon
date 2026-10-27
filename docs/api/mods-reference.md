@@ -513,6 +513,22 @@ Existing vanilla particles with no block/item payload. Client-local only.
 | `velocity-y` | `f64` |  |
 | `velocity-z` | `f64` |  |
 
+### record `configured-particle`
+
+Explicit physics with a vanilla sprite set, not that type's behaviour. Custom image assets are not supported by this function.
+
+| Field | Type | |
+| --- | --- | --- |
+| `particle` | `world-particle` |  |
+| `color` | `u32` | RGB tint, 0xRRGGBB, and alpha 0..1. |
+| `alpha` | `f32` |  |
+| `size` | `f32` | Quad half-size in blocks, 0.005..1; constant over its lifetime. |
+| `lifetime` | `u32` | 1..200 game ticks. |
+| `gravity` | `f32` | -1..1; acceleration is -0.04 * gravity blocks/tick squared. |
+| `friction` | `f32` | Velocity multiplier after each move, 0..1. |
+| `collision` | `bool` |  |
+| `full-bright` | `bool` |  |
+
 ### record `atmosphere`
 
 | Field | Type | |
@@ -563,6 +579,7 @@ Existing vanilla particles with no block/item payload. Client-local only.
 | --- | --- | --- |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
 | `emit-particles` | `func(particles: list<world-particle>) -> u32` | Queues at most 32 particles per mod per game tick, shared by all hooks. Returns the accepted count. Only the first 32 entries are examined. Non-finite values, velocity components outside -1..1, positions beyond 32 blocks from the player, and calls without a player are ignored. The client drops requests outside loaded chunks and draws at most 256 mod particles per tick across all mods. No server packets are sent. Disabling or crashing a mod discards its queued requests; particles already spawned expire normally. Requires Mod API level 8. |
+| `emit-configured-particles` | `func(particles: list<configured-particle>) -> u32` | Shares emit-particles' per-mod and global request quotas, distance and loaded-chunk limits. Invalid records are ignored. Returns the queued count, not a guarantee of display: player settings and live caps apply. At most 256 live configured particles per owner and 1024 across mods. Disabling, reloading or crashing removes these particles immediately; dimension changes clear them too. Does not emit light into the world. Requires Mod API level 14 and capability render. |
 | `set-atmosphere` | `func(value: option<atmosphere>) -> result<_, string>` | Sets this mod's visual atmosphere for the current dimension. None clears it. The first running mod with an override wins; it disappears on disable, failure or dimension change. Does not change gameplay lighting or weather. Invalid values leave the previous override intact. API level 11. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |

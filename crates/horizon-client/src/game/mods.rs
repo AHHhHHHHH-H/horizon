@@ -267,6 +267,7 @@ impl Game<'_> {
     /// Says why the installed and dev mods don't run.
     pub(super) fn start_mods(&mut self) {
         let dir = Self::options_path().with_file_name(mod_list::DIR);
+        self.particles.retain_mod_particles(|_| false);
         let found = horizon_mods::find(&dir).len() + self.mods.dev.len();
         if found > 0 {
             log::warn!(
@@ -632,6 +633,8 @@ impl Game<'_> {
         }
         self.mods.checked = Some(Instant::now());
         if self.mods.mods.reload_changed(vanilla_command) {
+            // A reload may replace an owner while keeping the same id.
+            self.particles.retain_mod_particles(|_| false);
             let chosen = &self.settings.mods;
             self.mods.mods.set_bindings(|id| chosen.keys_of(id));
             self.list_mods();
@@ -748,6 +751,56 @@ impl Game<'_> {
                     }
                     continue;
                 }
+                Output::ConfiguredParticles {
+                    mod_id,
+                    dimension,
+                    particles,
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            let at = p.particle;
+                            if !self.world.chunks.contains_key(&(
+                                (at.x.floor() as i32).div_euclid(16),
+                                (at.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            use horizon_client::particles::{ModParticle, ParticleType as P};
+                            use horizon_mods::AmbientParticle as A;
+                            let kind = match at.kind {
+                                A::Smoke => P::Smoke,
+                                A::Flame => P::Flame,
+                                A::Bubble => P::Bubble,
+                                A::Splash => P::Splash,
+                                A::EndRod => P::EndRod,
+                                A::CherryLeaves => P::CherryLeaves,
+                                A::WhiteAsh => P::WhiteAsh,
+                                A::SporeBlossomAir => P::SporeBlossomAir,
+                            };
+                            self.particles.add_mod_particle(
+                                &mod_id,
+                                &ModParticle {
+                                    kind,
+                                    position: [at.x, at.y, at.z],
+                                    velocity: [at.velocity_x, at.velocity_y, at.velocity_z],
+                                    rgba: [
+                                        ((p.color >> 16) & 255) as f32 / 255.0,
+                                        ((p.color >> 8) & 255) as f32 / 255.0,
+                                        (p.color & 255) as f32 / 255.0,
+                                        p.alpha,
+                                    ],
+                                    size: p.size,
+                                    lifetime: p.lifetime,
+                                    gravity: p.gravity,
+                                    friction: p.friction,
+                                    collision: p.collision,
+                                    full_bright: p.full_bright,
+                                },
+                            );
+                        }
+                    }
+                    continue;
+                }
                 Output::Particles {
                     dimension,
                     particles,
@@ -805,6 +858,12 @@ impl Game<'_> {
         }
         // A mod may set or clear its settings page in any call, not only
         // while loading: its row's Settings button follows.
+        let entries = self.mods.mods.entries();
+        self.particles.retain_mod_particles(|id| {
+            entries.iter().any(|e| {
+                e.status == Status::Running && e.manifest.as_ref().is_some_and(|m| m.id == id)
+            })
+        });
         let rows = self.settings.mods.installed.iter_mut();
         for (row, e) in rows.zip(self.mods.mods.entries()) {
             row.has_settings = e.has_ui_settings();
