@@ -569,6 +569,8 @@ struct GameLevel<'w> {
     cart_boxes: Vec<([f64; 3], [f64; 3])>,
     /// Arrow and thrown trident boxes (wooden buttons).
     arrow_boxes: Vec<([f64; 3], [f64; 3])>,
+    /// The item frames a comparator reads through a conductor.
+    item_frames: &'w [horizon_client::entities::ItemFrame],
     /// The other entities that keep blocks from being placed into them.
     blockers: Blockers<'w>,
     /// Item entities, experience orbs and projectiles, which trigger plates and
@@ -781,6 +783,20 @@ impl LevelAccess for GameLevel<'_> {
             return signal;
         }
         machines::container_signal(self.world, self.behaviours, self.items, self.registry, pos)
+    }
+    fn item_frame_analog_output(&self, pos: BlockPos, facing: Direction) -> Option<i32> {
+        let mut frames = self
+            .item_frames
+            .iter()
+            .filter(|f| f.pos == [pos.x, pos.y, pos.z] && f.facing == facing as u8);
+        let frame = frames.next().filter(|_| frames.next().is_none())?;
+        // ItemFrame.getAnalogOutput.
+        Some(
+            frame
+                .item
+                .as_ref()
+                .map_or(0, |_| i32::from(frame.rotation % 8) + 1),
+        )
     }
     fn block_entity_signal(
         &self,
@@ -2750,6 +2766,7 @@ impl Game<'_> {
         let mut level = GameLevel {
             cart_boxes,
             arrow_boxes,
+            item_frames: &self.item_frames,
             blockers,
             dropped: &self.dropped,
             orbs: &self.orbs,
