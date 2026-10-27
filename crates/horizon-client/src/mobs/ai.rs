@@ -1413,6 +1413,15 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
         _ => {}
     }
 }
+/// `Husk.doHurtTarget`: the hunger comes only with an empty main hand, and
+/// lasts `140 * (int)` the effective difficulty ticks.
+fn husk_hunger_ticks(main_hand: Option<&str>, effective_difficulty: f32) -> Option<i32> {
+    if main_hand.is_some() {
+        return None;
+    }
+    Some(140 * (effective_difficulty as i32))
+}
+
 /// Mob.doHurtTarget: attack damage (+ species extras) to the target.
 pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     if m.species() == Species::IronGolem {
@@ -1440,11 +1449,18 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             ticks: 7 * 20,
             amplifier: 0,
         }),
-        Species::Husk if who == Who::Player => cx.events.push(MobEvent::EffectPlayer {
-            effect: "minecraft:hunger",
-            ticks: 140,
-            amplifier: 0,
-        }),
+        Species::Husk if who == Who::Player => {
+            // Husk.doHurtTarget: the hunger needs an empty main hand.
+            if let Some(ticks) =
+                husk_hunger_ticks(m.extra.main_hand.as_deref(), cx.w.difficulty.effective)
+            {
+                cx.events.push(MobEvent::EffectPlayer {
+                    effect: "minecraft:hunger",
+                    ticks,
+                    amplifier: 0,
+                });
+            }
+        }
         Species::WitherSkeleton if who == Who::Player => cx.events.push(MobEvent::EffectPlayer {
             effect: "minecraft:wither",
             ticks: 200,
@@ -1812,5 +1828,22 @@ mod frog_tests {
                 gravity: true,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod husk_tests {
+    use super::*;
+    #[test]
+    fn the_husks_hunger_needs_an_empty_main_hand_and_the_difficulty() {
+        // Husk.doHurtTarget: an unarmed husk on normal difficulty.
+        assert_eq!(husk_hunger_ticks(None, 2.0), Some(280));
+        // A husk holding something gives no hunger at all.
+        assert_eq!(husk_hunger_ticks(Some("minecraft:iron_sword"), 2.0), None);
+        assert_eq!(husk_hunger_ticks(Some("minecraft:bow"), 3.0), None);
+        // The effect lasts 140 * (int) the effective difficulty ticks.
+        assert_eq!(husk_hunger_ticks(None, 1.0), Some(140));
+        assert_eq!(husk_hunger_ticks(None, 2.99), Some(280));
+        assert_eq!(husk_hunger_ticks(None, 3.0), Some(420));
     }
 }
