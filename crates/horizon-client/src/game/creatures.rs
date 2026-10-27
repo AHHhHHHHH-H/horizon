@@ -3113,6 +3113,7 @@ impl Game<'_> {
             || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
         let held_damage = held.as_ref().map_or(0, |h| h.damage as i32);
         let held_extra = held.as_ref().and_then(|h| h.extra.clone());
+        let player_at = self.eye_position();
         let m = &mut self.mobs[index];
         if !m.alive() {
             return Ok(false);
@@ -3443,6 +3444,22 @@ impl Game<'_> {
                     self.damage_held_tool();
                 } else {
                     consume = true;
+                }
+            }
+            // Parrot.mobInteract: #parrot_poisonous_food (a cookie) poisons the
+            // parrot for 45 s and then hurts it with a player attack of
+            // Float.MAX_VALUE, which an invulnerable one shrugs off.
+            Species::Parrot if parrot_poisonous => {
+                consume = true;
+                m.add_effect("minecraft:poison", 900, 0);
+                let id = m.id;
+                let hurt = m.damage(
+                    f32::MAX,
+                    horizon_client::mobs::Damage::player(player_at.unwrap_or(center)),
+                );
+                // The feeder gets the kill, as for a normal player attack.
+                if hurt {
+                    self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
             }
             // Parrot.mobInteract: parrot food may tame a wild one (one time in
