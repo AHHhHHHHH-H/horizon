@@ -122,6 +122,12 @@ impl CameraType {
         }
     }
 }
+/// Whether the camera's own entity is drawn: always in third person, and in first person only
+/// while it sleeps, when the camera lies in the bed and sees the body (LevelRenderer skips the
+/// camera entity unless the camera is detached or the entity `isSleeping()`).
+fn own_body_in_view(first_person: bool, sleeping: bool) -> bool {
+    !first_person || sleeping
+}
 /// The player's model type (`PlayerModel` with the default skin).
 pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
     horizon_client::mobs::load_model(root, "minecraft:player#main").map(|model| {
@@ -345,9 +351,13 @@ impl Game<'_> {
         let off = self.offhand.as_ref().map(|s| s.item.clone());
         let riding = self.riding.is_some();
         let hurt = p.health.hurt_animation_time;
+        // LivingEntity.SLEEPING_POS: lie in the bed, as another player's model does (`ints[1]`
+        // is the bed's facing, 0 when awake).
+        let bed_facing = self.sleeping.map_or(0, |head| self.bed_facing(head));
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
+        m.extra.ints[1] = bed_facing;
         let at = Vec3::new(
             position.x,
             position.y - if crouching { 0.125 } else { 0.0 },
@@ -412,9 +422,9 @@ impl Game<'_> {
     }
     /// Whether the player's own model shows in the world view.
     fn player_model_shown(&self) -> bool {
+        let own_body = own_body_in_view(self.camera_type.first_person(), self.sleeping.is_some());
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (!self.camera_type.first_person() || self.pack_shadow_casters.1)
-            && self.sleeping.is_none()
+        (own_body || self.pack_shadow_casters.1)
             && !self.spectator()
             && self.potions.effects.get("minecraft:invisibility").is_none()
             && self
@@ -693,6 +703,16 @@ fn player_preview_quads(
 #[cfg(test)]
 mod preview_tests {
     use super::*;
+
+    #[test]
+    fn own_body_shows_in_first_person_only_while_sleeping() {
+        // Awake: hidden in first person, shown in third person.
+        assert!(!own_body_in_view(true, false));
+        assert!(own_body_in_view(false, false));
+        // Asleep: the body is drawn in both.
+        assert!(own_body_in_view(true, true));
+        assert!(own_body_in_view(false, true));
+    }
     #[test]
     fn preview_keeps_crossing_faces_depth_and_clips_without_dropping_faces() {
         use horizon_client::{
