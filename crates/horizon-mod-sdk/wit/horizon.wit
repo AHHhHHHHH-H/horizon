@@ -512,6 +512,29 @@ interface render {
     /// each at most 64x64. Assets follow the content reload/restart lifecycle;
     /// live particles follow their owner's lifecycle. API level 16.
     emit-sprite-particles: func(particles: list<sprite-particle>) -> u32;
+    record emissive-material { base: string, overlay: string }
+    /// Replaces up to 32 block-texture overlays owned by this mod. Base is a
+    /// texture id; overlay must be in an owned namespace under emissive/.
+    /// Optional pack suffix mode recognizes _e, _emissive and a safe
+    /// optifine/emissive.properties suffix.emissive value. Global maximum 128
+    /// resolved mappings, explicit entries first, first owner wins. Overlays
+    /// are full-bright but fogged, do not cast light, and affect normal terrain
+    /// rendering only (not items/entities or replacing material shader packs).
+    /// Invalid lists preserve prior state; empty/false clears. Assets use the
+    /// content reload lifecycle; disabling owners removes mappings. API 17.
+    set-emissive-materials: func(materials: list<emissive-material>, pack-suffixes: bool) -> result<_, string>;
+    record bloom { strength: f32, threshold: f32, radius: f32 }
+    record godrays { strength: f32, light-x: f32, light-y: f32, color: u32 }
+    variant post-effect { bloom(bloom), godrays(godrays) }
+    /// Replaces up to 2 owned effects; empty clears. Strength and threshold
+    /// are 0..1, bloom radius 0.5..8 target pixels, godray light coordinates
+    /// 0..1 in the viewport. Finite values and RGB colors only. First 4 effects
+    /// globally in stable mod/list order. Bounded built-in filters read world
+    /// color/depth and compose additive contributions before hand/HUD. Not
+    /// arbitrary WGSL or general shader chaining. Paused while a shader pack
+    /// owns post-processing; never on the title screen. Cleared on stop/reload
+    /// and world/dimension changes. API level 18.
+    set-post-effects: func(effects: list<post-effect>) -> result<_, string>;
     record atmosphere {
         /// Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values.
         sky-color: option<u32>,

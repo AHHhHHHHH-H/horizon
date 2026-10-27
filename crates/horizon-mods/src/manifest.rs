@@ -171,7 +171,7 @@ impl Capability {
             Capability::Registries => "add blocks and items to your worlds",
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => {
-                "draw on your screen, emit nearby world particles, shake and zoom the camera"
+                "draw on your screen, emit nearby particles, change local lighting and world appearance, apply visual filters, shake and zoom the camera"
             }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"

@@ -14,7 +14,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks and items to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, emit nearby world particles, shake and zoom the camera |
+| `render` | [`render`](#render) | draw on your screen, emit nearby particles, change local lighting and world appearance, apply visual filters, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
@@ -547,6 +547,37 @@ Explicit physics with a vanilla sprite set, not that type's behaviour. Custom im
 | `particle` | `configured-particle` |  |
 | `sprite` | `string` | Owned namespace:particle/path, from assets/<namespace>/textures/ particle/path.png in the mod's registries content. Static PNG only. |
 
+### record `emissive-material`
+
+| Field | Type | |
+| --- | --- | --- |
+| `base` | `string` |  |
+| `overlay` | `string` |  |
+
+### record `bloom`
+
+| Field | Type | |
+| --- | --- | --- |
+| `strength` | `f32` |  |
+| `threshold` | `f32` |  |
+| `radius` | `f32` |  |
+
+### record `godrays`
+
+| Field | Type | |
+| --- | --- | --- |
+| `strength` | `f32` |  |
+| `light-x` | `f32` |  |
+| `light-y` | `f32` |  |
+| `color` | `u32` |  |
+
+### variant `post-effect`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `bloom` | `bloom` |  |
+| `godrays` | `godrays` |  |
+
 ### record `atmosphere`
 
 | Field | Type | |
@@ -600,6 +631,8 @@ Explicit physics with a vanilla sprite set, not that type's behaviour. Custom im
 | `emit-configured-particles` | `func(particles: list<configured-particle>) -> u32` | Shares emit-particles' per-mod and global request quotas, distance and loaded-chunk limits. Invalid records are ignored. Returns the queued count, not a guarantee of display: player settings and live caps apply. At most 256 live configured particles per owner and 1024 across mods. Disabling, reloading or crashing removes these particles immediately; dimension changes clear them too. Does not emit light into the world. Requires Mod API level 14 and capability render. |
 | `set-colored-lights` | `func(lights: list<colored-light>) -> result<_, string>` | Replaces this owner's lights (up to 8). Requires a player, positions within 32 blocks, finite values and valid bounds; invalid lists leave the previous list unchanged. Empty clears. Renderer selects at most 16 nearest sources globally in loaded chunks. Lights do not cast shadows or modify world light propagation. Terrain and entities use the normal renderer only; material-replacing shader packs may override the result. Cleared on owner stop/reload and world/dimension changes. API level 15. |
 | `emit-sprite-particles` | `func(particles: list<sprite-particle>) -> u32` | Configured physics with a static packaged sprite instead of the kind's vanilla sprite set. Only this mod's content namespaces may be used. Shares all particle quotas. Missing or oversized images are not drawn. Atlas admits at most 64 custom particle images per namespace, 256 total, each at most 64x64. Assets follow the content reload/restart lifecycle; live particles follow their owner's lifecycle. API level 16. |
+| `set-emissive-materials` | `func(materials: list<emissive-material>, pack-suffixes: bool) -> result<_, string>` | Replaces up to 32 block-texture overlays owned by this mod. Base is a texture id; overlay must be in an owned namespace under emissive/. Optional pack suffix mode recognizes _e, _emissive and a safe optifine/emissive.properties suffix.emissive value. Global maximum 128 resolved mappings, explicit entries first, first owner wins. Overlays are full-bright but fogged, do not cast light, and affect normal terrain rendering only (not items/entities or replacing material shader packs). Invalid lists preserve prior state; empty/false clears. Assets use the content reload lifecycle; disabling owners removes mappings. API 17. |
+| `set-post-effects` | `func(effects: list<post-effect>) -> result<_, string>` | Replaces up to 2 owned effects; empty clears. Strength and threshold are 0..1, bloom radius 0.5..8 target pixels, godray light coordinates 0..1 in the viewport. Finite values and RGB colors only. First 4 effects globally in stable mod/list order. Bounded built-in filters read world color/depth and compose additive contributions before hand/HUD. Not arbitrary WGSL or general shader chaining. Paused while a shader pack owns post-processing; never on the title screen. Cleared on stop/reload and world/dimension changes. API level 18. |
 | `set-atmosphere` | `func(value: option<atmosphere>) -> result<_, string>` | Sets this mod's visual atmosphere for the current dimension. None clears it. The first running mod with an override wins; it disappears on disable, failure or dimension change. Does not change gameplay lighting or weather. Invalid values leave the previous override intact. API level 11. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |

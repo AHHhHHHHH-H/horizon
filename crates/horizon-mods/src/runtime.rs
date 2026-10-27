@@ -82,9 +82,10 @@ pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, I
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     AmbientParticle, Atmosphere as ModAtmosphere, ColoredLight, ConfiguredParticle,
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape,
-    SpriteParticle, SpriteShape, TextShape, WorldParticle, Zoom as ModZoom,
+    Corner as RenderCorner, EmissiveMaterial, FarTerrain as ModFarTerrain, FillShape, FrameRate,
+    ItemShape, Minimap as ModMinimap, Point as RenderPoint, PostEffect, QuadShape,
+    Rect as RenderRect, Shape, SpriteParticle, SpriteShape, TextShape, WorldParticle,
+    Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -457,6 +458,9 @@ struct State {
     atmosphere: Option<(String, ModAtmosphere)>,
     colored_lights: Vec<ColoredLight>,
     sprite_namespaces: Vec<String>,
+    emissive_materials: Vec<EmissiveMaterial>,
+    emissive_suffixes: bool,
+    post_effects: Vec<PostEffect>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -668,6 +672,9 @@ impl Mods {
             far_terrain: None,
             atmosphere: None,
             colored_lights: Vec::new(),
+            emissive_materials: Vec::new(),
+            emissive_suffixes: false,
+            post_effects: Vec::new(),
             sprite_namespaces: if m.capabilities.contains(&crate::Capability::Registries) {
                 m.owned_namespaces().map(str::to_owned).collect()
             } else {
@@ -773,6 +780,9 @@ impl Mods {
                     state.world_events.clear();
                     state.atmosphere = None;
                     state.colored_lights.clear();
+                    state.emissive_materials.clear();
+                    state.emissive_suffixes = false;
+                    state.post_effects.clear();
                     state.snapshot = self.snapshot.clone();
                 }
             }
@@ -1059,6 +1069,25 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref())
             .flat_map(|r| &r.store.data().colored_lights)
+    }
+    pub fn emissive_materials(&self) -> impl Iterator<Item = &EmissiveMaterial> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().emissive_materials)
+    }
+    pub fn emissive_suffixes(&self) -> bool {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .any(|r| r.store.data().emissive_suffixes)
+    }
+    pub fn post_effects(&self) -> impl Iterator<Item = &PostEffect> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().post_effects)
+            .take(4)
     }
     pub fn wants_world_events(&self) -> bool {
         self.entries
@@ -2091,6 +2120,74 @@ fn valid_particle_sprite(sprite: &str, namespaces: &[String]) -> bool {
 }
 
 impl render::Host for State {
+    fn set_post_effects(&mut self, effects: Vec<PostEffect>) -> Result<(), String> {
+        if !effects.is_empty() && self.snapshot.player.is_none() {
+            return Err("no world is open".into());
+        }
+        let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+        if effects.len() > 2
+            || effects.iter().any(|e| match e {
+                PostEffect::Bloom(b) => {
+                    !bounded(b.strength, 0.0, 1.0)
+                        || !bounded(b.threshold, 0.0, 1.0)
+                        || !bounded(b.radius, 0.5, 8.0)
+                }
+                PostEffect::Godrays(g) => {
+                    !bounded(g.strength, 0.0, 1.0)
+                        || !bounded(g.light_x, 0.0, 1.0)
+                        || !bounded(g.light_y, 0.0, 1.0)
+                        || g.color > 0xFFFFFF
+                }
+            })
+        {
+            return Err("invalid post-effect count, strength, radius, threshold or light".into());
+        }
+        self.post_effects = effects;
+        Ok(())
+    }
+    fn set_emissive_materials(
+        &mut self,
+        materials: Vec<EmissiveMaterial>,
+        pack_suffixes: bool,
+    ) -> Result<(), String> {
+        if (!materials.is_empty() || pack_suffixes) && self.snapshot.player.is_none() {
+            return Err("no world is open".into());
+        }
+        let valid = |id: &str| {
+            id.len() <= 192
+                && id.split_once(':').is_some_and(|(ns, p)| {
+                    !ns.is_empty()
+                        && !p.is_empty()
+                        && ns.bytes().all(|c| {
+                            c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c)
+                        })
+                        && p.split('/').all(|s| {
+                            !s.is_empty()
+                                && s != "."
+                                && s != ".."
+                                && s.bytes().all(|c| {
+                                    c.is_ascii_lowercase()
+                                        || c.is_ascii_digit()
+                                        || b"_.-".contains(&c)
+                                })
+                        })
+                })
+        };
+        if materials.len() > 32
+            || materials.iter().any(|m| {
+                !valid(&m.base)
+                    || !valid(&m.overlay)
+                    || !m.overlay.split_once(':').is_some_and(|(ns, p)| {
+                        self.sprite_namespaces.iter().any(|s| s == ns) && p.starts_with("emissive/")
+                    })
+            })
+        {
+            return Err("invalid emissive material count, id or owned overlay".into());
+        }
+        self.emissive_materials = materials;
+        self.emissive_suffixes = pack_suffixes;
+        Ok(())
+    }
     fn emit_sprite_particles(&mut self, particles: Vec<SpriteParticle>) -> u32 {
         let Some(player) = &self.snapshot.player else {
             return 0;
