@@ -2308,6 +2308,7 @@ impl Game<'_> {
                 {
                     self.screen = Screen::Dead;
                     self.ui.death_time = 0;
+                    self.ui.death_confirm = None;
                     self.capture(false);
                 }
             }
@@ -2327,6 +2328,7 @@ impl Game<'_> {
                     if self.remote.as_ref().is_none_or(|r| r.show_death_screen) {
                         self.screen = Screen::Dead;
                         self.ui.death_time = 0;
+                        self.ui.death_confirm = None;
                         self.capture(false);
                     } else {
                         self.respawn_player()?;
