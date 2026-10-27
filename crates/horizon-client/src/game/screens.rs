@@ -319,7 +319,7 @@ impl Game<'_> {
             if let Some(stack) = self.carried.take()
                 && let Some(eye) = self.eye_position()
             {
-                self.throw_from_eyes(stack, eye);
+                self.throw_from_eyes(stack, eye, false);
             }
             let keep = self.ui.rules.bool("keep_inventory") || self.spectator();
             self.experience.respawn(keep);

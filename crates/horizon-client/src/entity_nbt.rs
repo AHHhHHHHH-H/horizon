@@ -290,14 +290,6 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             map.entry("sound_variant".into())
                 .or_insert_with(|| string("minecraft:classic"));
         }
-        "minecraft:parrot" => {
-            if let Some(owner) = m.extra.owner {
-                map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
-            } else {
-                map.remove(&"Owner".into());
-            }
-            map.insert("Sitting".into(), Tag::Byte(i8::from(m.extra.sitting)));
-        }
         "minecraft:wolf" => {
             if let Some(owner) = m.extra.owner {
                 map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
@@ -487,6 +479,12 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 "Variant".into(),
                 Tag::Int(i32::from(m.extra.variant.min(4))),
             );
+            if let Some(owner) = m.extra.owner {
+                map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
+            } else {
+                map.remove(&"Owner".into());
+            }
+            map.insert("Sitting".into(), Tag::Byte(i8::from(m.extra.sitting)));
         }
         "minecraft:salmon" => {
             let size = SALMON_SIZES[usize::from(m.extra.variant).min(2)];
