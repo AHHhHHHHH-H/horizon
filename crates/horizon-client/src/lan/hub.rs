@@ -175,6 +175,9 @@ pub struct Hub {
     /// An integrated server's owner (`MinecraftServer.isSingleplayerOwner`),
     /// whose moves are never checked.
     pub singleplayer_owner: Option<u128>,
+    /// The world is superflat (`ServerLevel.isFlat`, a world-wide flag, sent as
+    /// `CommonPlayerSpawnInfo.isFlat` in every dimension).
+    pub flat_world: bool,
     /// Who rides what, set by the game before each tick.
     pub riding: super::entity::Riding,
     /// The scoreboard's teams, set by the game each tick, for players'
@@ -354,6 +357,7 @@ impl Hub {
             ticks: 0,
             movement_checks: (true, true),
             singleplayer_owner: None,
+            flat_world: false,
             riding: Default::default(),
             last_clock: i64::MIN,
             last_rate: 0.0,
@@ -595,7 +599,7 @@ impl Hub {
             game_type: game_mode,
             previous_game_type: None,
             debug: false,
-            flat: false,
+            flat: self.flat_world,
             last_death: None,
             portal_cooldown: 0,
             sea_level: 63,

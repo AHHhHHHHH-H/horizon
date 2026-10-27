@@ -117,7 +117,7 @@ pub(super) struct Remote {
     joined: bool,
     status: String,
     pub(super) entity_id: i32,
-    dimension: DimensionType,
+    pub(super) dimension: DimensionType,
     /// What chunk packets decode with (the dimension's height and sky, the
     /// biome registry); replaced whenever one of them changes.
     pub(super) chunk_format: Arc<ChunkFormat>,
@@ -194,6 +194,8 @@ pub(super) struct Remote {
     input: horizon_client::interaction_input::InteractionInput,
     stop_mining: bool,
     placing: Option<([i32; 3], u64)>,
+    /// `CommonPlayerSpawnInfo.isFlat`: the level is a superflat one.
+    pub(super) flat: bool,
     death_message: Option<String>,
     player_type: Option<Arc<MobType>>,
     /// Inventory as last synchronised, for creative-mode slot updates.
@@ -479,6 +481,7 @@ impl Game<'_> {
             input: Default::default(),
             stop_mining: false,
             placing: None,
+            flat: false,
             death_message: None,
             player_type,
             synced: vec![None; 36],
@@ -993,6 +996,7 @@ impl Game<'_> {
         r.chunk_format = Arc::new(r.chunk_format.with_dimension(&dimension));
         r.dimension = dimension;
         r.game_mode = spawn.game_type;
+        r.flat = spawn.flat;
         r.loaded_sent = false;
         // A replacement LocalPlayer has a fresh sendPosition baseline.
         r.position_sender = Default::default();
