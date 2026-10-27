@@ -52,6 +52,10 @@ pub(super) struct Creatures {
     /// Sweep attacks from a guest's turn, waiting for it to end
     /// (game/lan_pvp.rs).
     pub sweeps: Vec<super::lan_pvp::Sweep>,
+    /// The players a fishing hook can catch, taken as the hooks tick, and
+    /// the pulls on them waiting for the hub (game/fishing.rs).
+    pub hook_targets: Vec<super::fishing::HookTarget>,
+    pub hook_pulls: Vec<(u32, horizon_core::geometry::Vec3)>,
     /// Explosion packets from a guest's turn, waiting for it to end
     /// (centre, small, radius, blocks hit; game/lan_particles.rs).
     pub lan_explosions: Vec<([f64; 3], bool, f32, usize)>,
