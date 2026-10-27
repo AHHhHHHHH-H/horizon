@@ -4,10 +4,16 @@
 //! colour and depth, the previous pass's output and two samplers. Passes before the last write
 //! half-float targets of the world's size, so values over 1 carry to the next; the last draws
 //! onto the screen. Every stage of a pack reads the same `frame`, written once a frame
-//! (`NativeFrame`).
+//! (`NativeFrame`). Mods' post passes are built the same way, each with its own `params`
+//! uniform at binding 6 (`gfx/mod_post.rs`).
 
 use glam::{Mat4, Vec3};
-use horizon_shader_api::{Frame as FrameInputs, check::CheckedStage, stages::GROUP};
+use horizon_shader_api::{
+    Frame as FrameInputs,
+    check::CheckedStage,
+    mods::{PARAMS_BINDING, PARAMS_SIZE},
+    stages::GROUP,
+};
 
 use super::Frame;
 
@@ -18,6 +24,8 @@ type WorldViews = (wgpu::TextureView, wgpu::TextureView);
 
 pub struct NativePost {
     passes: Vec<(String, wgpu::RenderPipeline)>,
+    /// Each pass's `params` uniform (a mod's pass); empty for a pack's.
+    params: Vec<wgpu::Buffer>,
     layout: wgpu::BindGroupLayout,
     frame: wgpu::Buffer,
     linear: wgpu::Sampler,
@@ -141,17 +149,52 @@ impl NativePost {
         format: wgpu::TextureFormat,
         frame: &NativeFrame,
     ) -> Result<Self, String> {
+        Self::build(device, stages, constants, format, frame, false).map_err(|e| e.1)
+    }
+
+    /// Pipelines for mods' post passes (`horizon_shader_api::mods`), each reading its own
+    /// `params`. Errors name the pass wgpu refused, by its index.
+    pub fn for_mods(
+        device: &wgpu::Device,
+        stages: Vec<CheckedStage>,
+        format: wgpu::TextureFormat,
+        frame: &NativeFrame,
+    ) -> Result<Self, (usize, String)> {
+        Self::build(device, stages, &[], format, frame, true)
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        stages: Vec<CheckedStage>,
+        constants: &[(String, f64)],
+        format: wgpu::TextureFormat,
+        frame: &NativeFrame,
+        params: bool,
+    ) -> Result<Self, (usize, String)> {
         let float = wgpu::TextureSampleType::Float { filterable: true };
+        let mut entries = vec![
+            frame_entry(wgpu::ShaderStages::FRAGMENT),
+            texture_entry(1, float),
+            texture_entry(2, wgpu::TextureSampleType::Depth),
+            texture_entry(3, float),
+            sampler_entry(4),
+            sampler_entry(5),
+        ];
+        if params {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: PARAMS_BINDING,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(PARAMS_SIZE),
+                },
+                count: None,
+            });
+        }
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Native shader pack post"),
-            entries: &[
-                frame_entry(wgpu::ShaderStages::FRAGMENT),
-                texture_entry(1, float),
-                texture_entry(2, wgpu::TextureSampleType::Depth),
-                texture_entry(3, float),
-                sampler_entry(4),
-                sampler_entry(5),
-            ],
+            entries: &entries,
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
         groups[GROUP as usize] = Some(&layout);
@@ -199,10 +242,20 @@ impl NativePost {
                 cache: None,
             });
             if let Some(e) = pollster::block_on(scope.pop()) {
-                return Err(format!("{}: {e}", stage.file));
+                return Err((i, format!("{}: {e}", stage.file)));
             }
             passes.push((stage.label, pipeline));
         }
+        let params = (0..if params { count } else { 0 })
+            .map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod shader params"),
+                    size: PARAMS_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
         let sampler = |label, filter| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some(label),
@@ -213,6 +266,7 @@ impl NativePost {
         };
         Ok(Self {
             passes,
+            params,
             layout,
             frame: frame.buffer.clone(),
             linear: sampler("Native shader pack linear", wgpu::FilterMode::Linear),
@@ -226,6 +280,17 @@ impl NativePost {
     /// The passes' labels, in order.
     pub fn labels(&self) -> Vec<&str> {
         self.passes.iter().map(|(l, _)| l.as_str()).collect()
+    }
+
+    /// A mod's pass `i` reads `values` as its `params` from the next submission (the rest 0).
+    pub fn set_params(&self, queue: &wgpu::Queue, i: usize, values: &[f32]) {
+        if let Some(buffer) = self.params.get(i) {
+            let mut all = [0f32; PARAMS_SIZE as usize / 4];
+            for (to, v) in all.iter_mut().zip(values) {
+                *to = *v;
+            }
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&all));
+        }
     }
 
     fn prepare(
@@ -277,35 +342,42 @@ impl NativePost {
                     (Some((_, t)), 1..) => &t[(i - 1) % 2],
                     _ => world.0,
                 };
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.frame.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(world.0),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(world.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(previous),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.nearest),
+                    },
+                ];
+                if let Some(params) = self.params.get(i) {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: PARAMS_BINDING,
+                        resource: params.as_entire_binding(),
+                    });
+                }
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Native shader pack post"),
                     layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.frame.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(world.0),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(world.1),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(previous),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&self.linear),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&self.nearest),
-                        },
-                    ],
+                    entries: &entries,
                 })
             })
             .collect();
@@ -482,13 +554,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(post.labels(), ["a.wgsl", "b.wgsl"]);
+        let pixel = draw(&device, &queue, &mut post);
+        let near = |got: u8, want: u8| got.abs_diff(want) <= 1;
+        assert!(
+            near(pixel[0], 204) && near(pixel[1], 102) && near(pixel[2], 51) && near(pixel[3], 128),
+            "{pixel:?}"
+        );
+    }
 
+    /// A mod's pass reads the numbers it set (`params`), the rest 0.
+    #[test]
+    fn a_mods_pass_reads_its_params() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let wgsl = "fn post(input: PostInput) -> vec4<f32> {\n\
+            return vec4<f32>(input.color.rgb * params.gain + params.lift, 1.0 - params.unset);\n}\n";
+        let params = ["gain", "lift", "unset"].map(String::from);
+        let stage = horizon_shader_api::mods::check(
+            horizon_shader_api::StageKind::Post,
+            "m.wgsl",
+            wgsl,
+            &params,
+        )
+        .unwrap();
+        let frame = NativeFrame::new(&device);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut post = NativePost::for_mods(&device, vec![stage], format, &frame).unwrap();
+        post.set_params(&queue, 0, &[0.5, 0.1]);
+        let pixel = draw(&device, &queue, &mut post);
+        let near = |got: u8, want: u8| got.abs_diff(want) <= 1;
+        // (0.8, 0.4, 0.2) * 0.5 + 0.1, alpha 1 - 0.
+        assert!(
+            near(pixel[0], 128) && near(pixel[1], 77) && near(pixel[2], 51) && pixel[3] == 255,
+            "{pixel:?}"
+        );
+    }
+
+    /// Runs `post` over a 4 × 4 world of colour (0.8, 0.4, 0.2) and depth 0.5; the top left
+    /// pixel of what it draws.
+    fn draw(device: &wgpu::Device, queue: &wgpu::Queue, post: &mut NativePost) -> [u8; 4] {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let color = texture(&device, format, usage).create_view(&Default::default());
-        let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage)
+        let color = texture(device, format, usage).create_view(&Default::default());
+        let depth = texture(device, wgpu::TextureFormat::Depth32Float, usage)
             .create_view(&Default::default());
         let screen = texture(
-            &device,
+            device,
             format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
@@ -520,7 +632,7 @@ mod tests {
             ..Default::default()
         });
         let view = screen.create_view(&Default::default());
-        post.run(&device, &mut encoder, (&color, &depth), &view, [4, 4], None);
+        post.run(device, &mut encoder, (&color, &depth), &view, [4, 4], None);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * 4),
@@ -545,10 +657,6 @@ mod tests {
             .map_async(wgpu::MapMode::Read, |r| r.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let pixel = buffer.slice(..).get_mapped_range().unwrap()[..4].to_vec();
-        let near = |got: u8, want: u8| got.abs_diff(want) <= 1;
-        assert!(
-            near(pixel[0], 204) && near(pixel[1], 102) && near(pixel[2], 51) && near(pixel[3], 128),
-            "{pixel:?}"
-        );
+        [pixel[0], pixel[1], pixel[2], pixel[3]]
     }
 }

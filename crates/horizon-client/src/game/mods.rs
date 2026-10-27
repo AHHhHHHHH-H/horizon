@@ -46,6 +46,9 @@ pub(super) struct ModsState {
     /// Capability `render`'s camera shakes.
     #[cfg(feature = "mods")]
     pub(super) shake: super::mod_render::Shake,
+    /// The mods' shaders the renderer draws, as (mod, handle), in order.
+    #[cfg(feature = "mods")]
+    pub(super) shaders: Vec<(usize, u32)>,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
@@ -632,6 +635,8 @@ impl Game<'_> {
     /// Once per frame: the frame hook, and dev mods' rebuilds.
     pub(super) fn mods_frame(&mut self, elapsed: Duration) {
         self.reload_dev_mods();
+        // Before the check below: mods that stopped take their passes with them.
+        self.sync_mod_shaders();
         if !self.mods.mods.is_running() {
             return;
         }

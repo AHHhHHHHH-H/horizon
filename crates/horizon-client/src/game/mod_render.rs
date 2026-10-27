@@ -1,6 +1,6 @@
 //! Capability `render` (docs/mods.md): the shapes mods keep on the HUD,
-//! drawn by the game's own HUD renderer, and their camera shakes. Mods
-//! never supply shader code. With no mod drawing, each hook here returns
+//! drawn by the game's own HUD renderer, and their camera shakes (their own
+//! shaders: `mod_shaders.rs`). With no mod drawing, each hook here returns
 //! after one check.
 use super::Game;
 use horizon_client::hud::HudBatch;

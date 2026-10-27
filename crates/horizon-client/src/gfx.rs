@@ -42,6 +42,7 @@ pub use entity_batch::{
     ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
     TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY,
 };
+pub use mod_post::{ModPass, PASS_BUDGET_MS};
 
 /// Window.getAppropriateLineWidth, in framebuffer pixels.
 pub fn outline_width(width: u32) -> f32 {
@@ -74,6 +75,7 @@ mod flat;
 mod hdr;
 pub mod lightning;
 mod lod;
+mod mod_post;
 mod native_material;
 mod native_pack;
 mod native_post;
@@ -541,6 +543,8 @@ pub struct Renderer {
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
     native: Option<native_pack::NativePack>,
+    /// Mods' post passes (`render.register-shader`), before a shader pack's.
+    mod_post: Option<mod_post::ModPost>,
     /// Time the shader pack's passes on the GPU (F3, or `HORIZON_SHADER_PACK_TIMING`).
     pass_timing: bool,
     /// The entity vertices Horizon draws itself while a shader pack draws the others.
@@ -2644,6 +2648,7 @@ impl Renderer {
             hdr_output,
             pack_post: None,
             native: None,
+            mod_post: None,
             pass_timing: pack_timing::PassTiming::logging(),
             pack_entity_rest: Vec::new(),
             cloud_bindings,
@@ -3315,6 +3320,33 @@ impl Renderer {
             self.pack_atlas = None;
         }
         Ok(labels)
+    }
+    /// Draws `passes`, mods' post passes, from now on (none: no pass), in order. On an error
+    /// (the pass wgpu refused, by index) none run.
+    pub fn set_mod_shaders(
+        &mut self,
+        passes: Vec<ModPass>,
+    ) -> std::result::Result<(), (usize, String)> {
+        self.mod_post = None;
+        if !passes.is_empty() {
+            let format = self.config.format.remove_srgb_suffix();
+            let post = mod_post::ModPost::new(&self.device, &self.queue, passes, format)?;
+            self.mod_post = Some(post);
+        }
+        Ok(())
+    }
+    /// The mod pass `i`'s `params`, from the next frame.
+    pub fn set_mod_shader_params(&self, i: usize, values: &[f32]) {
+        if let Some(m) = &self.mod_post {
+            m.post.set_params(&self.queue, i, values);
+        }
+    }
+    /// The mod passes that keep going over their GPU budget (`PASS_BUDGET_MS`): their index
+    /// and median time in milliseconds.
+    pub fn mod_shaders_over_budget(&mut self) -> Vec<(usize, f32)> {
+        self.mod_post
+            .as_mut()
+            .map_or_else(Vec::new, mod_post::ModPost::over_budget)
     }
     /// What a shader pack's gbuffers programs read from Horizon's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
@@ -4446,6 +4478,8 @@ impl Renderer {
         let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         // One of Horizon's own packs reads the same world target.
         let native_post = !frame.title && self.native.as_ref().is_some_and(|n| n.post.is_some());
+        // Mods' passes read it too, before the pack's (never with a `shaders/` pack's post).
+        let mod_post = !frame.title && !pack_post && self.mod_post.is_some();
         if let Some(timer) = Self::pass_timer(&mut self.pack_post, &mut self.native)
             && timer.is_some() != self.pass_timing
         {
@@ -4454,7 +4488,7 @@ impl Renderer {
                 .then(|| pack_timing::PassTiming::new(&self.device, &self.queue))
                 .flatten();
         }
-        let pack_reads_world = pack_post || native_post;
+        let pack_reads_world = pack_post || native_post || mod_post;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -4535,6 +4569,13 @@ impl Renderer {
                 t.begin(&self.device, &self.queue);
                 native_sky_pass =
                     native.sky.is_some() && t.recording() && sky_visible && frame.skybox;
+            }
+        }
+        if mod_post && let Some(mods) = &mut self.mod_post {
+            let size = self.world_post.size().unwrap_or([1, 1]);
+            mods.frame.write(&self.queue, frame, size);
+            if let Some(t) = &mut mods.timing {
+                t.begin(&self.device, &self.queue);
             }
         }
         if native_sky_pass
@@ -5011,19 +5052,40 @@ impl Renderer {
             );
             self.pack_post = Some((dimension, Some(post)));
         } else if let Some((color, depth)) = &scaled
-            && native_post
-            && let Some(native) = &mut self.native
-            && let Some(post) = &mut native.post
+            && (native_post || mod_post)
         {
             let size = self.world_post.size().unwrap_or([1, 1]);
-            post.run(
-                &self.device,
-                &mut encoder,
-                (color, depth),
-                &view_target,
-                size,
-                native.timing.as_mut(),
-            );
+            // Mods' passes first: onto the screen, or into the picture the pack's passes read.
+            let mut color = color.clone();
+            if mod_post && let Some(mods) = &mut self.mod_post {
+                let out = match native_post {
+                    true => mods.output(&self.device, size),
+                    false => view_target.clone(),
+                };
+                let timing = mods.timing.as_mut();
+                mods.post.run(
+                    &self.device,
+                    &mut encoder,
+                    (&color, depth),
+                    &out,
+                    size,
+                    timing,
+                );
+                color = out;
+            }
+            if native_post
+                && let Some(native) = &mut self.native
+                && let Some(post) = &mut native.post
+            {
+                post.run(
+                    &self.device,
+                    &mut encoder,
+                    (&color, depth),
+                    &view_target,
+                    size,
+                    native.timing.as_mut(),
+                );
+            }
         } else if scaled.is_some() {
             self.world_post.finish(&mut encoder, &view_target);
         }
@@ -5209,6 +5271,9 @@ impl Renderer {
             timer.collect(&self.device, &mut self.gpu_times);
         }
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
+            timer.submitted(&self.queue);
+        }
+        if let Some(timer) = self.mod_post.as_mut().and_then(|m| m.timing.as_mut()) {
             timer.submitted(&self.queue);
         }
         if let Some((path, buffer)) = readback {
