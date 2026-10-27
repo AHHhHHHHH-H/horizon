@@ -35,6 +35,8 @@ fn entity_shader() -> String {
 #[cfg(test)]
 mod crumbling_tests;
 mod entity_batch;
+#[cfg(test)]
+mod headless_tests;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{SHADOW_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY};
@@ -338,6 +340,12 @@ struct BorderUniform {
     color: [f32; 4],
     offset: [f32; 4],
 }
+/// A frame copied back for `Renderer::read_capture`.
+struct Capture {
+    buffer: wgpu::Buffer,
+    submission: wgpu::SubmissionIndex,
+    mapped: std::sync::mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
+}
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -365,7 +373,14 @@ pub struct Renderer {
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
-    window: Arc<Window>,
+    /// The window presented to; `None` for a headless renderer (`Renderer::new_headless`).
+    window: Option<Arc<Window>>,
+    /// Frames copied back for `Renderer::read_capture`, oldest first.
+    captures: std::collections::VecDeque<Capture>,
+    /// Readback buffers of the current size, ready for reuse.
+    capture_pool: Vec<wgpu::Buffer>,
+    /// Copy every rendered frame back for `Renderer::read_capture`.
+    pub capture_frames: bool,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
@@ -854,7 +869,7 @@ fn surface_format(
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
 async fn open_device(
-    window: &Arc<Window>,
+    window: Option<&Arc<Window>>,
     offscreen: bool,
     api: GraphicsApi,
     layers: u32,
@@ -871,16 +886,15 @@ async fn open_device(
             log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
         }
         let instance = wgpu::Instance::new(instance_descriptor(backends));
-        let surface = if offscreen {
-            None
-        } else {
-            match instance.create_surface(window.clone()) {
+        let surface = match window.filter(|_| !offscreen) {
+            None => None,
+            Some(window) => match instance.create_surface(window.clone()) {
                 Ok(surface) => Some(surface),
                 Err(e) => {
                     failures.push(format!("{name} surface: {e}"));
                     continue;
                 }
-            }
+            },
         };
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -1034,6 +1048,80 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
     ) -> Result<Self> {
+        let size = window.inner_size();
+        Self::open(
+            Some(window),
+            (size.width, size.height),
+            offscreen,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            hud_atlas,
+            forcefield,
+            panorama_faces,
+            prepared,
+            previous,
+            api,
+        )
+        .await
+    }
+    /// A renderer with no window: it draws into an offscreen target of this
+    /// size, read back with `capture_frames` and `read_capture`. Needs no
+    /// display server, so it runs on a headless machine.
+    pub async fn new_headless(
+        width: u32,
+        height: u32,
+        sprite_pixels: &[u8],
+        sprite_size: u32,
+        sprite_minimum_size: u32,
+        layers: u32,
+        sprite_mips: &[crate::mipmap::Settings],
+        animations: &[SpriteAnimation],
+        hud_atlas: (&[u8], u32, u32),
+        forcefield: (&[u8], u32),
+        panorama_faces: &panorama::Faces,
+        prepared: Option<PreparedTextures>,
+        api: GraphicsApi,
+    ) -> Result<Self> {
+        Self::open(
+            None,
+            (width, height),
+            true,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            hud_atlas,
+            forcefield,
+            panorama_faces,
+            prepared,
+            None,
+            api,
+        )
+        .await
+    }
+    async fn open(
+        window: Option<Arc<Window>>,
+        size: (u32, u32),
+        offscreen: bool,
+        sprite_pixels: &[u8],
+        sprite_size: u32,
+        sprite_minimum_size: u32,
+        layers: u32,
+        sprite_mips: &[crate::mipmap::Settings],
+        animations: &[SpriteAnimation],
+        hud_atlas: (&[u8], u32, u32),
+        forcefield: (&[u8], u32),
+        panorama_faces: &panorama::Faces,
+        prepared: Option<PreparedTextures>,
+        previous: Option<&Self>,
+        api: GraphicsApi,
+    ) -> Result<Self> {
         let split = sprite_split();
         if layers > split * SPRITE_ARRAYS {
             return Err(format!(
@@ -1056,18 +1144,19 @@ impl Renderer {
                 describe_adapter(&renderer.adapter);
                 check_layers(&renderer.adapter.limits(), layers)?;
                 Opened {
-                    surface: if offscreen {
-                        None
-                    } else {
-                        let spare = renderer
-                            .spare_surface
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
-                        Some(match spare {
-                            Some(surface) => surface,
-                            None => renderer.instance.create_surface(window.clone())?,
-                        })
+                    surface: match window.as_ref().filter(|_| !offscreen) {
+                        None => None,
+                        Some(window) => {
+                            let spare = renderer
+                                .spare_surface
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take();
+                            Some(match spare {
+                                Some(surface) => surface,
+                                None => renderer.instance.create_surface(window.clone())?,
+                            })
+                        }
                     },
                     instance: renderer.instance.clone(),
                     adapter: renderer.adapter.clone(),
@@ -1075,11 +1164,11 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                 }
             }
-            None => open_device(&window, offscreen, api, layers).await?,
+            None => open_device(window.as_ref(), offscreen, api, layers).await?,
         };
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
-        let size = window.inner_size();
+        let size = winit::dpi::PhysicalSize::new(size.0, size.1);
         let (config, present_modes, hdr_output) = if let Some(surface) = &surface {
             let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -2467,6 +2556,9 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
+            captures: std::collections::VecDeque::new(),
+            capture_pool: Vec::new(),
+            capture_frames: false,
             device,
             queue,
             config,
@@ -2657,7 +2749,13 @@ impl Renderer {
         self.surface = None;
         let surface = match spare {
             Some(surface) => surface,
-            None => self.instance.create_surface(self.window.clone())?,
+            None => {
+                let window = self
+                    .window
+                    .clone()
+                    .ok_or("a headless renderer has no window")?;
+                self.instance.create_surface(window)?
+            }
         };
         Self::configure(
             &self.device,
@@ -2742,6 +2840,8 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
+        self.capture_pool.clear();
+        self.captures.clear();
         if let Some(surface) = &self.surface {
             Self::configure(
                 &self.device,
@@ -5043,6 +5143,19 @@ impl Renderer {
                 None
             }
         });
+        let capture = (self.capture_frames && self.config.format.block_copy_size(None) == Some(4))
+            .then(|| {
+                let buffer = self.capture_pool.pop().unwrap_or_else(|| {
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Horizon frame capture"),
+                        size: u64::from(self.padded_row()) * u64::from(self.config.height),
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                });
+                self.copy_frame_into(&mut encoder, &target_texture, &buffer);
+                buffer
+            });
         self.uploads.finish(&encoder);
         if has_section_copies {
             self.section_copy_bytes = 0;
@@ -5068,6 +5181,17 @@ impl Renderer {
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
         }
+        if let Some(buffer) = capture {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            buffer.map_async(wgpu::MapMode::Read, .., move |r| {
+                let _ = sender.send(r);
+            });
+            self.captures.push_back(Capture {
+                buffer,
+                submission: submission.clone(),
+                mapped: receiver,
+            });
+        }
         if let Some((path, buffer)) = readback {
             self.screenshot_result = Some(
                 self.write_screenshot(&path, &buffer)
@@ -5079,8 +5203,10 @@ impl Renderer {
             // On Wayland this ties RedrawRequested to the compositor's frame
             // callbacks, one per refresh. Only VSync (Fifo) waits for the
             // display: with it off, vanilla's window draws uncapped.
-            if self.config.present_mode == wgpu::PresentMode::Fifo {
-                self.window.pre_present_notify();
+            if self.config.present_mode == wgpu::PresentMode::Fifo
+                && let Some(window) = &self.window
+            {
+                window.pre_present_notify();
             }
             if first_frame {
                 startup_step(format_args!("presenting the first frame"));
@@ -5129,10 +5255,67 @@ impl Renderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        self.copy_frame_into(encoder, texture, &buffer);
+        buffer
+    }
+    /// Frames rendered with `capture_frames` on and not read yet.
+    pub fn pending_captures(&self) -> usize {
+        self.captures.len()
+    }
+    /// The pixel layout `read_capture` writes: `Bgra8Unorm` or `Rgba8Unorm`.
+    pub fn capture_format(&self) -> wgpu::TextureFormat {
+        self.config.format.remove_srgb_suffix()
+    }
+    /// The oldest captured frame, tightly packed (width * 4 bytes a row) in
+    /// `capture_format`'s order, waiting only for that frame's submission:
+    /// later frames keep drawing meanwhile. `None` when nothing is pending.
+    pub fn read_capture(&mut self, out: &mut Vec<u8>) -> Result<Option<[u32; 2]>> {
+        let Some(capture) = self.captures.pop_front() else {
+            return Ok(None);
+        };
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(capture.submission),
+                timeout: None,
+            })
+            .map_err(|e| e.to_string())?;
+        capture
+            .mapped
+            .recv()
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let (width, height, row) = (
+            self.config.width as usize,
+            self.config.height as usize,
+            self.padded_row() as usize,
+        );
+        out.clear();
+        out.reserve(width * height * 4);
+        {
+            let data = capture
+                .buffer
+                .get_mapped_range(..)
+                .map_err(|e| e.to_string())?;
+            for y in 0..height {
+                out.extend_from_slice(&data[y * row..y * row + width * 4]);
+            }
+        }
+        capture.buffer.unmap();
+        if capture.buffer.size() == u64::from(self.padded_row()) * u64::from(self.config.height) {
+            self.capture_pool.push(capture.buffer);
+        }
+        Ok(Some([width as u32, height as u32]))
+    }
+    fn copy_frame_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        buffer: &wgpu::Buffer,
+    ) {
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
+                buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_row()),
@@ -5145,7 +5328,6 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
-        buffer
     }
     fn write_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<[u32; 2]> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
