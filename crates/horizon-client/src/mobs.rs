@@ -51,6 +51,7 @@ pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
 pub mod nether;
+pub mod panda;
 pub mod path;
 pub mod phantom;
 pub mod piglin;
@@ -821,6 +822,8 @@ pub struct Extra {
     pub armadillo: armadillo::State,
     /// A frog's brain memories and tongue target.
     pub frog: frog::State,
+    /// A panda's flags, counters and amounts.
+    pub panda: Option<Box<panda::State>>,
 }
 #[derive(Clone, Debug)]
 pub struct Mob {
@@ -1282,6 +1285,10 @@ pub enum MobEvent {
     CreakingTearDown {
         center: [f64; 3],
         spread: [f64; 3],
+    },
+    /// `Panda.afterSneeze`: the grown pandas within 10 blocks start.
+    PandaSneezed {
+        mob: u32,
     },
 }
 /// How a spawned-by-kind mob should be set up.

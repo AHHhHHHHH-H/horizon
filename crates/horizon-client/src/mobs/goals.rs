@@ -1452,6 +1452,9 @@ pub struct HurtByTarget {
     /// `Bee.BeeHurtByOtherGoal`: kept only while angry, and alerting others
     /// only when the attacker is in sight.
     pub bee: bool,
+    /// Whom `alertOther` calls: a filter on the mob (`PandaHurtByTargetGoal`
+    /// calls aggressive pandas only).
+    pub alert_if: Option<fn(&Seen) -> bool>,
     /// `PolarBear.PolarBearHurtByTargetGoal`: a hurt cub only calls the
     /// adult bears and drops the target itself.
     pub polar_bear: bool,
@@ -1465,6 +1468,7 @@ impl HurtByTarget {
             alert_except: vec![],
             ignore: vec![],
             bee: false,
+            alert_if: None,
             polar_bear: false,
             timestamp: 0,
             st: TargetState {
@@ -1483,6 +1487,10 @@ impl HurtByTarget {
     }
     pub fn bee(mut self) -> Self {
         self.bee = true;
+        self
+    }
+    pub fn alert_if(mut self, f: fn(&Seen) -> bool) -> Self {
+        self.alert_if = Some(f);
         self
     }
     pub fn polar_bear(mut self) -> Self {
@@ -1562,6 +1570,7 @@ impl Goal for HurtByTarget {
                             && (s.position.z - pos.z).abs() <= range + 1.0
                     })
                     .filter(|s| !self.alert_except.contains(&s.species))
+                    .filter(|s| self.alert_if.is_none_or(|f| f(s)))
                     // PolarBearHurtByTargetGoal.alertOther: adults only.
                     .filter(|s| !(self.polar_bear && s.baby))
                     .filter(|s| Who::Mob(s.id) != by)

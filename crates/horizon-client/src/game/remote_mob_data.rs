@@ -5,7 +5,7 @@
 use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
-    Mob, Species, Who, armadillo, bat, camel, creaking, sniffer, sync, tame,
+    Mob, Species, Who, armadillo, bat, camel, creaking, panda, sniffer, sync, tame,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -74,6 +74,14 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
                     Who::Mob(*target as u32)
                 });
             }
+            // Panda: the counters, the two genes and DATA_ID_FLAGS (after
+            // AgeableMob's two entries).
+            (Species::Panda, 18, Value::Int(n)) => panda::set_unhappy(m, *n),
+            (Species::Panda, 19, Value::Int(n)) => panda::set_sneeze(m, *n),
+            (Species::Panda, 20, Value::Int(n)) => panda::set_eat(m, *n),
+            (Species::Panda, 21, Value::Byte(gene)) => m.extra.variant = (*gene).clamp(0, 6) as u8,
+            (Species::Panda, 22, Value::Byte(gene)) => m.extra.variant2 = (*gene).clamp(0, 6) as u8,
+            (Species::Panda, 23, Value::Byte(flags)) => panda::set_flags(m, *flags as u8),
             // PolarBear.DATA_STANDING_ID: the client animates the rearing.
             (Species::PolarBear, 18, Value::Bool(standing)) => m.extra.flag = *standing,
             // Bat.DATA_ID_FLAGS: resting in bit 0.
