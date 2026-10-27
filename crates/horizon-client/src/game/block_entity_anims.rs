@@ -413,26 +413,35 @@ impl Game<'_> {
             .enchantments
             .entity_tags
             .get("minecraft:raiders");
-        let mobs = &self.mobs;
-        let player = self.player_view().map(|p| {
-            (
-                [p.position.x, p.position.y, p.position.z],
-                p.alive,
-            )
-        });
-        let entity = move |h: u64| {
-            if h == PLAYER {
-                return player.as_ref().map(|(position, alive)| BellEntity {
-                    position: *position,
-                    alive: *alive,
+        // Snapshot the entities the bell ticker needs so the mutable mob
+        // borrow below (for the glow effect) does not conflict with the
+        // entity closure's borrow of the mob list.
+        let mut entities: Vec<(u64, BellEntity)> = Vec::new();
+        if let Some(player) = self.player_view() {
+            entities.push((
+                PLAYER,
+                BellEntity {
+                    position: [player.position.x, player.position.y, player.position.z],
+                    alive: player.alive,
                     raider: false,
-                });
-            }
-            let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
-            Some(BellEntity {
-                position: [m.position.x, m.position.y, m.position.z],
-                alive: m.alive() && !m.removed,
-                raider: raiders.is_some_and(|r| r.contains(&m.kind.id)),
+                },
+            ));
+        }
+        for m in &self.mobs {
+            entities.push((
+                u64::from(m.id),
+                BellEntity {
+                    position: [m.position.x, m.position.y, m.position.z],
+                    alive: m.alive() && !m.removed,
+                    raider: raiders.is_some_and(|r| r.contains(&m.kind.id)),
+                },
+            ));
+        }
+        let entity = move |h: u64| {
+            entities.iter().find(|(id, _)| *id == h).map(|(_, e)| BellEntity {
+                position: e.position,
+                alive: e.alive,
+                raider: e.raider,
             })
         };
         for pos in self.be_anims.bells.keys().copied().collect::<Vec<_>>() {
