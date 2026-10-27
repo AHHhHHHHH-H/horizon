@@ -290,7 +290,7 @@ fn mob_meta(
     let kind = m.kind.id.as_str();
     // Entity.DATA_SHARED_FLAGS_ID: on fire 0x01, glowing 0x40
     // (LivingEntity.updateGlowingStatus).
-    let shared = i8::from(m.fire_ticks > 0) | i8::from(m.is_currently_glowing()) << 6;
+    let shared = i8::from(m.is_on_fire()) | i8::from(m.is_currently_glowing()) << 6;
     if shared != 0 {
         meta.push((0, serializer::BYTE, Value::Byte(shared)));
     }
