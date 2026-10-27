@@ -469,6 +469,19 @@ Existing vanilla particles with no block/item payload. Client-local only.
 | `velocity-y` | `f64` |  |
 | `velocity-z` | `f64` |  |
 
+### record `atmosphere`
+
+| Field | Type | |
+| --- | --- | --- |
+| `sky-color` | `option<u32>` | Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values. |
+| `fog-color` | `option<u32>` |  |
+| `cloud-color` | `option<u32>` |  |
+| `fog-start` | `option<f32>` | Distances in blocks, 0..4096. End must be greater than start. |
+| `fog-end` | `option<f32>` |  |
+| `star-brightness` | `option<f32>` |  |
+| `cloud-opacity` | `option<f32>` |  |
+| `transition-seconds` | `f32` | Smoothly interpolate from the last drawn values, 0..10 seconds. |
+
 ### record `frame-rate`
 
 | Field | Type | |
@@ -506,6 +519,7 @@ Existing vanilla particles with no block/item payload. Client-local only.
 | --- | --- | --- |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
 | `emit-particles` | `func(particles: list<world-particle>) -> u32` | Queues at most 32 particles per mod per game tick, shared by all hooks. Returns the accepted count. Only the first 32 entries are examined. Non-finite values, velocity components outside -1..1, positions beyond 32 blocks from the player, and calls without a player are ignored. The client drops requests outside loaded chunks and draws at most 256 mod particles per tick across all mods. No server packets are sent. Disabling or crashing a mod discards its queued requests; particles already spawned expire normally. Requires Mod API level 8. |
+| `set-atmosphere` | `func(value: option<atmosphere>) -> result<_, string>` | Sets this mod's visual atmosphere for the current dimension. None clears it. The first running mod with an override wins; it disappears on disable, failure or dimension change. Does not change gameplay lighting or weather. Invalid values leave the previous override intact. API level 11. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's corner panel: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays and the other mods' panels (under the status effects at the top right), as `hud`'s panels are. |

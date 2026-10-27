@@ -81,9 +81,10 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    AmbientParticle, Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate,
-    ItemShape, Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape,
-    SpriteShape, TextShape, WorldParticle, Zoom as ModZoom,
+    AmbientParticle, Atmosphere as ModAtmosphere, Corner as RenderCorner,
+    FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
+    Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape, TextShape,
+    WorldParticle, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -439,6 +440,7 @@ struct State {
     minimap: Option<ModMinimap>,
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
+    atmosphere: Option<(String, ModAtmosphere)>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -647,6 +649,7 @@ impl Mods {
             zoom: None,
             minimap: None,
             far_terrain: None,
+            atmosphere: None,
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -1002,6 +1005,15 @@ impl Mods {
     }
     /// Some running mod calls `game.raycast`: the snapshot needs a
     /// [`Snapshot::view_hit`].
+    /// The first running owner's visual atmosphere, only in the dimension it set.
+    pub fn atmosphere(&self) -> Option<&ModAtmosphere> {
+        let dimension = &self.snapshot.player.as_ref()?.dimension;
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .filter_map(|run| run.store.data().atmosphere.as_ref())
+            .find_map(|(d, value)| (d == dimension).then_some(value))
+    }
     /// Whether a client mod needs a bounded loaded-world snapshot.
     pub fn wants_client_world(&self) -> bool {
         self.entries
@@ -1928,6 +1940,31 @@ fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
 }
 
 impl render::Host for State {
+    fn set_atmosphere(&mut self, value: Option<ModAtmosphere>) -> Result<(), String> {
+        let Some(value) = value else {
+            self.atmosphere = None;
+            return Ok(());
+        };
+        let bounded = |v: Option<f32>, lo: f32, hi: f32| {
+            v.is_none_or(|v| v.is_finite() && (lo..=hi).contains(&v))
+        };
+        if [value.sky_color, value.fog_color, value.cloud_color]
+            .into_iter()
+            .any(|c| c.is_some_and(|v| v > 0xFFFFFF))
+            || !bounded(value.fog_start, 0.0, 4096.0)
+            || !bounded(value.fog_end, 0.0, 4096.0)
+            || !bounded(value.star_brightness, 0.0, 1.0)
+            || !bounded(value.cloud_opacity, 0.0, 1.0)
+            || !value.transition_seconds.is_finite()
+            || !(0.0..=10.0).contains(&value.transition_seconds)
+            || matches!((value.fog_start, value.fog_end), (Some(a), Some(b)) if b <= a)
+        {
+            return Err("invalid atmosphere colour, distance, opacity or transition".into());
+        }
+        let player = self.snapshot.player.as_ref().ok_or("no world is open")?;
+        self.atmosphere = Some((player.dimension.clone(), value));
+        Ok(())
+    }
     fn emit_particles(&mut self, particles: Vec<WorldParticle>) -> u32 {
         let Some(player) = &self.snapshot.player else {
             return 0;

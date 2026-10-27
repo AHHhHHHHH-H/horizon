@@ -11743,6 +11743,8 @@ impl Game<'_> {
             (0.0, 0.0)
         };
         horizon_client::environment::apply_weather(&mut sky, rain, thunder);
+        #[cfg(feature = "mods")]
+        self.mod_atmosphere(&mut sky);
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour

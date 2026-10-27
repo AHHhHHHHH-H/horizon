@@ -109,6 +109,7 @@ impl Mod for Guest {
             "particles",
             "sample_block",
             "local_sound",
+            "atmosphere",
             "input_claim",
             "input_poll",
             "input_held",
@@ -469,6 +470,26 @@ impl Mod for Guest {
                         browser::Event::Back => "back".into(),
                         browser::Event::Tab(i) => format!("tab {i}"),
                     });
+                }
+            }
+            "atmosphere" => {
+                let value = (args != "clear").then_some(render::Atmosphere {
+                    sky_color: Some(0x123456),
+                    fog_color: None,
+                    cloud_color: None,
+                    fog_start: Some(0.0),
+                    fog_end: Some(128.0),
+                    star_brightness: None,
+                    cloud_opacity: Some(if args == "invalid" { f32::NAN } else { 0.5 }),
+                    transition_seconds: 1.0,
+                });
+                chat::show(if render::set_atmosphere(value).is_ok() {
+                    "ok"
+                } else {
+                    "invalid"
+                });
+                if args == "panic" {
+                    panic!("after atmosphere");
                 }
             }
             "local_sound" => {

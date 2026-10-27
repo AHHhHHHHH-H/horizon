@@ -1441,3 +1441,22 @@ fn local_audio_is_validated_rate_limited_and_discarded_on_failure() {
     mods.tick(12);
     assert_eq!(play(&mut mods, "panic"), 0);
 }
+
+#[test]
+fn atmosphere_is_validated_dimension_scoped_and_owner_scoped() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    mods.set_snapshot(player());
+    assert!(mods.command("atmosphere set"));
+    assert_eq!(mods.atmosphere().unwrap().sky_color, Some(0x123456));
+    assert!(mods.command("atmosphere invalid"));
+    assert_eq!(mods.atmosphere().unwrap().cloud_opacity, Some(0.5));
+    let mut other_dimension = player();
+    other_dimension.player.as_mut().unwrap().dimension = "minecraft:the_nether".into();
+    mods.set_snapshot(other_dimension);
+    assert!(mods.atmosphere().is_none());
+    mods.set_snapshot(player());
+    assert!(mods.command("atmosphere clear"));
+    assert!(mods.atmosphere().is_none());
+    assert!(mods.command("atmosphere panic"));
+    assert!(mods.atmosphere().is_none());
+}

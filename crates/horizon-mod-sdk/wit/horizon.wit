@@ -415,6 +415,24 @@ interface render {
     /// Disabling or crashing a mod discards its queued requests; particles
     /// already spawned expire normally. Requires Mod API level 8.
     emit-particles: func(particles: list<world-particle>) -> u32;
+    record atmosphere {
+        /// Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values.
+        sky-color: option<u32>,
+        fog-color: option<u32>,
+        cloud-color: option<u32>,
+        /// Distances in blocks, 0..4096. End must be greater than start.
+        fog-start: option<f32>,
+        fog-end: option<f32>,
+        star-brightness: option<f32>,
+        cloud-opacity: option<f32>,
+        /// Smoothly interpolate from the last drawn values, 0..10 seconds.
+        transition-seconds: f32,
+    }
+    /// Sets this mod's visual atmosphere for the current dimension. None clears
+    /// it. The first running mod with an override wins; it disappears on disable,
+    /// failure or dimension change. Does not change gameplay lighting or weather.
+    /// Invalid values leave the previous override intact. API level 11.
+    set-atmosphere: func(value: option<atmosphere>) -> result<_, string>;
     /// The screen's size in GUI pixels (width, height), as of this tick.
     gui-size: func() -> tuple<f32, f32>;
     /// Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that

@@ -48,6 +48,8 @@ pub(super) struct ModsState {
     /// Capability `render`'s camera shakes.
     #[cfg(feature = "mods")]
     pub(super) shake: super::mod_render::Shake,
+    #[cfg(feature = "mods")]
+    pub(super) atmosphere: std::cell::RefCell<super::mod_render::AtmosphereBlend>,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.

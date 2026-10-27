@@ -746,3 +746,15 @@ share 64 delivered sounds per tick. Pending requests are discarded when
 the owner stops or the player leaves the dimension. No remote command,
 network access or automatic asset download is involved. Already playing
 one-shot sounds finish through the normal audio engine and mixer settings.
+
+### Atmosphere overrides (API level 11, experimental render)
+
+`render::set_atmosphere(Some(&Atmosphere))` overrides optional sky/fog/cloud
+RGB colours, fog distances, star brightness and cloud opacity for the current
+dimension. Unset fields keep vanilla values. The first running owner wins.
+Transitions interpolate smoothly from the last drawn values over 0..10 seconds.
+Clearing the override, disabling/crashing the mod, leaving the dimension or
+returning to the title screen restores the native environment. The API does
+not change server weather, light propagation, mob spawning or other gameplay.
+Invalid values leave the previous configuration intact. Fog distances stay
+finite and ordered, colours are 24-bit RGB and brightness/opacity are 0..1.
