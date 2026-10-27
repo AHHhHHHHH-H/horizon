@@ -104,6 +104,7 @@ pub(super) fn acts_on_player(e: &MobEvent) -> bool {
             }
             | MobEvent::EffectPlayer { .. }
             | MobEvent::AxolotlSupportPlayer
+            | MobEvent::ParrotToShoulder { .. }
     )
 }
 
