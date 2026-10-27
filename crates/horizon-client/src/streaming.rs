@@ -69,12 +69,12 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     fn is_decorated(&self, _proto: &Proto) -> bool {
         false
     }
-    /// What to save of a proto chunk dropped before it became final.
     /// A decorated proto chunk's blocks as a column, to light a finished
     /// neighbour against (vanilla lights with neighbours at FEATURES).
     fn light_view(&self, _proto: &Proto) -> Option<Chunk> {
         None
     }
+    /// What to save of a proto chunk dropped before it became final.
     fn saved_proto(&self, _proto: &Proto) -> Option<crate::save::SavedProto> {
         None
     }
@@ -794,17 +794,34 @@ impl Streaming {
     /// that will not finish (past the area), its decorated proto chunk, as
     /// vanilla lights its last FULL ring against neighbours at FEATURES.
     fn light_region(&self, world: &World, x: i32, z: i32) -> Option<Box<Region>> {
+        let neighbour = |dx: usize, dz: usize| (x + dx as i32 - 1, z + dz as i32 - 1);
+        let stand_in = |n: (i32, i32)| {
+            !world.chunks.contains_key(&n)
+                && !self.in_range(n.0, n.1, 1)
+                && self.decorated.contains(&n)
+        };
+        // Every neighbour is there before any proto becomes a column: a
+        // column is built on the main thread, and a missing neighbour retries.
+        let ready = (0..3).all(|dz| {
+            (0..3).all(|dx| {
+                let n = neighbour(dx, dz);
+                world.chunks.contains_key(&n)
+                    || (stand_in(n) && matches!(self.protos.get(&n), Some(Some(_))))
+            })
+        });
+        if !ready {
+            return None;
+        }
         let mut region: Region = Default::default();
         for dz in 0..3 {
             for dx in 0..3 {
-                let n = (x + dx as i32 - 1, z + dz as i32 - 1);
+                let n = neighbour(dx, dz);
                 region[dz][dx] = Some(match world.chunks.get(&n) {
                     Some(chunk) => chunk.clone(),
-                    None if !self.in_range(n.0, n.1, 1) && self.decorated.contains(&n) => {
+                    None => {
                         let proto = self.protos.get(&n)?.as_ref()?;
                         Arc::new((self.light_view)(proto)?)
                     }
-                    None => return None,
                 });
             }
         }
