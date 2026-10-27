@@ -108,6 +108,7 @@ impl Mod for Guest {
             "render_shake",
             "particles",
             "configured_particles",
+            "colored_lights",
             "sample_block",
             "local_sound",
             "atmosphere",
@@ -540,6 +541,35 @@ impl Mod for Guest {
                         .filter(|_| game::sample_block(xyz[0], xyz[1], xyz[2]).is_some())
                         .count();
                     chat::show(&format!("samples {count}"));
+                }
+            }
+            "colored_lights" => {
+                if args == "clear" {
+                    chat::show(&format!("{:?}", render::set_colored_lights(&[])));
+                    return Ok(None);
+                }
+                let p = game::get_player();
+                let mut l = render::ColoredLight {
+                    x: p.as_ref().map_or(0.0, |p| p.x),
+                    y: p.as_ref().map_or(0.0, |p| p.y),
+                    z: p.as_ref().map_or(0.0, |p| p.z),
+                    color: 0xFF0000,
+                    radius: 4.0,
+                    intensity: 0.5,
+                };
+                match args {
+                    "far" => l.x += 33.0,
+                    "nan" => l.radius = f32::NAN,
+                    "color" => l.color = 0x1000000,
+                    "intensity" => l.intensity = 2.0,
+                    _ => {}
+                }
+                chat::show(&format!(
+                    "{:?}",
+                    render::set_colored_lights(&vec![l; if args == "many" { 9 } else { 1 }])
+                ));
+                if args == "panic" {
+                    panic!("after colored lights");
                 }
             }
             "configured_particles" => {

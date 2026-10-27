@@ -278,6 +278,12 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
+    pub(super) fn mod_colored_lights(
+        &self,
+        _camera: glam::DVec3,
+    ) -> Vec<horizon_client::dynamic_light::Colored> {
+        Vec::new()
+    }
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
@@ -433,6 +439,26 @@ impl Game<'_> {
         if running != wanted {
             self.start_mods();
         }
+    }
+    pub(super) fn mod_colored_lights(
+        &self,
+        camera: glam::DVec3,
+    ) -> Vec<horizon_client::dynamic_light::Colored> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        let sources = self
+            .mods
+            .mods
+            .colored_lights()
+            .filter(|l| {
+                self.world.chunks.contains_key(&(
+                    (l.x.floor() as i32).div_euclid(16),
+                    (l.z.floor() as i32).div_euclid(16),
+                ))
+            })
+            .map(|l| ([l.x, l.y, l.z], l.color, l.radius, l.intensity));
+        horizon_client::dynamic_light::select_colored(sources, camera)
     }
     /// What mods read this tick (or frame, for mods with a `frame` hook): the
     /// server's players as they were at the last tick's end.

@@ -1403,6 +1403,38 @@ fn configured_particles_validate_parameters_and_share_vanilla_request_quota() {
 }
 
 #[test]
+fn colored_lights_validate_atomically_and_follow_owner_and_dimension() {
+    fn said(mods: &mut Mods, command: &str) -> Vec<String> {
+        assert!(mods.command(command));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(said(&mut mods, "colored_lights")[0].contains("no world"));
+    mods.set_snapshot(player());
+    assert_eq!(said(&mut mods, "colored_lights"), ["Ok(())"]);
+    assert_eq!(mods.colored_lights().count(), 1);
+    for bad in ["far", "nan", "color", "intensity", "many"] {
+        assert!(said(&mut mods, &format!("colored_lights {bad}"))[0].starts_with("Err"));
+        assert_eq!(mods.colored_lights().count(), 1);
+    }
+    assert_eq!(said(&mut mods, "colored_lights clear"), ["Ok(())"]);
+    assert_eq!(mods.colored_lights().count(), 0);
+    said(&mut mods, "colored_lights");
+    let mut next = player();
+    next.player.as_mut().unwrap().dimension = "minecraft:the_nether".into();
+    mods.set_snapshot(next);
+    assert_eq!(mods.colored_lights().count(), 0);
+    said(&mut mods, "colored_lights panic");
+    assert_eq!(mods.colored_lights().count(), 0);
+}
+
+#[test]
 fn world_particles_share_a_global_tick_budget_across_drains() {
     let folder = mods_dir().join("particle-budget");
     std::fs::create_dir_all(&folder).unwrap();

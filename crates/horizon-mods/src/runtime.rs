@@ -81,10 +81,10 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    AmbientParticle, Atmosphere as ModAtmosphere, ConfiguredParticle, Corner as RenderCorner,
-    FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape, Minimap as ModMinimap,
-    Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape, TextShape,
-    WorldParticle, Zoom as ModZoom,
+    AmbientParticle, Atmosphere as ModAtmosphere, ColoredLight, ConfiguredParticle,
+    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
+    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
+    TextShape, WorldParticle, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -450,6 +450,7 @@ struct State {
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
     atmosphere: Option<(String, ModAtmosphere)>,
+    colored_lights: Vec<ColoredLight>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -660,6 +661,7 @@ impl Mods {
             minimap: None,
             far_terrain: None,
             atmosphere: None,
+            colored_lights: Vec::new(),
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
@@ -759,6 +761,7 @@ impl Mods {
                     let state = run.store.data_mut();
                     state.world_events.clear();
                     state.atmosphere = None;
+                    state.colored_lights.clear();
                     state.snapshot = self.snapshot.clone();
                 }
             }
@@ -1038,6 +1041,13 @@ impl Mods {
             .filter_map(|e| e.run.as_ref())
             .filter_map(|run| run.store.data().atmosphere.as_ref())
             .find_map(|(d, value)| (d == dimension).then_some(value))
+    }
+    /// Live owners only, in stable install order; bounded to eight per owner.
+    pub fn colored_lights(&self) -> impl Iterator<Item = &ColoredLight> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().colored_lights)
     }
     pub fn wants_world_events(&self) -> bool {
         self.entries
@@ -2037,6 +2047,31 @@ fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
 }
 
 impl render::Host for State {
+    fn set_colored_lights(&mut self, lights: Vec<ColoredLight>) -> Result<(), String> {
+        if lights.is_empty() {
+            self.colored_lights.clear();
+            return Ok(());
+        }
+        let player = self.snapshot.player.as_ref().ok_or("no world is open")?;
+        if lights.len() > 8
+            || lights.iter().any(|p| {
+                ![p.x, p.y, p.z].into_iter().all(f64::is_finite)
+                    || (p.x - player.x).powi(2)
+                        + (p.y - player.y).powi(2)
+                        + (p.z - player.z).powi(2)
+                        > 1024.0
+                    || p.color > 0xFFFFFF
+                    || !p.radius.is_finite()
+                    || !(0.25..=16.0).contains(&p.radius)
+                    || !p.intensity.is_finite()
+                    || !(0.0..=1.0).contains(&p.intensity)
+            })
+        {
+            return Err("invalid light count, position, color, radius or intensity".into());
+        }
+        self.colored_lights = lights;
+        Ok(())
+    }
     fn emit_configured_particles(&mut self, particles: Vec<ConfiguredParticle>) -> u32 {
         let Some(player) = &self.snapshot.player else {
             return 0;
