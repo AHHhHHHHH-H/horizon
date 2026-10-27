@@ -32,6 +32,7 @@ pub mod enderman;
 pub mod equine;
 pub mod farm;
 pub mod finalize;
+pub mod frog;
 pub mod gear;
 pub mod goals;
 pub mod golem;
@@ -814,6 +815,8 @@ pub struct Extra {
     pub bee: Option<Box<bee::Bee>>,
     /// An armadillo's state and scare brain.
     pub armadillo: armadillo::State,
+    /// A frog's brain memories and tongue target.
+    pub frog: frog::State,
 }
 #[derive(Clone, Debug)]
 pub struct Mob {
@@ -1306,6 +1309,8 @@ pub struct Seen {
     pub target: Option<Who>,
     pub health: f32,
     pub variant: u8,
+    /// A slime's or magma cube's size.
+    pub size: i32,
     /// Dye colour (sheep).
     pub color: u8,
     /// A villager's claimed job site and bed.
@@ -1405,6 +1410,7 @@ impl Mob {
             target: m.ai.target,
             health: m.health,
             variant: m.extra.variant,
+            size: m.extra.size,
             color: m.extra.color,
             job: villager.then_some(m.extra.home).flatten(),
             bed: villager.then_some(m.extra.bed).flatten(),
