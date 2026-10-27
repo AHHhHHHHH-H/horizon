@@ -1760,6 +1760,7 @@ impl Game<'_> {
             return;
         }
         self.tick_phase();
+        // Steering towards the phase's fly target.
         let Some(d) = self.dragon.as_mut() else {
             return;
         };
