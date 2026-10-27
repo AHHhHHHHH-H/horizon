@@ -742,7 +742,7 @@ impl LevelAccess for GameLevel<'_> {
         &self,
         pos: BlockPos,
         state: BlockStateId,
-        _direction: Direction,
+        direction: Direction,
     ) -> i32 {
         if let Some(s) = self.registry.state(state)
             && s.name == "minecraft:detector_rail"
@@ -773,6 +773,11 @@ impl LevelAccess for GameLevel<'_> {
             };
         }
         if let Some(signal) = books::lectern_signal(self.world, pos) {
+            return signal;
+        }
+        if let Some(signal) =
+            machines::shelf_signal(self.world, self.registry, state, pos, direction)
+        {
             return signal;
         }
         machines::container_signal(self.world, self.behaviours, self.items, self.registry, pos)
