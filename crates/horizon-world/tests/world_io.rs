@@ -138,6 +138,29 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
     assert_eq!(sectors(&dir.region()), 9);
 }
 
+/// A slot written and then cleared in one batch stays clear, even when it had
+/// no original record and its planned sectors are reused by another chunk.
+#[test]
+fn a_write_cleared_in_the_same_batch_leaves_no_record() {
+    let dir = Directory::new();
+    let (a, b) = (ChunkPos::new(-32, 0), ChunkPos::new(-31, 0));
+    let (first, second) = (record(100), record(100));
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region
+        .write_batch(&[(a, Some(&first)), (a, None), (b, Some(&second))], 7)
+        .unwrap();
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    assert!(
+        reader.read(a).unwrap().is_none(),
+        "a cleared slot must not keep its planned offset"
+    );
+    assert_eq!(
+        reader.read(b).unwrap().unwrap().compressed,
+        second.compressed
+    );
+}
+
 #[test]
 fn failed_writer_cannot_commit_and_removes_its_own_external_files() {
     let dir = Directory::new();
