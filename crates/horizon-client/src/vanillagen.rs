@@ -226,28 +226,7 @@ impl VanillaTerrain {
             .map(|(id, start, _, _)| (Arc::from(id), (start.x, start.z)))
             .collect();
         out.structure_starts = chunk.own_starts();
-        let mut values = Box::new([0u32; 4096]);
-        for si in 0..SECTIONS as i32 {
-            let base = MIN_Y + si * 16;
-            if base + 16 <= lo || base >= hi {
-                continue;
-            }
-            values.fill(0);
-            let mut any = false;
-            for y in base.max(lo)..(base + 16).min(hi) {
-                for z in 0..16 {
-                    for x in 0..16 {
-                        let id = chunk.block(bx + x, y, bz + z).0;
-                        values[((y & 15) << 8 | z << 4 | x) as usize] = id;
-                        any |= id != 0;
-                    }
-                }
-            }
-            if any {
-                Arc::make_mut(&mut out.sections[si as usize]).blocks =
-                    Section::from_blocks(&values);
-            }
-        }
+        self.copy_blocks(chunk, &mut out);
         // Ticks the features scheduled (leaves reshaped at a tree's edge,
         // fluids of lakes and springs) run once the chunk is live, as
         // LevelChunk takes over ProtoChunk's ticks.
@@ -295,6 +274,46 @@ impl VanillaTerrain {
             Arc::make_mut(&mut out.sections[si as usize]).biomes =
                 PalettedContainer::from_values(BIOME_STRATEGY, &cells);
         }
+        out
+    }
+    /// `column`'s block copy alone.
+    fn copy_blocks(&self, chunk: &ProtoChunk, out: &mut Chunk) {
+        let pos = chunk.position();
+        let (bx, bz) = (pos.x * 16, pos.z * 16);
+        let (lo, hi) = (
+            chunk.terrain.min_y().max(MIN_Y),
+            (chunk.terrain.min_y() + chunk.terrain.height()).min(MIN_Y + HEIGHT),
+        );
+        let mut values = Box::new([0u32; 4096]);
+        for si in 0..SECTIONS as i32 {
+            let base = MIN_Y + si * 16;
+            if base + 16 <= lo || base >= hi {
+                continue;
+            }
+            values.fill(0);
+            let mut any = false;
+            for y in base.max(lo)..(base + 16).min(hi) {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        let id = chunk.block(bx + x, y, bz + z).0;
+                        values[((y & 15) << 8 | z << 4 | x) as usize] = id;
+                        any |= id != 0;
+                    }
+                }
+            }
+            if any {
+                Arc::make_mut(&mut out.sections[si as usize]).blocks =
+                    Section::from_blocks(&values);
+            }
+        }
+    }
+    /// A proto chunk's blocks as a column, for lighting a finished neighbour:
+    /// biomes stay at the section default and ticks, structures, postprocessing
+    /// and block entities are skipped. Never mesh or save this.
+    fn light_column(&self, chunk: &ProtoChunk) -> Chunk {
+        let pos = chunk.position();
+        let mut out = Chunk::empty(pos.x, pos.z);
+        self.copy_blocks(chunk, &mut out);
         out
     }
     /// The structure starts owned by a chunk (cached by the generator).
@@ -507,7 +526,7 @@ impl ChunkGenerator for VanillaTerrain {
     }
     fn light_view(&self, proto: &Proto) -> Option<Chunk> {
         match proto.downcast_ref::<VanillaProto>() {
-            Some(VanillaProto::Ready(chunk)) => Some(self.column(chunk)),
+            Some(VanillaProto::Ready(chunk)) => Some(self.light_column(chunk)),
             _ => None,
         }
     }
