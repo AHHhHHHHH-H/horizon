@@ -19,6 +19,7 @@ use horizon_world::{
         generator::{
             GeneratorData, GeneratorWorker, OverworldGenerator, ProtoChunk, SurfaceSample,
         },
+        structure::legacy::PieceRandom,
         terrain::PreLightChunkStage,
     },
 };
@@ -46,6 +47,8 @@ pub struct VanillaTerrain {
     block_entity_types: Vec<Option<&'static str>>,
     seed: i64,
     dimension: String,
+    /// The world preset the generator was built from.
+    preset: String,
     /// When the last proto chunk was generated, in milliseconds since
     /// `created`: the ring search waits for a pause in generation.
     last_proto: std::sync::atomic::AtomicU64,
@@ -114,13 +117,21 @@ impl VanillaTerrain {
                 .unwrap_or(0),
         }
     }
+    /// The overworld of the `minecraft:normal` world preset.
     pub fn new(
         dir: &Path,
         registry: &'static BlockRegistry,
         biomes: &Biomes,
         seed: i64,
     ) -> crate::Result<Self> {
-        Self::for_dimension(dir, registry, biomes, seed, "minecraft:overworld")
+        Self::for_dimension(
+            dir,
+            registry,
+            biomes,
+            seed,
+            "minecraft:overworld",
+            "minecraft:normal",
+        )
     }
     pub fn for_dimension(
         dir: &Path,
@@ -128,18 +139,20 @@ impl VanillaTerrain {
         biomes: &Biomes,
         seed: i64,
         dimension: &str,
+        preset: &str,
     ) -> crate::Result<Self> {
-        Self::for_world(dir, registry, biomes, seed, dimension, true)
+        Self::for_world(dir, registry, biomes, seed, dimension, preset, true)
     }
     /// A dimension of a world whose `generate_structures` is `structures`
     /// (`ChunkGenerator.createStructures` and `findNearestMapStructure` do
-    /// nothing without).
+    /// nothing without) and whose world preset is `preset`.
     pub fn for_world(
         dir: &Path,
         registry: &'static BlockRegistry,
         biomes: &Biomes,
         seed: i64,
         dimension: &str,
+        preset: &str,
         structures: bool,
     ) -> crate::Result<Self> {
         let data: Arc<GeneratorData> = shared_data(dir, registry)?;
@@ -148,8 +161,7 @@ impl VanillaTerrain {
             .iter()
             .map(|name| biomes.id(name))
             .collect();
-        let generator =
-            OverworldGenerator::for_world(data, seed, "minecraft:normal", dimension, structures)?;
+        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
         let unsupported = generator.unsupported_features();
         if !unsupported.is_empty() {
             log::warn!(
@@ -200,6 +212,7 @@ impl VanillaTerrain {
             block_entity_types,
             seed,
             dimension: dimension.to_owned(),
+            preset: preset.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
         })
@@ -208,6 +221,24 @@ impl VanillaTerrain {
     /// mobs are finalized with.
     pub fn set_spawn_conditions(&self, difficulty: u8, day_time: i64) {
         self.structure_mobs.set_conditions(difficulty, day_time);
+    }
+    /// The random a chunk's generation steps draw from (`WorldGenRegion`).
+    pub fn region_random(&self, cx: i32, cz: i32) -> Box<dyn PieceRandom> {
+        self.generator.region_random(ChunkPos::new(cx, cz))
+    }
+    /// A mob chunk generation spawns, as the chunk saves it
+    /// (`StructureMobFinalizer::spawn_generated`).
+    pub fn spawn_generated(
+        &self,
+        kind: &str,
+        position: horizon_core::geometry::Vec3,
+        yaw: f32,
+        biome: &str,
+        random: &mut dyn PieceRandom,
+        group: &mut Option<crate::mobs::finalize::Group>,
+    ) -> Option<horizon_world::nbt::Compound> {
+        self.structure_mobs
+            .spawn_generated(kind, position, yaw, biome, random, group)
     }
     /// A proto chunk's blocks, biomes, scheduled ticks and post-processing
     /// marks as a column.
@@ -629,7 +660,7 @@ impl ChunkGenerator for VanillaTerrain {
             crate::structure_blocks::block_entities(&chunk, self.loot.as_deref());
         out.block_entities = block_entities;
         // The block entities Horizon does not model (decorated pots with their
-        // sherds and loot table, brushable blocks) stay as placed, like a
+        // sherds and loot table) stay as placed, like a
         // loaded chunk's.
         let mut unmodelled: Vec<Tag> = chunk
             .block_entities

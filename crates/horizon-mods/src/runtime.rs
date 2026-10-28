@@ -121,12 +121,63 @@ const QUIET_PER_CALL: usize = 256;
 pub const RAYCAST_MAX: f32 = 1024.0;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
-/// Total bytes a mod's `storage` may hold on disk, across all its keys.
-const STORAGE_QUOTA: u64 = 4 << 20;
-/// Distinct keys a mod's `storage` may hold: `STORAGE_QUOTA` alone doesn't
-/// bound a flood of zero- or near-zero-byte files (each still a file name,
-/// a directory entry and an inode).
-const STORAGE_MAX_KEYS: usize = 64;
+/// What capability `storage` may hold for one mod: its saved state, not its
+/// resources (those are the `.hmod`'s `assets/` and `data/`). Server owners
+/// change it in `server.toml` (`[mods]`), which sets [`StorageQuota::ENV`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageQuota {
+    /// Bytes on disk, across all the mod's keys.
+    pub bytes: u64,
+    /// Distinct keys: `bytes` alone doesn't bound a flood of zero- or
+    /// near-zero-byte files (each still a file name, a directory entry and
+    /// an inode).
+    pub files: usize,
+}
+impl Default for StorageQuota {
+    fn default() -> Self {
+        Self {
+            bytes: 16 << 20,
+            files: 256,
+        }
+    }
+}
+impl StorageQuota {
+    /// The variable a game reads its quota from: `<MiB>,<files>`.
+    pub const ENV: &str = "HORIZON_MOD_STORAGE";
+    /// The most an owner may set: 1 GiB and 65,536 keys per mod.
+    const MAX_MIB: u64 = 1024;
+    const MAX_FILES: usize = 65_536;
+
+    /// `<MiB>,<files>`, as [`StorageQuota::ENV`] holds it.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let bad = || format!("{text:?} is not <MiB>,<files>, like 16,256");
+        let (mib, files) = text.split_once(',').ok_or_else(bad)?;
+        let mib: u64 = mib.trim().parse().map_err(|_| bad())?;
+        let files: usize = files.trim().parse().map_err(|_| bad())?;
+        if !(1..=Self::MAX_MIB).contains(&mib) || !(1..=Self::MAX_FILES).contains(&files) {
+            return Err(format!(
+                "{text:?}: 1 to {} MiB and 1 to {} files",
+                Self::MAX_MIB,
+                Self::MAX_FILES
+            ));
+        }
+        Ok(Self {
+            bytes: mib << 20,
+            files,
+        })
+    }
+    /// The quota [`StorageQuota::ENV`] sets, else the default; a malformed
+    /// value is logged and the default kept.
+    pub fn from_env() -> Self {
+        match std::env::var(Self::ENV) {
+            Ok(text) => Self::parse(&text).unwrap_or_else(|e| {
+                log::warn!("Horizon: {}: {e}; mods keep the default storage", Self::ENV);
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
+    }
+}
 /// Bytes `storage::set` may write across one hook call: fuel bounds a
 /// mod's CPU time per call, not the time a synchronous disk write takes, so
 /// a cheap-in-fuel loop replacing one key with large payloads needs its own
@@ -420,6 +471,7 @@ struct State {
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
+    quota: StorageQuota,
     /// Bytes `storage::set` may still write before this hook call ends
     /// (reset per call in [`Mods::call`]): fuel bounds a mod's CPU time but
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
@@ -441,6 +493,8 @@ pub struct Mods {
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
+    /// What each mod's `storage` may hold.
+    quota: StorageQuota,
 }
 
 impl Mods {
@@ -479,17 +533,28 @@ impl Mods {
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        Mods::load_for(Runs::Both, paths, enabled, reserved)
+        Mods::load_for(
+            Runs::Both,
+            StorageQuota::default(),
+            paths,
+            enabled,
+            reserved,
+        )
     }
-    /// [`Mods::load`], starting only the mods `runs` says this game runs; the
-    /// others that are on are [`Status::Elsewhere`].
+    /// [`Mods::load`], starting only the mods `runs` says this game runs (the
+    /// others that are on are [`Status::Elsewhere`]), each with `quota` of
+    /// storage.
     pub fn load_for(
         runs: Runs,
+        quota: StorageQuota,
         paths: &[PathBuf],
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        let mut mods = Mods::default();
+        let mut mods = Mods {
+            quota,
+            ..Mods::default()
+        };
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -587,6 +652,7 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let quota = self.quota;
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -622,6 +688,7 @@ impl Mods {
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
+            quota,
             storage_budget: STORAGE_WRITE_BUDGET,
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
@@ -1934,18 +2001,19 @@ impl storage::Host for State {
             .flatten()
             .filter(|e| e.file_name().to_string_lossy() != key)
             .collect();
-        if existing.len() >= STORAGE_MAX_KEYS {
-            return Err(format!("would hold over {STORAGE_MAX_KEYS} keys"));
+        let quota = self.quota;
+        if existing.len() >= quota.files {
+            return Err(format!("would hold over {} keys", quota.files));
         }
         let used: u64 = existing
             .iter()
             .filter_map(|e| e.metadata().ok())
             .map(|m| m.len())
             .sum();
-        if used + len > STORAGE_QUOTA {
+        if used + len > quota.bytes {
             return Err(format!(
                 "would use over {} MiB of storage",
-                STORAGE_QUOTA >> 20
+                quota.bytes >> 20
             ));
         }
         std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
@@ -1968,4 +2036,19 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageQuota;
+
+    #[test]
+    fn storage_quota_reads_mib_and_files() {
+        let quota = StorageQuota::parse("64, 1024").unwrap();
+        assert_eq!((quota.bytes, quota.files), (64 << 20, 1024));
+        assert_eq!(StorageQuota::default().bytes, 16 << 20);
+        for bad in ["16", "16,", "x,256", "0,256", "16,0", "2048,256"] {
+            assert!(StorageQuota::parse(bad).is_err(), "{bad}");
+        }
+    }
 }

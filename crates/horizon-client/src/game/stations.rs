@@ -1755,13 +1755,11 @@ impl Game<'_> {
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
         let mut lines = Vec::new();
         if !nested && display.name_visible(self.screen == Screen::Creative) {
-            // `getStyledHoverName`: a custom name is italic.
-            let name = self.stack_hover_name(stack);
-            let name = if stack.custom_name().is_some() {
-                horizon_client::text::Text::literal(name).italic()
-            } else {
-                horizon_client::text::Text::legacy(&name)
-            };
+            // `getStyledHoverName`: a custom name keeps its own styles and is
+            // italic where it does not say otherwise.
+            let name = horizon_client::item_tooltip::custom_name_text(stack).unwrap_or_else(|| {
+                horizon_client::text::Text::legacy(&self.stack_hover_name(stack))
+            });
             lines.push((name, color));
         }
         let translate = |k: &str| self.pack.names.display_get(k);

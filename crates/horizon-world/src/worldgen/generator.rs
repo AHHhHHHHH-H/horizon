@@ -693,17 +693,24 @@ const CACHE_LIMIT: usize = 16384;
 /// Coordinates only equal missing neighbour keys. Weak entries retain no
 /// computed values across eviction or explicit invalidation. Only one work
 /// lock may be held at a time; finish shared prerequisites before acquiring it.
-pub(super) struct ChunkWork(Mutex<HashMap<(i32, i32), std::sync::Weak<Mutex<()>>>>);
+/// Sharded by key: every worker asks for the locks of the same neighbourhoods.
+pub(super) struct ChunkWork(Box<[Mutex<HashMap<(i32, i32), std::sync::Weak<Mutex<()>>>>]>);
+const WORK_SHARDS: usize = 64;
+/// The shard of `key` among `shards` (a power of two).
+pub(super) fn shard_of(key: (i32, i32), shards: usize) -> usize {
+    let hash = (key.0 as u32).wrapping_mul(0x9E37_79B9) ^ (key.1 as u32).wrapping_mul(0x85EB_CA6B);
+    (hash >> (32 - shards.trailing_zeros())) as usize
+}
 impl ChunkWork {
     pub(super) fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self((0..WORK_SHARDS).map(|_| Mutex::default()).collect())
     }
     pub(super) fn at(&self, key: (i32, i32)) -> Arc<Mutex<()>> {
-        let mut work = self.0.lock().unwrap();
+        let mut work = self.0[shard_of(key, WORK_SHARDS)].lock().unwrap();
         if let Some(lock) = work.get(&key).and_then(std::sync::Weak::upgrade) {
             return lock;
         }
-        if work.len() >= 4096 {
+        if work.len() >= 4096 / WORK_SHARDS {
             // Keep every active builder/waiter on its original lock, including
             // when the result cache was cleared while it was in flight.
             work.retain(|_, lock| lock.strong_count() > 0);
@@ -1271,6 +1278,17 @@ impl<R: RandomSource> Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
 {
+    /// WorldGenRegion's level random, positioned at the center chunk.
+    fn region_random_at(&self, center: ChunkPos) -> R {
+        self.root
+            .from_hash_of("minecraft:worldgen_region_random")
+            .fork_positional()
+            .at(BlockPos::new(
+                center.x.wrapping_shl(4),
+                0,
+                center.z.wrapping_shl(4),
+            ))
+    }
     /// ChunkGenerator.getBaseHeight: the first free Y above the noise column
     /// (with aquifers, without terrain adaptation) for a heightmap type.
     fn base_height(&self, x: i32, z: i32, kind: HeightmapType) -> i32 {
@@ -1681,6 +1699,8 @@ trait SeededPipeline: Send + Sync {
         region: &mut [ProtoChunk; 9],
     ) -> Result<DecorateStats, GeneratorError>;
     fn data(&self) -> &Arc<GeneratorData>;
+    /// The exact `end_island_decorated` origins in a chunk, without terrain.
+    fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]>;
     fn sea_level(&self) -> i32;
     fn surface_sample(
         &self,
@@ -1713,6 +1733,7 @@ trait SeededPipeline: Send + Sync {
     fn forget_structure_starts(&self);
     fn ring_positions(&self, worker: &mut WorkerState, set: &str) -> Option<Vec<ChunkPos>>;
     fn spawn_position(&self) -> Result<[i32; 2], GeneratorError>;
+    fn region_random(&self, center: ChunkPos) -> Box<dyn super::structure::legacy::PieceRandom>;
     fn locate(
         &self,
         worker: &mut WorkerState,
@@ -1751,17 +1772,7 @@ where
     ) -> Result<DecorateStats, GeneratorError> {
         match &self.decoration {
             Some(decoration) => {
-                let center = region[4].position();
-                // WorldGenRegion's level random, positioned at the center chunk.
-                let mut random = self
-                    .root
-                    .from_hash_of("minecraft:worldgen_region_random")
-                    .fork_positional()
-                    .at(BlockPos::new(
-                        center.x.wrapping_shl(4),
-                        0,
-                        center.z.wrapping_shl(4),
-                    ));
+                let mut random = self.region_random_at(region[4].position());
                 decoration.decorate(
                     &self.data,
                     self.seed,
@@ -1777,6 +1788,20 @@ where
     }
     fn data(&self) -> &Arc<GeneratorData> {
         &self.data
+    }
+    fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]> {
+        let Some(decoration) = &self.decoration else {
+            return Vec::new();
+        };
+        let mut resolver = self.source.resolver(
+            &self.climate,
+            self.router.get(RouterField::Erosion).as_ref(),
+        );
+        let mut context = SamplerContext::cached();
+        decoration.origins(self.seed, chunk, |position| {
+            let quart = [position[0] >> 2, position[1] >> 2, position[2] >> 2];
+            resolver.sample(&mut context, quart).ok() == Some("minecraft:small_end_islands")
+        })
     }
     fn sea_level(&self) -> i32 {
         self.settings.sea_level
@@ -1835,6 +1860,9 @@ where
             },
             set,
         )
+    }
+    fn region_random(&self, center: ChunkPos) -> Box<dyn super::structure::legacy::PieceRandom> {
+        Box::new(self.region_random_at(center))
     }
     fn spawn_position(&self) -> Result<[i32; 2], GeneratorError> {
         if let Some(position) = self.spawn_position.get() {
@@ -2111,6 +2139,8 @@ where
                         }
                     }
                 }
+                // Void cells still need a biome: the End's small islands are
+                // features over the void, and their biome is 2D there.
                 let biome = if let Some((height, _)) = top {
                     let name = resolver
                         .sample(
@@ -2448,6 +2478,10 @@ impl OverworldGenerator {
     pub fn data(&self) -> &Arc<GeneratorData> {
         self.pipeline.data()
     }
+    /// The exact `end_island_decorated` origins in a chunk, without terrain.
+    pub fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]> {
+        self.pipeline.end_island_origins(chunk)
+    }
     pub fn sea_level(&self) -> i32 {
         self.pipeline.sea_level()
     }
@@ -2465,6 +2499,14 @@ impl OverworldGenerator {
     /// NoiseSpawnFinder.findSpawnPosition: the column `origin` is the chunk of.
     pub fn spawn_position(&self) -> Result<[i32; 2], GeneratorError> {
         self.pipeline.spawn_position()
+    }
+    /// A new `WorldGenRegion` random centred on the chunk: what its generation
+    /// steps draw from (`level.getRandom()`).
+    pub fn region_random(
+        &self,
+        center: ChunkPos,
+    ) -> Box<dyn super::structure::legacy::PieceRandom> {
+        self.pipeline.region_random(center)
     }
     /// Create per-thread state. Workers are cheap; keep one per thread.
     pub fn worker(&self) -> GeneratorWorker {
@@ -3121,7 +3163,13 @@ mod tests {
         for x in 1..8192 {
             drop(work.at((x, 1)));
         }
-        assert!(work.0.lock().unwrap().len() <= 4096);
+        assert!(
+            work.0
+                .iter()
+                .map(|s| s.lock().unwrap().len())
+                .sum::<usize>()
+                <= 4096
+        );
         assert!(Arc::ptr_eq(&same, &work.at((0, 0))));
         let weak = Arc::downgrade(&first);
         drop(held);
@@ -3224,5 +3272,57 @@ mod tests {
         for (first, hit) in fresh.iter().zip(&again) {
             assert!(Arc::ptr_eq(first, hit));
         }
+    }
+
+    /// The resources the worldgen tests read.
+    fn test_root() -> std::path::PathBuf {
+        std::env::var_os("HORIZON_TEST_RESOURCES")
+            .or_else(|| std::env::var_os("HORIZON_RESOURCES"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3")
+            })
+    }
+    /// The block registry the worldgen bundle needs. `GeneratorData` keeps it
+    /// for as long as the generator lives, so it is shared, not freed.
+    static TEST_REGISTRY: std::sync::LazyLock<BlockRegistry> = std::sync::LazyLock::new(|| {
+        crate::level::data::load_registry(&test_root()).expect("registry")
+    });
+
+    /// The world presets with their own noise settings generate the terrain
+    /// those settings describe: the amplified and large-biome presets are not
+    /// the overworld's terrain under another name.
+    #[test]
+    fn world_presets_use_their_own_noise_settings() {
+        let root = test_root();
+        if !root.join("worldgen/world_presets.json").exists() {
+            eprintln!("skipping: no worldgen bundle at {}", root.display());
+            return;
+        }
+        let data =
+            GeneratorData::load(&root.join("worldgen"), &TEST_REGISTRY).expect("worldgen data");
+        let surface = |preset: &str| {
+            let generator = OverworldGenerator::for_world(
+                data.clone(),
+                1234,
+                preset,
+                "minecraft:overworld",
+                false,
+            )
+            .expect("generator");
+            let mut worker = generator.worker();
+            (0..32)
+                .map(|i| {
+                    worker
+                        .surface_sample(i * 137, i * 91)
+                        .expect("surface")
+                        .height
+                })
+                .collect::<Vec<_>>()
+        };
+        let normal = surface("minecraft:normal");
+        assert!(normal.iter().all(|height| (0..384).contains(height)));
+        assert_ne!(normal, surface("minecraft:amplified"));
+        assert_ne!(normal, surface("minecraft:large_biomes"));
     }
 }

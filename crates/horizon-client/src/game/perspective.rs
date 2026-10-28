@@ -322,6 +322,12 @@ impl Game<'_> {
             self.player_model = Some(Mob::new(0, kind, p.position, self.yaw));
         }
         let crouching = p.pose == Pose::Crouching;
+        let scale_id = p.attributes.catalog().id("minecraft:scale");
+        let player_scale = p
+            .attributes
+            .instances()
+            .find(|(_, key, _)| Some(key.attribute()) == scale_id)
+            .map_or(1.0, |(_, _, value)| value.clone().value()) as f32;
         let (position, flying) = (p.position, p.flying || p.fall_flying);
         let (fall_flying, fly_ticks, velocity) = (p.fall_flying, p.fall_fly_ticks, p.velocity);
         let spinning = p.auto_spin_attack_ticks > 0;
@@ -346,6 +352,7 @@ impl Game<'_> {
             (self.swing.attack_hand() == horizon_client::first_person::Hand::Main)
                 != self.settings.main_hand_left
         });
+        let swing_stab = self.swing.current.is_some_and(|s| s.animation.kind == 2);
         // LivingEntity.isVisuallySwimming and Entity.isInWater.
         let visually_swimming =
             p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying);
@@ -357,9 +364,16 @@ impl Game<'_> {
         let off = self.offhand.as_ref().map(|s| s.item.clone());
         let riding = self.riding.is_some();
         let hurt = p.health.hurt_animation_time;
+        // LivingEntity.getBedOrientation: the model lies in the bed as
+        // another player's does (`villager::sleep_pose`).
+        let bed = self.sleeping.map_or(0, |head| self.bed_facing(head));
         let Some(m) = self.player_model.as_mut() else {
             return;
         };
+        m.extra.ints[1] = bed;
+        m.extra
+            .synced_attributes
+            .insert("minecraft:scale".into(), f64::from(player_scale));
         let at = Vec3::new(
             position.x,
             position.y - if crouching { 0.125 } else { 0.0 },
@@ -420,6 +434,7 @@ impl Game<'_> {
         m.extra.fall_fly_ticks = fly_ticks;
         m.extra.auto_spin_attack = spinning;
         m.extra.main_hand_left = self.settings.main_hand_left;
+        m.extra.hidden_model_parts = !self.settings.file.model_customisation() & 0x7F;
         m.extra.using_item = using;
         m.extra.using_off_hand = using_off_hand;
         m.extra.blocking = blocking;
@@ -428,13 +443,18 @@ impl Game<'_> {
         m.extra.elytra.tick(fall_flying, crouching, velocity);
         m.extra.swim.tick(visually_swimming, in_water);
         m.extra.swing_right_arm = swing_right_arm;
+        m.extra.swing_stab = swing_stab;
         m.hurt_time = hurt;
     }
+    /// `LevelExtractor`'s skip of the camera entity: the player's own body
+    /// is drawn unless the camera is in first person, or while it sleeps.
+    pub(super) fn own_body_in_view(&self) -> bool {
+        !self.camera_type.first_person() || self.sleeping.is_some()
+    }
     /// Whether the player's own model shows in the world view.
-    fn player_model_shown(&self) -> bool {
+    pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (!self.camera_type.first_person() || self.pack_shadow_casters.1)
-            && self.sleeping.is_none()
+        (self.own_body_in_view() || self.pack_shadow_casters.1)
             && !self.spectator()
             && self.potions.effects.get("minecraft:invisibility").is_none()
             && self

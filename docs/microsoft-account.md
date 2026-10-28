@@ -139,6 +139,30 @@ machine can read it in the process list. Horizon keeps it out of argv:
 - Without a session file the game is offline as today (`--name`, offline UUID).
 - `HORIZON_SESSION_FILE` is the same as `--session-file` (development and harnesses).
 
+## The account for ViaProxy (`play --server-version`)
+
+A server in another version is joined through ViaProxy, and ViaProxy is the one that logs in to an
+online-mode server, so it needs the player's account. The launcher gives it the account that
+plays, for that run only:
+
+- A `saves.json` is written to a folder of its own (`viaproxy/run-<port>/` in the launcher's data),
+  mode 0700 with the file 0600, ViaProxy runs from there, and the folder is deleted when the game
+  ends. A folder left by a killed launcher is removed at the next start (its port is not listening
+  and it is older than two minutes).
+- Only the Minecraft access token and the profile are real. The Microsoft refresh token is Horizon's
+  Azure app's, ViaProxy could not renew it, and it stays in the keychain. The other steps of the
+  chain ViaProxy's format asks for are empty and expired; ViaProxy 3.4.14 never touches them while
+  the Minecraft token is valid. The token comes from the owner gate (`launch`), renewed if it had
+  under an hour left, so it lasts about a day; the join happens once, at connect.
+- Signed chat (1.19+): the player certificates are left out and ViaProxy fetches them from the
+  Minecraft services with the token.
+- Order: the launcher's account, else an account added in ViaProxy's own Accounts tab, else none
+  (offline-mode servers only). `HORIZON_VIA_AUTH=none|account|launcher` overrides: `account` is
+  ViaProxy's own, `launcher` never falls back to it.
+
+Limits: a reconnect after the token ran out (a session longer than a day) fails to join; start
+again. An offline name playing means no account to give.
+
 ## Online-mode login (game)
 
 Vanilla's `ClientHandshakePacketListenerImpl.handleHello`, `Crypt` and authlib's

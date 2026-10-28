@@ -39,8 +39,9 @@ mod entity_outline;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
-    TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY,
+    ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
+    TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
+    WATER_MASK_OVERLAY,
 };
 
 /// Window.getAppropriateLineWidth, in framebuffer pixels.
@@ -349,6 +350,14 @@ struct BorderUniform {
     color: [f32; 4],
     offset: [f32; 4],
 }
+/// A frame to save as a PNG: F2's screenshot, an agent's `game_screenshot`,
+/// or the icon the Select World list shows.
+pub struct ScreenshotRequest {
+    pub path: PathBuf,
+    /// `GameRenderer.takeAutoScreenshot`: centre-crop the frame to a square
+    /// and average it down to this size. `None` saves the frame as drawn.
+    pub size: Option<[u32; 2]>,
+}
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -407,6 +416,7 @@ pub struct Renderer {
     crosshair_group: wgpu::BindGroup,
     crosshair_globals: wgpu::Buffer,
     entity_pipeline: wgpu::RenderPipeline,
+    hdr_mark_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
     crumbling_pipeline: wgpu::RenderPipeline,
     shadow_blob_pipeline: wgpu::RenderPipeline,
@@ -425,6 +435,7 @@ pub struct Renderer {
     lightning_pipeline: wgpu::RenderPipeline,
     lightning: lightning::Renderer,
     see_through_pipeline: wgpu::RenderPipeline,
+    text_polygon_offset_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
@@ -539,6 +550,9 @@ pub struct Renderer {
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// The marker file of an HDR output that has not presented a frame yet
+    /// (`graphics::HDR_MARKER`).
+    hdr_marker: Option<std::path::PathBuf>,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -567,8 +581,8 @@ pub struct Renderer {
     pub section_draw_calls: usize,
     pub uploaded_bytes: u64,
     started: Instant,
-    /// Write the next presented frame to this PNG path (control socket).
-    pub screenshot: Option<PathBuf>,
+    /// The next frame to write to a PNG path (control socket, F2, world icon).
+    pub screenshot: Option<ScreenshotRequest>,
     /// Outcome of the last screenshot: frame size, or the error.
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
     /// Brightness option (lightmap gamma), 0..1.
@@ -762,8 +776,14 @@ fn mip_chain(
 /// pass is also what passes each draw's first instance to shaders reading
 /// `instance_index`, and DirectX 12 is the fallback, where working matters
 /// more than CPU time.
-fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
+fn instance_descriptor(
+    backends: wgpu::Backends,
+    window: Option<&Arc<Window>>,
+) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if let Some(window) = window {
+        descriptor = descriptor.with_display_handle(Box::new(WindowDisplay(window.clone())));
+    }
     descriptor.backends = backends.with_env();
     let dx12 = cfg!(windows) && descriptor.backends.contains(wgpu::Backends::DX12);
     if !cfg!(debug_assertions) && !dx12 {
@@ -772,6 +792,21 @@ fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
             .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
     descriptor.with_env()
+}
+/// The window's display connection, so the OpenGL backend creates its EGL
+/// display from the X11 or Wayland connection the window lives on. Without
+/// one, wgpu-hal falls back to `EGL_MESA_platform_surfaceless`, whose configs
+/// cannot present to a window; the backend then reports the surface as
+/// incompatible and the game has no OpenGL to fall back to (`gl not
+/// compatible with provided surface`).
+#[derive(Debug, Clone)]
+struct WindowDisplay(Arc<Window>);
+impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+        wgpu::rwh::HasDisplayHandle::display_handle(&*self.0)
+    }
 }
 /// The backends to open a device on, each tried in turn until one gives a
 /// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
@@ -887,7 +922,7 @@ async fn open_device(
         if attempt > 0 {
             log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
         }
-        let instance = wgpu::Instance::new(instance_descriptor(backends));
+        let instance = wgpu::Instance::new(instance_descriptor(backends, Some(window)));
         let surface = if offscreen {
             None
         } else {
@@ -1125,7 +1160,14 @@ impl Renderer {
                 ));
             }
             surface.configure(&device, &config);
-            (config, caps.present_modes.clone(), hdr::output(&caps))
+            let hdr_output = hdr::output(&caps);
+            if previous.is_none() {
+                log::info!(
+                    "Horizon renderer: HDR output {}",
+                    hdr_output.map_or("not offered by this display", hdr::Output::name)
+                );
+            }
+            (config, caps.present_modes.clone(), hdr_output)
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
@@ -1966,7 +2008,7 @@ impl Renderer {
         // ulps covers that spread at any resolution while staying far below
         // the 0.001 a model's feet sit higher, so shadows never bleed onto
         // the feet.
-        let shadow_blob_pipeline = entity_pipeline(
+        let shadow_blob_pipeline = entity_pipeline_with(
             "Entity shadows",
             None,
             false,
@@ -1978,6 +2020,8 @@ impl Renderer {
             },
             alpha_blend,
             false,
+            "fs_entity_shadow",
+            wgpu::ColorWrites::ALL,
         );
         // RenderPipelines.ITEM_TRANSLUCENT: blended, depth tested. Drawn before
         // translucent terrain, it cannot write depth: the water behind a
@@ -2011,6 +2055,21 @@ impl Renderer {
             alpha_blend,
             false,
         );
+        // RenderPipelines.TEXT_POLYGON_OFFSET: a text display's text and
+        // background win against the surface they lie on (bias 1, 10).
+        let text_polygon_offset_pipeline = entity_pipeline(
+            "Polygon offset text",
+            None,
+            true,
+            wgpu::CompareFunction::GreaterEqual,
+            wgpu::DepthBiasState {
+                constant: 10,
+                slope_scale: 1.0,
+                clamp: 0.0,
+            },
+            alpha_blend,
+            false,
+        );
         let entity_pipeline = entity_pipeline(
             "Entities",
             None,
@@ -2040,6 +2099,18 @@ impl Renderer {
             false,
             "fs_energy_swirl",
             wgpu::ColorWrites::ALL,
+        );
+        // HDR output's mark on light-giving particles (entity.wgsl fs_hdr_mark).
+        let hdr_mark_pipeline = entity_pipeline_with(
+            "HDR particle mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
         );
         // Attribute 7: 6 is the entity vertex buffer's glint UV.
         let lightning_attributes = wgpu::vertex_attr_array![7=>Float32x3];
@@ -2552,6 +2623,7 @@ impl Renderer {
             crosshair_group,
             crosshair_globals,
             entity_pipeline,
+            hdr_mark_pipeline,
             weather,
             crumbling_pipeline,
             shadow_blob_pipeline,
@@ -2568,6 +2640,7 @@ impl Renderer {
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
             see_through_pipeline,
+            text_polygon_offset_pipeline,
             celestial_pipeline,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
@@ -2644,6 +2717,7 @@ impl Renderer {
             world_post,
             hdr: None,
             hdr_output,
+            hdr_marker: None,
             pack_post: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
@@ -3200,14 +3274,43 @@ impl Renderer {
         }
         config
     }
+    /// The F3 screen's HDR line while the setting is on: the swapchain HDR presents to with
+    /// its paper white and peak, or that the surface offers none.
+    pub fn hdr_line(&self) -> String {
+        match &self.hdr {
+            Some(hdr) => format!(
+                "HDR: {}, {}/{} nits",
+                hdr.output.name(),
+                hdr.paper_white.round(),
+                hdr.peak.round()
+            ),
+            None => "HDR: not offered by this display".into(),
+        }
+    }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
-    pub fn set_hdr(&mut self, on: bool, paper_white: f32, peak: f32) {
+    pub fn set_hdr(&mut self, on: bool, paper_white: f32, peak: f32, marker: &std::path::Path) {
         let output = self.hdr_output.filter(|_| on && self.surface.is_some());
         if output.is_some() != self.hdr.is_some() {
+            // If the game dies before HDR output shows a frame, the marker is still there at
+            // the next start, which then comes up with HDR off.
+            if output.is_some() {
+                let _ = std::fs::write(marker, "HDR output was being switched on\n");
+                self.hdr_marker = Some(marker.to_owned());
+            } else if let Some(marker) = self.hdr_marker.take() {
+                let _ = std::fs::remove_file(marker);
+            }
             let format = self.config.format.remove_srgb_suffix();
             self.hdr = output.map(|output| hdr::Hdr::new(&self.device, format, output));
             self.configure_surface();
+            match output {
+                Some(output) => log::info!(
+                    "Horizon renderer: HDR on: {} ({:?}), {paper_white}/{peak} nits",
+                    output.name(),
+                    output.format()
+                ),
+                None => log::info!("Horizon renderer: HDR off"),
+            }
         }
         if let Some(hdr) = &mut self.hdr
             && (hdr.paper_white, hdr.peak) != (paper_white, peak)
@@ -4194,6 +4297,7 @@ impl Renderer {
         }
         let [
             entity_quads,
+            text_quads,
             crumbling_quads,
             translucent_crumbling_quads,
             water_mask_quads,
@@ -4206,6 +4310,7 @@ impl Renderer {
             .update(entities, frame.additive, frame.hand, frame.see_through);
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
+            + text_quads
             + crumbling_quads
             + translucent_crumbling_quads
             + water_mask_quads
@@ -4741,6 +4846,17 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                if self.hdr.is_some() {
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                }
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            if text_quads > 0 {
+                pass.set_pipeline(&self.text_polygon_offset_pipeline);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(0..text_quads * 6, (entity_quads * 4) as i32, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if translucent_item_quads > 0 {
@@ -4762,7 +4878,11 @@ impl Renderer {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..crumbling_quads * 6, (entity_quads * 4) as i32, 0..1);
+                pass.draw_indexed(
+                    0..crumbling_quads * 6,
+                    ((entity_quads + text_quads) * 4) as i32,
+                    0..1,
+                );
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if shadow_quads > 0 {
@@ -4788,7 +4908,8 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..water_mask_quads * 6,
-                    ((entity_quads + crumbling_quads + translucent_crumbling_quads) * 4) as i32,
+                    ((entity_quads + text_quads + crumbling_quads + translucent_crumbling_quads)
+                        * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -4806,6 +4927,7 @@ impl Renderer {
                 pass.draw_indexed(
                     0..swirl_quads * 6,
                     ((entity_quads
+                        + text_quads
                         + crumbling_quads
                         + translucent_crumbling_quads
                         + water_mask_quads)
@@ -4899,7 +5021,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_crumbling_quads * 6,
-                    ((entity_quads + crumbling_quads) * 4) as i32,
+                    ((entity_quads + text_quads + crumbling_quads) * 4) as i32,
                     0..1,
                 );
             }
@@ -5072,6 +5194,13 @@ impl Renderer {
             &self.entity_group,
             &self.indices,
         );
+        // The world icon grabs here: after the level and the hand, before
+        // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
+        // runs right after `renderLevel`).
+        let readback = self
+            .screenshot
+            .take_if(|request| request.size.is_some())
+            .and_then(|request| self.take_readback(request, &mut encoder, &target_texture));
         if !frame.screen.is_empty() {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &view_target,
@@ -5175,18 +5304,10 @@ impl Renderer {
                 (&view_target, self.config.format.remove_srgb_suffix()),
             );
         }
-        let readback = self.screenshot.take().and_then(|path| {
-            // The copy and PNG writer both assume 8-bit pixels; a float surface would make
-            // the row stride too small for the copy and abort in validation.
-            if self.config.format.block_copy_size(None) == Some(4) {
-                Some((path, self.copy_frame(&mut encoder, &target_texture)))
-            } else {
-                self.screenshot_result = Some(Err(format!(
-                    "screenshots need a 32-bit surface format, not {:?}",
-                    self.config.format
-                )));
-                None
-            }
+        let readback = readback.or_else(|| {
+            self.screenshot
+                .take()
+                .and_then(|request| self.take_readback(request, &mut encoder, &target_texture))
         });
         self.uploads.finish(&encoder);
         if has_section_copies {
@@ -5213,9 +5334,9 @@ impl Renderer {
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
         }
-        if let Some((path, buffer)) = readback {
+        if let Some((request, buffer)) = readback {
             self.screenshot_result = Some(
-                self.write_screenshot(&path, &buffer)
+                self.write_screenshot(&request, &buffer)
                     .map_err(|e| e.to_string()),
             );
         }
@@ -5231,6 +5352,12 @@ impl Renderer {
                 startup_step(format_args!("presenting the first frame"));
             }
             self.queue.present(surface_frame);
+            if self.hdr.is_some()
+                && let Some(marker) = self.hdr_marker.take()
+            {
+                let _ = std::fs::remove_file(marker);
+                log::info!("Horizon renderer: HDR output presented its first frame");
+            }
             if reconfigure && let Some(surface) = &self.surface {
                 Self::configure(
                     &self.device,
@@ -5263,6 +5390,26 @@ impl Renderer {
     fn padded_row(&self) -> u32 {
         (self.config.width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
     }
+    /// Take a screenshot request: queue the frame's copy, or report why the
+    /// frame cannot be read back.
+    fn take_readback(
+        &mut self,
+        request: ScreenshotRequest,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+    ) -> Option<(ScreenshotRequest, wgpu::Buffer)> {
+        // The copy and PNG writer both assume 8-bit pixels; a float surface would make
+        // the row stride too small for the copy and abort in validation.
+        if self.config.format.block_copy_size(None) == Some(4) {
+            Some((request, self.copy_frame(encoder, texture)))
+        } else {
+            self.screenshot_result = Some(Err(format!(
+                "screenshots need a 32-bit surface format, not {:?}",
+                self.config.format
+            )));
+            None
+        }
+    }
     fn copy_frame(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5292,7 +5439,11 @@ impl Renderer {
         );
         buffer
     }
-    fn write_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<[u32; 2]> {
+    fn write_screenshot(
+        &self,
+        request: &ScreenshotRequest,
+        buffer: &wgpu::Buffer,
+    ) -> Result<[u32; 2]> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
             return Err("this surface does not support frame readback".into());
         }
@@ -5330,8 +5481,18 @@ impl Renderer {
             }
         }
         buffer.unmap();
+        // NativeImage.resizeSubRectTo on takeAutoScreenshot's grab: the icon
+        // is the frame's centre square averaged down to its size.
+        let (width, height, pixels) = match request.size {
+            Some(size) => (
+                size[0],
+                size[1],
+                square_downscale(&pixels, self.config.width, self.config.height, size),
+            ),
+            None => (self.config.width, self.config.height, pixels),
+        };
         let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(path)?),
+            std::io::BufWriter::new(std::fs::File::create(&request.path)?),
             width,
             height,
         );
@@ -5340,6 +5501,42 @@ impl Renderer {
         encoder.write_header()?.write_image_data(&pixels)?;
         Ok([width, height])
     }
+}
+/// Centre-crop the frame to a square and average it down to `size`.
+pub(crate) fn square_downscale(pixels: &[u8], width: u32, height: u32, size: [u32; 2]) -> Vec<u8> {
+    let (side, cx, cy) = if width > height {
+        (height, (width - height) / 2, 0)
+    } else {
+        (width, 0, (height - width) / 2)
+    };
+    let [tw, th] = size;
+    let mut out = vec![0u8; (tw * th * 4) as usize];
+    for ty in 0..th {
+        let y0 = cy + ty * side / th;
+        let y1 = cy + (ty + 1) * side / th;
+        for tx in 0..tw {
+            let x0 = cx + tx * side / tw;
+            let x1 = cx + (tx + 1) * side / tw;
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = ((y * width + x) * 4) as usize;
+                    r += u32::from(pixels[p]);
+                    g += u32::from(pixels[p + 1]);
+                    b += u32::from(pixels[p + 2]);
+                }
+            }
+            let count = (x1 - x0) * (y1 - y0);
+            let o = ((ty * tw + tx) * 4) as usize;
+            out[o..o + 4].copy_from_slice(&[
+                (r / count) as u8,
+                (g / count) as u8,
+                (b / count) as u8,
+                255,
+            ]);
+        }
+    }
+    out
 }
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
@@ -5496,6 +5693,7 @@ mod tests {
             (11, 2),
             (15, 10),
             (7, 3),
+            (35, 11),
             (4, 4),
             (12, 7),
         ]
@@ -5505,7 +5703,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8));
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 0, 0, 1, 1, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
@@ -5513,7 +5711,7 @@ mod tests {
                 .iter()
                 .map(|q| q[0].light)
                 .collect::<Vec<_>>(),
-            [0, 1, 3, 4, 2, 7, 9, 10, 5, 6, 8]
+            [0, 1, 3, 4, 11, 2, 7, 9, 10, 5, 6, 8]
         );
     }
     #[test]
@@ -5684,7 +5882,7 @@ mod tests {
     #[test]
     fn indirect_draws_are_validated_only_in_debug_builds_and_on_directx_12() {
         let validated = |backends| {
-            super::instance_descriptor(backends)
+            super::instance_descriptor(backends, None)
                 .flags
                 .contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
         };

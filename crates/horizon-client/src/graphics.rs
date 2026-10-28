@@ -5,6 +5,9 @@
 use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
+/// Written beside it before HDR output is switched on and removed once the first HDR frame is
+/// presented. Found at the next start, it means HDR output took the game down, so HDR starts off.
+pub const HDR_MARKER: &str = "horizon-hdr-pending";
 
 /// Simple-level presets. `Custom` leaves every option as the player set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -93,9 +96,9 @@ impl PresentMode {
     }
 }
 
-/// The graphics API the renderer runs on. Only Windows has a choice: the
-/// other systems always use their one backend (Vulkan on Linux, Metal on
-/// macOS). Applies at the next start.
+/// The graphics API the renderer runs on. Windows picks Vulkan, DirectX 12 or
+/// OpenGL; Linux picks Vulkan or OpenGL; macOS always uses its one backend
+/// (Metal). Applies at the next start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GraphicsApi {
     /// Vulkan, then DirectX 12 (Windows), then OpenGL when neither has a surface, adapter or device.
@@ -113,6 +116,26 @@ impl GraphicsApi {
         GraphicsApi::Dx12,
         GraphicsApi::OpenGl,
     ];
+    /// The APIs this system offers, in the order the setting cycles through
+    /// them: DirectX 12 is Windows' third backend, and macOS has no choice.
+    pub fn choices() -> &'static [GraphicsApi] {
+        const WINDOWS: [GraphicsApi; 4] = [
+            GraphicsApi::Auto,
+            GraphicsApi::Vulkan,
+            GraphicsApi::Dx12,
+            GraphicsApi::OpenGl,
+        ];
+        const LINUX: [GraphicsApi; 3] =
+            [GraphicsApi::Auto, GraphicsApi::Vulkan, GraphicsApi::OpenGl];
+        const MACOS: [GraphicsApi; 1] = [GraphicsApi::Auto];
+        if cfg!(windows) {
+            &WINDOWS
+        } else if cfg!(target_os = "macos") {
+            &MACOS
+        } else {
+            &LINUX
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "auto",
@@ -310,9 +333,17 @@ fn bool_text(v: bool) -> &'static str {
 }
 impl Graphics {
     pub fn load(dir: &Path) -> Self {
-        fs::read_to_string(dir.join(FILE))
+        let mut g: Self = fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
+            g.hdr = false;
+            g.save(dir);
+            log::warn!(
+                "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
+            );
+        }
+        g
     }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();
@@ -476,6 +507,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_api_choice_matches_the_system() {
+        let choices = GraphicsApi::choices();
+        if cfg!(windows) {
+            assert_eq!(choices, GraphicsApi::ALL);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(choices, [GraphicsApi::Auto]);
+        } else {
+            assert_eq!(
+                choices,
+                [GraphicsApi::Auto, GraphicsApi::Vulkan, GraphicsApi::OpenGl]
+            );
+        }
+    }
+
+    #[test]
     fn round_trips() {
         let g = Graphics {
             preset: Preset::Balanced,
@@ -585,6 +631,21 @@ mod tests {
             let mut s = crate::settings::Settings::default();
             apply_preset(preset, &mut s);
             assert_eq!(s.horizon.far_detail, FarDetail::Full, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn every_preset_keeps_the_animated_textures_on() {
+        // The Performance preset used to turn them off, which froze the fire,
+        // the water, the lava and the portals (#2064).
+        assert!(Graphics::default().animated_textures);
+        for preset in Preset::ALL {
+            let mut s = crate::settings::Settings::default();
+            apply_preset(preset, &mut s);
+            assert!(
+                s.horizon.animated_textures,
+                "{preset:?} turned the animated textures off"
+            );
         }
     }
 

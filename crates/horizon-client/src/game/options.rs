@@ -19,11 +19,17 @@ pub(super) const CONTROL_HELP: &[&str] = &[
 impl Game<'_> {
     pub(super) fn save_title_options(&mut self) {
         if let Some(title) = &self.title
-            && title.last_server != self.settings.file.string("lastServer")
+            && (title.last_server != self.settings.file.string("lastServer")
+                || title.skip_multiplayer_warning
+                    != self.settings.file.bool("skipMultiplayerWarning"))
         {
             self.settings.file.set(
                 "lastServer",
                 horizon_client::options_file::V::Str(title.last_server.clone()),
+            );
+            self.settings.file.set(
+                "skipMultiplayerWarning",
+                horizon_client::options_file::V::Bool(title.skip_multiplayer_warning),
             );
             self.settings.save(&Self::options_path());
         }
@@ -200,6 +206,9 @@ impl Game<'_> {
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
                 }
+                Event::SliderDrag => {
+                    self.apply_settings();
+                }
                 Event::CopyAgentDetails => {
                     use horizon_client::clipboard::Clipboard;
                     let text = self.agent_details();
@@ -273,6 +282,7 @@ impl Game<'_> {
                 s.horizon.hdr,
                 s.horizon.hdr_paper_white as f32,
                 s.horizon.hdr_peak as f32,
+                &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
         }
         // Window.updateFullscreenIfChanged: only a changed option asks the

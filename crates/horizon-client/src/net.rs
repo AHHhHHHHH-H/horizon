@@ -6,7 +6,7 @@
 //! Online-mode servers need the Microsoft account the launcher signed in
 //! (crate::auth): the login joins the server through the session service and
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
-use crate::auth::AuthSession;
+use crate::{auth::AuthSession, net_gaps::Gap};
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnReader, ConnWriter, Connection, Counters},
@@ -50,7 +50,12 @@ pub enum Event {
     },
     Packet(Box<play::Clientbound>),
     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
-    DecodeError(String),
+    DecodeError {
+        id: i32,
+        error: String,
+    },
+    /// An unmodeled packet outside play. Keep only its phase and id, never its payload.
+    ProtocolGap(Gap),
     /// The server sent us back to configuration and finished it again.
     Reconfigured(Arc<Dynamic>),
     /// ClientboundResourcePackPushPacket, in configuration or in play.
@@ -61,6 +66,10 @@ pub enum Event {
     ShowDialog(horizon_world::nbt::Tag),
     /// `clear_dialog` in configuration.
     ClearDialog,
+    /// ClientboundCodeOfConductPacket: the game shows it and answers with
+    /// `Session::accept_code_of_conduct` or a disconnect; until then the
+    /// server waits in configuration.
+    CodeOfConduct(String),
     /// `ClientboundTransferPacket`: the server sent us to another address.
     /// The connection ends right after; the game reconnects there with the
     /// stored cookies.
@@ -262,13 +271,25 @@ impl Session {
             w.shutdown();
         }
     }
+    /// ServerboundAcceptCodeOfConductPacket, sent in configuration.
+    pub fn accept_code_of_conduct(&self) {
+        let mut writer = self.writer.lock().unwrap();
+        if let Some(w) = writer.as_mut()
+            && w.send(&cfg::Serverbound::AcceptCodeOfConduct(Empty).encode())
+                .is_err()
+        {
+            w.shutdown();
+        }
+    }
+    /// `Connection.disconnect`: the socket closes and the game goes on at once.
+    /// The reader thread is left to end on its own: on Windows a shutdown
+    /// doesn't wake a read already waiting, so joining it held the window until
+    /// the server dropped the connection, many seconds later.
     pub fn disconnect(&mut self) {
         if let Some(w) = self.writer.lock().unwrap().take() {
             w.shutdown();
         }
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        drop(self.thread.take());
     }
 }
 impl Drop for Session {
@@ -483,7 +504,9 @@ fn run(
                 )
                 .map_err(e)?;
             }
-            login::Clientbound::Unknown(..) => {}
+            login::Clientbound::Unknown(id, _) => {
+                let _ = send.send(Event::ProtocolGap(Gap::LoginPacket(id)));
+            }
         }
     };
     status(send, "Joining world...");
@@ -529,7 +552,10 @@ fn receive_play(
                     id,
                 )
                 .unwrap_or("?");
-                let _ = send.send(Event::DecodeError(format!("{name}: {err}")));
+                let _ = send.send(Event::DecodeError {
+                    id,
+                    error: format!("{name}: {err}"),
+                });
                 continue;
             }
         };
@@ -623,8 +649,9 @@ fn configure(
                 }))?
             }
             cfg::Clientbound::RegistryData(r) => registries.add(r),
-            cfg::Clientbound::CodeOfConduct(_) => {
-                reply(cfg::Serverbound::AcceptCodeOfConduct(Empty))?
+            cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
+            cfg::Clientbound::CodeOfConduct(c) => {
+                let _ = send.send(Event::CodeOfConduct(c.text));
             }
             // The game answers: it may prompt the player first.
             cfg::Clientbound::ResourcePackPush(p) => {
@@ -669,7 +696,15 @@ fn configure(
                 configuring.store(false, Ordering::Relaxed);
                 return Ok(registries);
             }
-            _ => {}
+            cfg::Clientbound::Unknown(id, _) => {
+                let _ = send.send(Event::ProtocolGap(Gap::ConfigurationPacket(id)));
+            }
+            packet @ (cfg::Clientbound::ResetChat(_)
+            | cfg::Clientbound::UpdateEnabledFeatures(_)) => {
+                let _ = send.send(Event::ProtocolGap(Gap::UnhandledConfigurationPacket(
+                    packet.id(),
+                )));
+            }
         }
     }
 }
@@ -784,6 +819,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsupported_configuration_packets_are_reported_without_losing_the_next_packet() {
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = Arc::new(Mutex::new(Some(writer)));
+        let (send, events) = channel();
+        let thread_writer = writer.clone();
+        let thread = std::thread::spawn(move || {
+            configure(
+                &mut reader,
+                &thread_writer,
+                &AtomicBool::new(true),
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+            )
+        });
+        let mut server = Connection::local(server);
+        server
+            .send(&cfg::Clientbound::Unknown(i32::MAX, vec![1, 2, 3]).encode())
+            .unwrap();
+        server
+            .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
+            .unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            cfg::Serverbound::decode(id, &body).unwrap(),
+            cfg::Serverbound::FinishConfiguration(Empty)
+        );
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Event::ProtocolGap(Gap::ConfigurationPacket(i32::MAX))
+        ));
+        assert!(thread.join().unwrap().is_ok());
+    }
+
+    #[test]
     fn pings_wait_behind_teleports_but_keepalives_do_not_wait_for_the_game() {
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
@@ -801,6 +872,8 @@ mod tests {
             )
         });
         let mut server = Connection::local(server);
+        let unknown = play::Clientbound::Unknown(i32::MAX, vec![1, 2, 3]);
+        server.send(&unknown.encode()).unwrap();
         let teleport = play::Clientbound::PlayerPosition(play::PlayerPosition {
             teleport: 42,
             position: [10.0, 64.0, 10.0],
@@ -824,6 +897,7 @@ mod tests {
             play::Serverbound::KeepAlive(cfg::KeepAlive { id: 9 })
         );
         let timeout = Duration::from_secs(5);
+        assert!(matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p) if *p == unknown));
         assert!(
             matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p) if *p == teleport)
         );

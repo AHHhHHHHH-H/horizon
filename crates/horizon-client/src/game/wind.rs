@@ -121,6 +121,13 @@ impl Game<'_> {
                     );
                 }
             }
+            // An ender dragon part takes the point of damage too; a crystal is
+            // not hit (`AbstractWindCharge.canHitEntity`).
+            Who::Mob(id) if id >= super::dragon::SPECIAL => {
+                if id < super::dragon::SPECIAL + 8 {
+                    self.hit_special(id, 1.0, p.owner == Some(Who::Player), false);
+                }
+            }
             Who::Mob(id) => {
                 let source = Damage {
                     kind: DamageKind::Thrown,
@@ -405,6 +412,7 @@ impl Game<'_> {
         // fall; any other burst ends the grace of the last impulse.
         let at = p.position;
         p.impulse.set_ignore_fall_damage(wind_charge, Some(at));
+        self.adv.marks.blast = Some(([at.x, at.y, at.z], wind_charge));
         Some(push)
     }
     /// The burst: knockback, the blocks that react, the gust and the sound.
@@ -570,11 +578,15 @@ impl Game<'_> {
         poses.yrot("wind", age * 16.0_f32.to_radians());
         let base = glam::Mat4::from_translation(at)
             * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
-        horizon_client::mobs::render::draw(
+        horizon_client::mobs::render::draw_scrolled(
             model,
             base,
             &poses,
             [r.u0, r.v0, r.u1, r.v1],
+            horizon_client::mobs::render::scroll_offset(
+                age,
+                horizon_client::mobs::render::WIND_CHARGE_SCROLL,
+            ),
             0xFFFF_FFFF,
             light,
             0,
