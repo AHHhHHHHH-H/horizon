@@ -110,6 +110,62 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
         _ => Ok(()),
     }
 }
+/// Positioned I/O: a read needs no file cursor, so concurrent readers of one
+/// region do not serialize.
+#[cfg(unix)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+#[cfg(unix)]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(buf, offset)
+}
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_write(buf, offset) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                buf = &buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buf)
+}
+#[cfg(not(any(unix, windows)))]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(buf)
+}
 fn force_in(used: &mut Vec<bool>, start: usize, count: usize) {
     if used.len() < start + count {
         used.resize(start + count, false);
@@ -374,13 +430,7 @@ impl RegionFile {
             }
         }
         for (start, data) in runs {
-            let written = self
-                .file
-                .seek(SeekFrom::Start((start * SECTOR) as u64))
-                .and_then(|_| self.file.write_all(&data));
-            if let Err(e) = written {
-                return Err(e);
-            }
+            write_all_at(&self.file, &data, (start * SECTOR) as u64)?;
         }
         let mut header = [0; HEADER];
         for i in 0..1024 {
@@ -388,8 +438,7 @@ impl RegionFile {
             header[SECTOR + i * 4..SECTOR + i * 4 + 4]
                 .copy_from_slice(&timestamps[i].to_be_bytes());
         }
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&header)?;
+        write_all_at(&self.file, &header, 0)?;
         self.offsets = offsets;
         self.timestamps = timestamps;
         self.used = used;
@@ -427,10 +476,12 @@ impl RegionFile {
 
     /// The header's offset and timestamp of slot `i`.
     fn write_header_entry(&mut self, i: usize) -> io::Result<()> {
-        self.file.seek(SeekFrom::Start((i * 4) as u64))?;
-        self.file.write_all(&self.offsets[i].to_be_bytes())?;
-        self.file.seek(SeekFrom::Start((SECTOR + i * 4) as u64))?;
-        self.file.write_all(&self.timestamps[i].to_be_bytes())
+        write_all_at(&self.file, &self.offsets[i].to_be_bytes(), (i * 4) as u64)?;
+        write_all_at(
+            &self.file,
+            &self.timestamps[i].to_be_bytes(),
+            (SECTOR + i * 4) as u64,
+        )
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPos, u32)> + '_ {
@@ -441,16 +492,15 @@ impl RegionFile {
             .map(|(i, _)| (position(self.position, i), self.timestamps[i]))
     }
 
-    pub fn read(&mut self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {
+    pub fn read(&self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {
         let i = slot(self.position, chunk)?;
         let offset = self.offsets[i];
         if offset == 0 {
             return Ok(None);
         }
-        self.file
-            .seek(SeekFrom::Start(u64::from(offset >> 8) * SECTOR as u64))?;
+        let start = u64::from(offset >> 8) * SECTOR as u64;
         let mut header = [0; 5];
-        self.file.read_exact(&mut header)?;
+        read_exact_at(&self.file, &mut header, start)?;
         let len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         if len < 1 || len as u64 + 4 > (u64::from(offset & 255) * SECTOR as u64) {
             return Err(invalid("invalid chunk payload length"));
@@ -471,7 +521,7 @@ impl RegionFile {
             data
         } else {
             let mut data = vec![0; len - 1];
-            self.file.read_exact(&mut data)?;
+            read_exact_at(&self.file, &mut data, start + 5)?;
             data
         };
         Ok(Some(ChunkRecord {

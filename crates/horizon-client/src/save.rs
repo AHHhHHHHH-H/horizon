@@ -40,7 +40,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -1611,7 +1611,7 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
     chunk.light_loaded = true;
 }
 
-type RegionCache = Mutex<HashMap<(i32, i32), Option<Arc<Mutex<RegionFile>>>>>;
+type RegionCache = Mutex<HashMap<(i32, i32), Option<Arc<RwLock<RegionFile>>>>>;
 /// The region file at `path` through the cache, which readers and the writer
 /// share, so a read never sees a header older than the sectors it points to.
 /// `create` makes a missing file (for a write); otherwise a missing file is
@@ -1621,7 +1621,7 @@ fn cached_region(
     key: (i32, i32),
     path: &Path,
     create: bool,
-) -> Result<Option<Arc<Mutex<RegionFile>>>> {
+) -> Result<Option<Arc<RwLock<RegionFile>>>> {
     let mut regions = cache.lock().map_err(|_| "region cache poisoned")?;
     if let Some(Some(region)) = regions.get(&key) {
         return Ok(Some(region.clone()));
@@ -1640,7 +1640,7 @@ fn cached_region(
         other => other,
     };
     let region = match region {
-        Ok(r) => Some(Arc::new(Mutex::new(r))),
+        Ok(r) => Some(Arc::new(RwLock::new(r))),
         Err(_) if !create => None,
         Err(e) => return Err(e.into()),
     };
@@ -1678,7 +1678,7 @@ fn write_region_records(
         let Some(region) = cached_region(cache, (rx, rz), &path, create)? else {
             continue;
         };
-        let mut region = region.lock().map_err(|_| "region file poisoned")?;
+        let mut region = region.write().map_err(|_| "region file poisoned")?;
         let batch: Vec<_> = list.iter().map(|(p, r)| (*p, r.as_ref())).collect();
         if region.write_batch(&batch, timestamp)? {
             region.sync()?;
@@ -1815,8 +1815,9 @@ fn read_region_record(
     let Some(region) = cached_region(cache, key, &path, false)? else {
         return Ok(None);
     };
+    // A read lock: several loaders can read one region at the same time.
     let record = region
-        .lock()
+        .read()
         .map_err(|_| "region file poisoned")?
         .read(ChunkPos::new(x, z))?;
     Ok(match record {
@@ -3660,7 +3661,7 @@ impl SaveDir {
             record.tag().map(|tag| (*tag).clone())?
         } else {
             // Far-only reads must not populate the gameplay region cache across the whole view.
-            let mut region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
+            let region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
             region
                 .read(ChunkPos::new(x, z))
                 .ok()??
@@ -4380,7 +4381,7 @@ mod tests {
             .unwrap()
             .unwrap();
         // Hold the actual region lock, rather than relying on disk speed or sleeps.
-        let blocked = region.lock().unwrap();
+        let blocked = region.write().unwrap();
         let entity = |version| Tag::compound([("version", Tag::Int(version))]);
         save.save_entities_later(vec![((1, 2), vec![entity(1)])])
             .unwrap();

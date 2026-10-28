@@ -60,7 +60,7 @@ fn external_threshold_negative_coordinates_and_timestamps_roundtrip() {
     writer.finish().unwrap();
     assert!(!dir.0.join("c.-32.0.mcc").exists());
     assert!(dir.0.join("c.-1.31.mcc").exists());
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(
         reader.chunks().collect::<Vec<_>>(),
         [(a, inline.timestamp), (b, external.timestamp)]
@@ -103,7 +103,7 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
     assert!(!region.clear(b, 7).unwrap());
     region.sync().unwrap();
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(reader.chunks().map(|(p, _)| p).collect::<Vec<_>>(), [a, c]);
     assert_eq!(
         reader.read(a).unwrap().unwrap().compressed,
@@ -122,7 +122,7 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
         .write(ChunkPos::new(-30, 0), &record(4096 - 5))
         .unwrap();
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(
         reader.read(a).unwrap().unwrap().compressed,
         record(3 * 4096 - 5).compressed
@@ -208,7 +208,7 @@ fn corrupt_allocations_are_dropped_and_bad_payloads_fail() {
         (1, 131),
     ] {
         malformed_region(&dir.region(), 513, 0, len, codec);
-        let mut reader = RegionFile::open(dir.region()).unwrap();
+        let reader = RegionFile::open(dir.region()).unwrap();
         assert!(reader.read(ChunkPos::new(-32, 0)).is_err());
     }
 }
@@ -272,6 +272,32 @@ fn chunk_storage_edit_preserves_unknown_fields_and_other_blocks() {
 }
 
 #[test]
+fn positioned_reads_share_one_region_handle() {
+    let dir = Directory::new();
+    let (a, b) = (ChunkPos::new(-32, 0), ChunkPos::new(-1, 31));
+    let payload = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region.write(a, &payload).unwrap();
+    region.write(b, &payload).unwrap();
+    region.sync().unwrap();
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    // `read` takes `&self`: several threads read one handle at once.
+    std::thread::scope(|scope| {
+        for pos in [a, b, a, b] {
+            let reader = &reader;
+            let payload = &payload;
+            scope.spawn(move || {
+                for _ in 0..100 {
+                    let got = reader.read(pos).unwrap().unwrap();
+                    assert_eq!(got.compressed, payload.compressed);
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn batch_writes_a_full_region_and_clears_with_one_header() {
     let dir = Directory::new();
     let chunks: Vec<ChunkPos> = (0..1024)
@@ -311,7 +337,7 @@ fn batch_writes_a_full_region_and_clears_with_one_header() {
     assert!(!external_file.exists());
     region.sync().unwrap();
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     for &c in &chunks {
         let got = reader.read(c).unwrap();
         if cleared.contains(&c) {
@@ -345,7 +371,7 @@ fn a_rejected_batch_leaves_the_region_unchanged() {
     let entries = [(b, Some(&saved)), (ChunkPos::new(0, 0), Some(&saved))];
     assert!(region.write_batch(&entries, 0).is_err());
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(
         reader.read(a).unwrap().unwrap().compressed,
         saved.compressed
@@ -376,7 +402,7 @@ fn benchmark_saving_into_a_full_region() {
     let start = std::time::Instant::now();
     for round in 0..rounds {
         let changed = chunks[round * 7 % 1024];
-        let mut existing = RegionFile::open(dir.region()).unwrap();
+        let existing = RegionFile::open(dir.region()).unwrap();
         let mut records = Vec::new();
         for (p, _) in existing.chunks().collect::<Vec<_>>() {
             let r = if p == changed {

@@ -357,7 +357,7 @@ fn saved_proto_block_entities_keep_their_id() {
     generator.decorate(&mut worker, &mut region);
     generator.save_protos(&region.iter().collect::<Vec<_>>());
     save.flush().unwrap();
-    let mut file = RegionFile::open(dir.join("region/r.1.0.mca")).unwrap();
+    let file = RegionFile::open(dir.join("region/r.1.0.mca")).unwrap();
     let mut suspicious = 0;
     for &(x, z) in &keys {
         let Some(record) = file

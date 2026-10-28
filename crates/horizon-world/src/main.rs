@@ -82,7 +82,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             println!("Wrote {}", args[2]);
         }
         "inspect" if args.len() == 2 => {
-            let mut region = RegionFile::open(&args[1])?;
+            let region = RegionFile::open(&args[1])?;
             let chunks: Vec<_> = region.chunks().collect();
             println!(
                 "Horizon region {},{}: {} chunks",
