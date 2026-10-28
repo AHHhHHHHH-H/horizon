@@ -6222,6 +6222,12 @@ impl Game<'_> {
             if !spectator {
                 self.draw_selected_name(&mut batch, bar_height, !self.creative);
             }
+            // The target details extra's readout (`target_info`), above the
+            // hotbar; hidden with the debug screen like the other corners.
+            if self.settings.extras.target_details {
+                let draws = self.target_details_draws(wi, hi, bar_height);
+                hud_layout::paint(&mut batch, atlas, &draws);
+            }
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
         let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);

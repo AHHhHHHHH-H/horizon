@@ -80,6 +80,15 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   blocks change within 0.3 ms a frame; the 128x128 image is recomposed only when the view moved or a tile changed, and
   uploaded into a dedicated atlas slot. With no mod showing a map, nothing runs.
 
+### Target details (`targetDetails`, default off)
+- What the crosshair is over, as a small readout centered above the hotbar:
+  the block's name, or the mob's name with its health under it, colored
+  green toward red by the fraction.
+- `targetCoordinates` (default off) adds the looked-at block or mob's block
+  coordinates as a second line.
+- The idea is ported, not a mod's code. It draws what the game already
+  picks for the block outline and attacks, so it costs nothing while off.
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection
