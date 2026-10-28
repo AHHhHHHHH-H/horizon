@@ -1307,6 +1307,17 @@ impl UiResources {
             panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
         })
     }
+    /// A game that draws nothing needs only the font, which chat and books
+    /// measure with; no GUI, block or item sprites, no map slots, no panorama.
+    pub fn server(root: &std::path::Path) -> Result<Self> {
+        Ok(Self {
+            atlas: HudAtlas::fonts(root)?,
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces {
+                size: 1,
+                pixels: [0u8; 4].repeat(6),
+            }),
+        })
+    }
 }
 /// What a resource pack reload replaces (`Minecraft.reloadResourcePacks`):
 /// block models and sprites with their meshing tables, item models,
@@ -14303,6 +14314,7 @@ fn load_resources(
     settings: &Settings,
     started: Instant,
     menu: bool,
+    visuals: bool,
     progress: &Progress,
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
@@ -14311,10 +14323,20 @@ fn load_resources(
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
+    let load_ui = |root: &std::path::Path| {
+        if visuals {
+            UiResources::load(root, vanilla_root)
+        } else {
+            UiResources::server(root)
+        }
+    };
     let mut loaded_gui = None;
     let mut ui_ready = false;
     let mut pack_error = None;
-    let ui = match UiResources::load(&root, vanilla_root) {
+    if !visuals {
+        log::info!("Horizon: server build, loading the font atlas only");
+    }
+    let ui = match load_ui(&root) {
         Ok(ui) => Some(ui),
         // Minecraft.rollbackResourcePacks: the packs' textures don't fit, start
         // with the game's own resources.
@@ -14366,7 +14388,7 @@ fn load_resources(
     let render = Arc::new(render);
     // The menu bundle must come from the same root as the world bundle.
     if !ui_ready || root != requested_root {
-        let ui = UiResources::load(&root, vanilla_root)?;
+        let ui = load_ui(&root)?;
         if menu {
             horizon_client::telemetry::mark_ui_ready();
             log::info!(
@@ -14419,7 +14441,9 @@ fn load_resources(
     log::info!("load pack tables: {:.2}s", started.elapsed().as_secs_f32());
     progress.set(4);
     if !menu {
-        horizon_client::ui::load_metadata(&root);
+        if visuals {
+            horizon_client::ui::load_metadata(&root);
+        }
         horizon_client::lang::set(horizon_client::lang::Language::load(
             &[&root],
             &settings.language,
@@ -15385,6 +15409,7 @@ pub fn run() -> Result<()> {
         &early_settings,
         started,
         false,
+        options.execution_role.is_client(),
         &Progress::new(),
         &mut |_, _| {},
     )?;
@@ -15429,6 +15454,26 @@ fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
 fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Stats) {
     *adv = Default::default();
     *stats = Default::default();
+}
+
+#[cfg(test)]
+mod server_ui_tests {
+    use super::*;
+
+    /// A server draws nothing: its bundle is the font alone, without the GUI
+    /// sprites, map slots and panorama the client's atlas packs.
+    #[test]
+    fn server_ui_has_a_font_and_no_sprites() {
+        let ui = UiResources::server(std::path::Path::new("/nonexistent")).unwrap();
+        // Only the built-in white pixel: no GUI, block, item or map sprites.
+        assert_eq!(
+            ui.atlas.sprites.keys().collect::<Vec<_>>(),
+            ["horizon/white"]
+        );
+        assert!(ui.atlas.pixels.is_empty());
+        assert_eq!(ui.panorama.size, 1);
+        assert!(ui.atlas.font.width("Horizon") > 0.0);
+    }
 }
 
 #[cfg(test)]
