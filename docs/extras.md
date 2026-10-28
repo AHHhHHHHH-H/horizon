@@ -84,7 +84,10 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
 - Past ten hearts, the HUD stops adding rows of hearts and tints the one row
   of ten instead: it shows the row of ten hearts the player is currently in,
   one color per row of ten — health first, then absorption with its own
-  colors. The idea is ported, not a mod's code.
+  colors, filling up through the colors as it regenerates. The row reads as
+  a stack: behind the current row's fill, its icons show full hearts of the
+  row below's color, and in the first row the black container (covering only
+  a half-filled icon's filled half). The idea is ported, not a mod's code.
 - The colors are the `heartColors` and `absorptionColors` lists in
   `horizon-extras.txt`, `#RRGGBB` values separated by commas, up to eight
   each. The defaults start with the heart sprite's own red and the absorbing

@@ -632,9 +632,11 @@ fn heart(
 
 /// The colored hearts extra (`heart_colors`): the one row of ten icons shows
 /// the row of ten hearts the player is currently in, tinted that row's color
-/// — health first, then absorption with its own colors. A half-filled icon's
-/// container covers only its filled half. The rows past ten hearts are the
-/// tints instead; the blink swaps the whole row to its blinking sprites.
+/// — health first, then absorption with its own colors. The row reads as a
+/// stack: behind the current row's fill, the icons show full hearts of the
+/// row below's color (in the first row, the black container, covering only a
+/// half-filled icon's filled half). The rows past ten hearts are the tints
+/// instead; the blink swaps the whole row to its blinking sprites.
 fn colored_hearts(
     i: &HealthInputs,
     rows: crate::heart_colors::Rows,
@@ -651,6 +653,28 @@ fn colored_hearts(
     // The row of ten the last filled half-heart sits in.
     let seg = (filled.max(1) - 1) / 20;
     let seg_start = seg * 20;
+    // The row below the current one, as full hearts behind the fill: the
+    // previous health or absorption color, or the last health color behind
+    // the first absorption row. None in the first health row: the black
+    // container shows there, as vanilla's.
+    let behind = {
+        let health_rows = (health_points + 19) / 20;
+        if seg == 0 {
+            None
+        } else if seg_start >= health_points {
+            if seg - (health_points + 19) / 20 > 0 {
+                let below = seg - health_rows - 1;
+                Some((true, (below as usize).min(rows.absorption as usize - 1)))
+            } else {
+                Some((
+                    false,
+                    (health_rows as usize - 1).min(rows.health as usize - 1),
+                ))
+            }
+        } else {
+            Some((false, ((seg - 1) as usize).min(rows.health as usize - 1)))
+        }
+    };
     for n in 0..10 {
         let x = x_left + n * 8;
         let mut y = y_base;
@@ -673,26 +697,11 @@ fn colored_hearts(
             }) - 1,
         ) as usize;
         let variant = usize::from(i.hardcore) * 4 + usize::from(fill == 1) * 2 + usize::from(blink);
-        let container = format!(
-            "hud/heart/container{}{}",
-            if i.hardcore { "_hardcore" } else { "" },
-            if blink { "_blinking" } else { "" }
-        );
-        if fill == 1 {
-            // The container covers only the filled half.
+        if let Some((behind_absorption, behind_color)) = behind {
+            // A full heart of the row below's color.
+            let behind_variant = usize::from(i.hardcore) * 4 + usize::from(blink);
             out.push(GuiDraw::Sprite {
-                sprite: Cow::Owned(container),
-                x,
-                y,
-                w: 5,
-                h: 9,
-                region: Some([9, 9, 0, 0]),
-                color: WHITE,
-                blend: Blend::Textured,
-            });
-        } else {
-            out.push(GuiDraw::Sprite {
-                sprite: Cow::Owned(container),
+                sprite: Cow::Owned(slot_id(behind_absorption, behind_variant, behind_color)),
                 x,
                 y,
                 w: 9,
@@ -701,6 +710,36 @@ fn colored_hearts(
                 color: WHITE,
                 blend: Blend::Textured,
             });
+        } else {
+            let container = format!(
+                "hud/heart/container{}{}",
+                if i.hardcore { "_hardcore" } else { "" },
+                if blink { "_blinking" } else { "" }
+            );
+            if fill == 1 {
+                // The container covers only the filled half.
+                out.push(GuiDraw::Sprite {
+                    sprite: Cow::Owned(container),
+                    x,
+                    y,
+                    w: 5,
+                    h: 9,
+                    region: Some([9, 9, 0, 0]),
+                    color: WHITE,
+                    blend: Blend::Textured,
+                });
+            } else {
+                out.push(GuiDraw::Sprite {
+                    sprite: Cow::Owned(container),
+                    x,
+                    y,
+                    w: 9,
+                    h: 9,
+                    region: None,
+                    color: WHITE,
+                    blend: Blend::Textured,
+                });
+            }
         }
         if fill > 0 {
             out.push(GuiDraw::Sprite {
@@ -1100,22 +1139,22 @@ mod tests {
         i.health = 30.0;
         let draws = hud.layout(&i, 400, 300);
         let s = sprites(&draws);
-        // Ten containers on one row (y_base = 261), plus the five full hearts
-        // of the second row of ten (its color's slots).
-        assert_eq!(
-            s.iter()
-                .filter(|(n, _, _)| n.starts_with("hud/heart/container"))
-                .count(),
-            10
+        // One row of ten (y_base = 261): the second health row's color on top
+        // of full hearts of the first row's color, no black containers.
+        assert!(
+            !s.iter()
+                .any(|(n, _, _)| n.starts_with("hud/heart/container"))
         );
+        let behind: Vec<_> = s
+            .iter()
+            .filter(|(n, _, _)| *n == "horizon/heart0x0")
+            .collect();
+        assert_eq!(behind.len(), 10, "the first row of health behind, full");
         let fills: Vec<_> = s
             .iter()
-            .filter(|(n, _, _)| n.starts_with("horizon/heart"))
+            .filter(|(n, _, _)| *n == "horizon/heart0x1")
             .collect();
-        assert_eq!(fills.len(), 5);
-        for (n, _, _) in &fills {
-            assert_eq!(*n, "horizon/heart0x1", "the second row of health's color");
-        }
+        assert_eq!(fills.len(), 5, "the second row's color on top");
         // One row: every heart on the same y, starting at the left edge.
         assert!(s.iter().all(|(_, _, y)| *y == 261));
         assert_eq!(s.iter().map(|(_, x, _)| *x).min(), Some(109));
@@ -1133,16 +1172,26 @@ mod tests {
         i.health = 20.0;
         i.absorption = 8.0;
         let draws = hud.layout(&i, 400, 300);
-        let fills: Vec<_> = sprites(&draws)
+        let tinted: Vec<_> = sprites(&draws)
             .into_iter()
             .filter(|(n, _, _)| n.starts_with("horizon/"))
             .collect();
-        // Four gold absorption hearts after the full health, in the
-        // absorption list's first color.
-        assert_eq!(fills.len(), 4);
-        assert!(
-            fills.iter().all(|(n, _, _)| *n == "horizon/aheart0x0"),
-            "{fills:?}"
+        // Four gold absorption hearts on full hearts of the last health
+        // color, in the absorption list's first color.
+        assert_eq!(
+            tinted
+                .iter()
+                .filter(|(n, _, _)| *n == "horizon/aheart0x0")
+                .count(),
+            4
+        );
+        assert_eq!(
+            tinted
+                .iter()
+                .filter(|(n, _, _)| *n == "horizon/heart0x0")
+                .count(),
+            10,
+            "the full health's red behind"
         );
     }
 
