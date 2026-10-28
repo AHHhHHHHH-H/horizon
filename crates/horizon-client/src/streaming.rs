@@ -5,7 +5,9 @@
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::{
     chunk::{Chunk, SECTIONS},
-    light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
+    light::{
+        LightChanges, LightTables, apply_lighting, apply_relighting_masked, light_chunk_masked,
+    },
     mesher::{MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
 };
@@ -174,7 +176,7 @@ pub enum Done {
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
     Decorated(i32, i32, Box<[Proto; 9]>),
-    Lit(i32, i32, Vec<crate::chunk::Light>, u64),
+    Lit(i32, i32, Vec<crate::chunk::Light>, u32, u64),
     Meshed(i32, i32, i32, SectionMesh, u64),
     Saved(Vec<((i32, i32), Proto)>),
 }
@@ -507,7 +509,9 @@ impl Streaming {
                                     Done::Saved(protos)
                                 }
                                 Job::Light(x, z, region, seq, sky) => {
-                                    Done::Lit(x, z, light_chunk(&borrow(&region), &light, sky), seq)
+                                    let (sections, changed) =
+                                        light_chunk_masked(&borrow(&region), &light, sky);
+                                    Done::Lit(x, z, sections, changed, seq)
                                 }
                                 Job::Mesh(x, sy, z, region, seq, settings) => {
                                     let context = shared.context.read().unwrap().clone();
@@ -905,7 +909,7 @@ impl Streaming {
                 Done::Decorated(x, z, region) => self.receive_decorated(x, z, *region),
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
-                Done::Lit(x, z, sections, seq) => {
+                Done::Lit(x, z, sections, mask, seq) => {
                     if self.lighting.get(&(x, z)) != Some(&seq) {
                         continue;
                     }
@@ -922,7 +926,7 @@ impl Streaming {
                         if first {
                             apply_lighting(chunk, sections);
                         } else {
-                            apply_relighting(chunk, sections, &mut changed);
+                            apply_relighting_masked(chunk, sections, mask, &mut changed);
                         }
                         // Saved unlit (at the edge of what was loaded), or its light
                         // changed: saved again.
