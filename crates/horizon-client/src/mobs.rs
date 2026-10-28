@@ -784,6 +784,9 @@ pub struct Extra {
     pub charged: bool,
     /// Held item ids (main hand, off hand) and head item.
     pub main_hand: Option<Arc<str>>,
+    /// The custom name of the main hand item, when it has one
+    /// (`ItemStack.hasCustomName`): the death message names the item.
+    pub main_hand_name: Option<horizon_client_core::text::Text>,
     pub off_hand: Option<Arc<str>>,
     pub head: Option<Arc<str>>,
     /// Worn armour below the head (humanoid mobs).
