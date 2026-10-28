@@ -352,6 +352,7 @@ impl Game<'_> {
             (self.swing.attack_hand() == horizon_client::first_person::Hand::Main)
                 != self.settings.main_hand_left
         });
+        let swing_stab = self.swing.current.is_some_and(|s| s.animation.kind == 2);
         // LivingEntity.isVisuallySwimming and Entity.isInWater.
         let visually_swimming =
             p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying);
@@ -441,6 +442,7 @@ impl Game<'_> {
         m.extra.elytra.tick(fall_flying, crouching, velocity);
         m.extra.swim.tick(visually_swimming, in_water);
         m.extra.swing_right_arm = swing_right_arm;
+        m.extra.swing_stab = swing_stab;
         m.hurt_time = hurt;
     }
     /// `LevelExtractor`'s skip of the camera entity: the player's own body

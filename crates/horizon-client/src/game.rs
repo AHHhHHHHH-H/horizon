@@ -10936,6 +10936,9 @@ impl Game<'_> {
                     time_held: ticks_used,
                     ticks_since_hit: self.kinetic_hit_ticks(a),
                 });
+            let stab = self.swing.current.is_some_and(|s| {
+                s.hand == hand && s.animation.kind == 2 && !using
+            });
             let pose = match &*stack.item {
                 _ if let Some(pose) = spear => pose,
                 "minecraft:bow" if using => ItemPose::Bow { ticks_used },
@@ -10975,6 +10978,7 @@ impl Game<'_> {
                     }
                 }
                 _ if spinning => ItemPose::SpinAttack,
+                _ if stab => ItemPose::SpearAttack,
                 _ => ItemPose::Swing,
             };
             let m = to_world

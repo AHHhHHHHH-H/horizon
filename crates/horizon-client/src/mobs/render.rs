@@ -1617,6 +1617,19 @@ pub fn held_item_transform(
         let time_held = m.extra.using_item as f32 + s.partial;
         t *= crate::spear::third_person_use_item(&kinetic, time_held, s.swing, 0.0, !left);
     }
+    // ItemInHandLayer: a stab swing moves the spear (SpearAnimations.thirdPersonAttackItem).
+    if m.extra.swing_stab
+        && m.extra.swing_right_arm == Some(!left)
+        && let Some(kinetic) = (if off_hand {
+            &m.extra.off_hand
+        } else {
+            &m.extra.main_hand
+        })
+        .as_deref()
+        .and_then(crate::spear::Kinetic::of)
+    {
+        t *= anim::third_person_attack_item(s.swing, kinetic.forward_movement);
+    }
     Some(t)
 }
 
