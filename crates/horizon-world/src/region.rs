@@ -361,11 +361,14 @@ impl RegionFile {
                         },
                     );
                 }
-                None if old == 0 => {}
                 None => {
+                    // The final clear wins even if an earlier record in the
+                    // batch planned a write to this slot: reset its offset.
                     offsets[i] = 0;
                     timestamps[i] = clear_timestamp;
-                    plans.insert(i, BatchOp::Clear { chunk, old });
+                    if old != 0 {
+                        plans.insert(i, BatchOp::Clear { chunk, old });
+                    }
                 }
             }
         }
