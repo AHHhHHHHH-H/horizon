@@ -18,6 +18,9 @@ pub struct StackData {
     pub repair_cost: u32,
     /// `minecraft:custom_name` as plain text.
     pub custom_name: Option<String>,
+    /// Original structured name, including inherited styles. The plain cache
+    /// stays available to search, commands and existing rename operations.
+    pub custom_name_component: Option<Tag>,
     /// `minecraft:potion_contents.potion`.
     pub potion: Option<Arc<str>>,
     /// The rest of `minecraft:potion_contents` (`custom_color`, `custom_effects`,
@@ -123,6 +126,10 @@ const MODELLED: &[&str] = &[
     "minecraft:written_book_content",
 ];
 impl StackData {
+    fn name_component(&self) -> Option<&Tag> {
+        let tag = self.custom_name_component.as_ref()?;
+        (read_text(tag).as_deref() == self.custom_name.as_deref()).then_some(tag)
+    }
     /// An unmodelled component's saved value.
     pub fn other(&self, id: &str) -> Option<&Tag> {
         self.other.iter().find(|(k, _)| k == id).map(|(_, v)| v)
@@ -229,6 +236,12 @@ impl ItemStack {
     }
     /// Drops an all-default component box so equal stacks compare equal.
     pub fn tidy(&mut self) {
+        if let Some(data) = self.extra.as_mut()
+            && data.custom_name_component.is_some()
+            && data.name_component().is_none()
+        {
+            data.custom_name_component = None;
+        }
         if self.extra.as_ref().is_some_and(|d| d.is_empty()) {
             self.extra = None;
         }
@@ -302,6 +315,11 @@ impl ItemStack {
     pub fn item_name(&self) -> Option<String> {
         let name = self.data()?.other("minecraft:item_name")?;
         Some(horizon_client_core::component::name_text(name).plain())
+    }
+    /// Ignore a cached component after an existing rename operation changes
+    /// the plain name. Never save or display the old name in its place.
+    pub fn custom_name_component(&self) -> Option<&Tag> {
+        self.data()?.name_component()
     }
     pub fn potion(&self) -> Option<&str> {
         self.data().and_then(|d| d.potion.as_deref())
@@ -630,7 +648,12 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
             entries.push(("minecraft:repair_cost", Tag::Int(d.repair_cost as i32)));
         }
         if let Some(name) = &d.custom_name {
-            entries.push(("minecraft:custom_name", Tag::String(name.as_str().into())));
+            entries.push((
+                "minecraft:custom_name",
+                d.name_component()
+                    .cloned()
+                    .unwrap_or_else(|| Tag::String(name.as_str().into())),
+            ));
         }
         if d.potion.is_some() || !d.potion_extra.is_empty() {
             let potion = d
@@ -850,6 +873,10 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .unwrap_or(0)
             .max(0) as u32,
         custom_name: c.get("minecraft:custom_name").and_then(read_text),
+        custom_name_component: c
+            .get("minecraft:custom_name")
+            .filter(|tag| matches!(tag, Tag::Compound(_) | Tag::List(_)))
+            .cloned(),
         potion,
         potion_extra,
         map_id: c.get("minecraft:map_id").and_then(int).map(|v| v as i32),
@@ -1108,6 +1135,47 @@ mod tests {
             pages,
             Some(vec!["Please read the rules".to_owned(), "Two".to_owned()])
         );
+    }
+
+    #[test]
+    fn structured_custom_names_round_trip_but_do_not_override_a_rename() {
+        let original = Tag::compound([
+            ("text", Tag::String("Queue".into())),
+            ("bold", Tag::Byte(1)),
+            ("italic", Tag::Byte(0)),
+            ("font", Tag::String("minecraft:alt".into())),
+        ]);
+        let components = Tag::compound([("minecraft:custom_name", original.clone())]);
+        let (_, extra) = decode_components(Some(&components));
+        let mut stack = ItemStack {
+            extra,
+            ..ItemStack::new("minecraft:stick", 1)
+        };
+        assert_eq!(stack.custom_name(), Some("Queue"));
+        assert_eq!(
+            encode_components(&stack)
+                .unwrap()
+                .get("minecraft:custom_name"),
+            Some(&original)
+        );
+        let text = horizon_client_core::component::name_text(
+            stack.custom_name_component().unwrap(),
+        );
+        assert!(text.spans[0].style.is_bold());
+        assert!(!text.spans[0].style.is_italic());
+        assert_eq!(text.spans[0].style.font.as_deref(), Some("minecraft:alt"));
+        stack.data_mut().custom_name = Some("Renamed".into());
+        assert!(stack.custom_name_component().is_none());
+        assert_eq!(
+            encode_components(&stack)
+                .unwrap()
+                .get("minecraft:custom_name"),
+            Some(&Tag::String("Renamed".into()))
+        );
+        stack.data_mut().custom_name = None;
+        assert!(stack.custom_name_component().is_none());
+        stack.tidy();
+        assert!(stack.same_item_same_components(&ItemStack::new("minecraft:stick", 1)));
     }
 
     #[test]
