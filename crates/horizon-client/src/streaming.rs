@@ -777,14 +777,7 @@ impl Streaming {
                 world.dirty_sections.insert((key.0, sy, key.1));
             }
         }
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let n = (key.0 + dx, key.1 + dz);
-                if !loaded || world.chunks.get(&n).is_some_and(|c| !c.light_loaded) {
-                    world.dirty_light.insert(n);
-                }
-            }
-        }
+        mark_dirty_light(world, key, loaded, &self.lit);
     }
     /// The order jobs around the player run in, lowest first.
     fn distance(&self, x: i32, z: i32) -> i64 {
@@ -1808,6 +1801,20 @@ impl Drop for Streaming {
         }
     }
 }
+/// Mark the columns whose light a newly resident column at `key` can change:
+/// itself and its face neighbours, plus any neighbour still unlit. A diagonal
+/// column's light can only change through a face neighbour, and a lit diagonal
+/// had all nine columns around it, this one included, so it is not relit.
+fn mark_dirty_light(world: &mut World, key: (i32, i32), loaded: bool, lit: &FxHashSet<(i32, i32)>) {
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let n = (key.0 + dx, key.1 + dz);
+            if !lit.contains(&n) || (!loaded && (dx == 0 || dz == 0)) {
+                world.dirty_light.insert(n);
+            }
+        }
+    }
+}
 /// The section indexes set in a column's bits, lowest first.
 fn section_indexes(mut bits: u32) -> impl Iterator<Item = i32> {
     std::iter::from_fn(move || {
@@ -1888,6 +1895,41 @@ mod tests {
         let moved = ranges((19, 0));
         rank_again(&mut queue, |x, z| moved.priority(x, z, false));
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+    }
+
+    #[test]
+    fn a_new_column_relights_itself_and_its_faces_not_lit_diagonals() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut lit = FxHashSet::default();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let key = (dx, dz);
+                world.chunks.insert(key, Arc::new(Chunk::empty(dx, dz)));
+                lit.insert(key);
+            }
+        }
+        // A fresh column queued every lit face and itself, but no lit diagonal.
+        mark_dirty_light(&mut world, (0, 0), false, &lit);
+        let expected = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+            .into_iter()
+            .collect::<FxHashSet<_>>();
+        assert_eq!(world.dirty_light, expected);
+
+        // A diagonal still unlit stays queued.
+        lit.remove(&(1, 1));
+        world.dirty_light.clear();
+        mark_dirty_light(&mut world, (0, 0), false, &lit);
+        assert!(world.dirty_light.contains(&(1, 1)));
+        assert!(!world.dirty_light.contains(&(-1, -1)));
+
+        // A column loaded with light only queues its unlit neighbours.
+        lit.remove(&(0, -1));
+        world.dirty_light.clear();
+        mark_dirty_light(&mut world, (0, 0), true, &lit);
+        assert_eq!(
+            world.dirty_light,
+            [(0, -1), (1, 1)].into_iter().collect::<FxHashSet<_>>()
+        );
     }
 
     #[test]
