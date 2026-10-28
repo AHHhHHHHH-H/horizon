@@ -376,7 +376,7 @@ pub struct Renderer {
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
-    window: Arc<Window>,
+    window: Arc<dyn Window>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
@@ -874,7 +874,7 @@ fn surface_format(
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
 async fn open_device(
-    window: &Arc<Window>,
+    window: &Arc<dyn Window>,
     offscreen: bool,
     api: GraphicsApi,
     layers: u32,
@@ -1037,7 +1037,7 @@ impl Renderer {
 }
 impl Renderer {
     pub async fn new(
-        window: Arc<Window>,
+        window: Arc<dyn Window>,
         offscreen: bool,
         sprite_pixels: &[u8],
         sprite_size: u32,
@@ -1099,7 +1099,7 @@ impl Renderer {
         };
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
-        let size = window.inner_size();
+        let size = window.surface_size();
         let (config, present_modes, hdr_output) = if let Some(surface) = &surface {
             let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))

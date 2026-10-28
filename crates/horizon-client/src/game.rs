@@ -276,10 +276,13 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event::{
+        ButtonSource, DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta,
+        WindowEvent,
+    },
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, run_on_demand::EventLoopExtRunOnDemand},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window, WindowId},
+    window::{CursorGrabMode, Window, WindowAttributes, WindowId},
 };
 
 #[derive(Clone)]
@@ -1502,7 +1505,7 @@ struct Game<'a> {
     pause: bool,
     debug: bool,
     screen: Screen,
-    window: Option<Arc<Window>>,
+    window: Option<Arc<dyn Window>>,
     renderer: Option<Renderer>,
     /// CPU geometry storage retained across frames, including empty/title frames.
     entity_vertices: Vec<Vertex>,
@@ -5757,13 +5760,13 @@ impl Game<'_> {
         self.agent_pointer = false;
         let Some(window) = &self.window else { return };
         let size = self.renderer.as_ref().map_or_else(
-            || window.inner_size().into(),
+            || window.surface_size().into(),
             |r| [r.config.width, r.config.height],
         );
         let centre =
             winit::dpi::PhysicalPosition::new(f64::from(size[0]) / 2.0, f64::from(size[1]) / 2.0);
-        let warp = |window: &Window| {
-            let _ = window.set_cursor_position(centre);
+        let warp = || {
+            let _ = window.set_cursor_position(centre.into());
         };
         let scale = HudBatch::new(size).scale;
         let was_grabbed = self.captured;
@@ -5774,14 +5777,14 @@ impl Game<'_> {
             // first there. Wayland moves a pointer only while it is locked,
             // so everywhere else warp after grabbing.
             #[cfg(target_os = "macos")]
-            warp(window);
+            warp();
             self.captured = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .is_ok();
             #[cfg(not(target_os = "macos"))]
             if self.captured && self.focused {
-                warp(window);
+                warp();
             }
         } else {
             if self.captured {
@@ -5791,11 +5794,11 @@ impl Game<'_> {
                 // X11, Windows and macOS warp, so warp again once free
                 // (Wayland refuses that one).
                 if self.focused {
-                    warp(window);
+                    warp();
                 }
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 if self.focused {
-                    warp(window);
+                    warp();
                 }
             } else {
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
@@ -5831,11 +5834,14 @@ impl Game<'_> {
             return;
         }
         if let Some(window) = &self.window {
-            window.set_cursor(match effective {
-                Cursor::Arrow => winit::window::CursorIcon::Default,
-                Cursor::PointingHand => winit::window::CursorIcon::Pointer,
-                Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
-            });
+            window.set_cursor(
+                match effective {
+                    Cursor::Arrow => winit::cursor::CursorIcon::Default,
+                    Cursor::PointingHand => winit::cursor::CursorIcon::Pointer,
+                    Cursor::NotAllowed => winit::cursor::CursorIcon::NotAllowed,
+                }
+                .into(),
+            );
         }
         self.cursor_icon = effective;
     }
@@ -9431,7 +9437,7 @@ impl Game<'_> {
         };
         // Again now: on Wayland the window is on a screen only once it has been shown.
         if let Some(window) = &self.window {
-            horizon_client::telemetry::note_display(window);
+            horizon_client::telemetry::note_display(&**window);
         }
         self.perf
             .finish(&horizon_client::logging::game_home(), settings);
@@ -10780,12 +10786,12 @@ impl Game<'_> {
     }
     /// The renderer for the window, with the current block sprites, GUI
     /// atlas and world border texture.
-    fn new_renderer(&self, window: Arc<Window>) -> Result<Renderer> {
+    fn new_renderer(&self, window: Arc<dyn Window>) -> Result<Renderer> {
         self.renderer_for(window, &self.pack, &self.gui)
     }
     fn renderer_for(
         &self,
-        window: Arc<Window>,
+        window: Arc<dyn Window>,
         pack: &PackResources,
         gui: &UiResources,
     ) -> Result<Renderer> {
@@ -12646,7 +12652,7 @@ impl Game<'_> {
     }
 }
 impl ApplicationHandler for Game<'_> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
@@ -12654,27 +12660,30 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
+        let attributes = WindowAttributes::default()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
-        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
-            attributes, "horizon", "horizon",
-        );
+        let attributes = attributes.with_platform_attributes(Box::new(
+            winit::platform::wayland::WindowAttributesWayland::default()
+                .with_name("horizon", "horizon"),
+        ));
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
-                .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None))),
+                .with_surface_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+                .with_fullscreen(
+                    fullscreen.then_some(winit::monitor::Fullscreen::Borderless(None)),
+                ),
         ) {
-            Ok(w) => Arc::new(w),
+            Ok(w) => Arc::from(w),
             Err(e) => {
                 self.error = Some(e.into());
                 event_loop.exit();
                 return;
             }
         };
-        horizon_client::telemetry::note_display(&window);
+        horizon_client::telemetry::note_display(&*window);
         match self.new_renderer(window.clone()) {
             Ok(r) => {
                 self.renderer = Some(r);
@@ -12690,7 +12699,7 @@ impl ApplicationHandler for Game<'_> {
         self.apply_settings();
         self.previous = Instant::now();
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
@@ -12742,9 +12751,9 @@ impl ApplicationHandler for Game<'_> {
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
-                | WindowEvent::MouseInput { .. }
+                | WindowEvent::PointerButton { .. }
                 | WindowEvent::MouseWheel { .. }
-                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::PointerMoved { .. }
         ) {
             self.last_input = Instant::now();
         }
@@ -12768,7 +12777,7 @@ impl ApplicationHandler for Game<'_> {
             && !matches!(
                 &event,
                 WindowEvent::CloseRequested
-                    | WindowEvent::Resized(_)
+                    | WindowEvent::SurfaceResized(_)
                     | WindowEvent::RedrawRequested
             )
         {
@@ -12781,7 +12790,7 @@ impl ApplicationHandler for Game<'_> {
                 &event,
                 WindowEvent::CloseRequested
                     | WindowEvent::Focused(_)
-                    | WindowEvent::Resized(_)
+                    | WindowEvent::SurfaceResized(_)
                     | WindowEvent::RedrawRequested
             )
         {
@@ -12798,7 +12807,7 @@ impl ApplicationHandler for Game<'_> {
                         self.capture(false);
                     }
                 }
-                WindowEvent::Resized(size) => {
+                WindowEvent::SurfaceResized(size) => {
                     if let Some(r) = &mut self.renderer {
                         r.resize(size.width, size.height);
                     }
@@ -12818,7 +12827,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::CloseRequested => {
                     self.begin_closing_save(true)?;
                 }
-                WindowEvent::Resized(size) => {
+                WindowEvent::SurfaceResized(size) => {
                     if let Some(r) = &mut self.renderer {
                         r.resize(size.width, size.height);
                     }
@@ -12846,7 +12855,7 @@ impl ApplicationHandler for Game<'_> {
                         }
                     }
                 }
-                WindowEvent::CursorMoved { position, .. } => {
+                WindowEvent::PointerMoved { position, .. } => {
                     if let Some(r) = &self.renderer {
                         let b = HudBatch::new([r.config.width, r.config.height]);
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
@@ -12883,6 +12892,7 @@ impl ApplicationHandler for Game<'_> {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
                         MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
+                        _ => (0.0, 0.0),
                     };
                     // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity.
                     let discrete = self.settings.discrete_scroll;
@@ -12903,7 +12913,7 @@ impl ApplicationHandler for Game<'_> {
                         let size = self
                             .window
                             .as_ref()
-                            .map(|w| w.inner_size())
+                            .map(|w| w.surface_size())
                             .unwrap_or_default();
                         let batch = HudBatch::new([size.width, size.height]);
                         title.scroll_worlds(d, self.cursor, (batch.width, batch.height));
@@ -12967,25 +12977,39 @@ impl ApplicationHandler for Game<'_> {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
                 }
-                WindowEvent::MouseInput { state, button, .. } if self.link_prompt.is_some() => {
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.link_prompt.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         self.link_prompt_click();
                     }
                 }
-                WindowEvent::MouseInput { state, button, .. }
-                    if self.server_packs.prompt.is_some() =>
-                {
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.server_packs.prompt.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         self.pack_prompt_click()?;
                     }
                 }
-                WindowEvent::MouseInput { state, button, .. } if self.dialog_open() => {
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.dialog_open() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         self.dialog_click()?;
                     }
                 }
-                WindowEvent::MouseInput { .. } if self.screen == Screen::Win => {}
-                WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
+                WindowEvent::PointerButton { .. } if self.screen == Screen::Win => {}
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.screen == Screen::Options => {
                     if self.options_waiting_for_key() && state == ElementState::Pressed {
                         self.options_bind_mouse(button)?;
                     } else if matches!(button, MouseButton::Left | MouseButton::Right) {
@@ -12995,9 +13019,9 @@ impl ApplicationHandler for Game<'_> {
                         )?;
                     }
                 }
-                WindowEvent::MouseInput {
+                WindowEvent::PointerButton {
                     state: ElementState::Released,
-                    button: MouseButton::Left,
+                    button: ButtonSource::Mouse(MouseButton::Left),
                     ..
                 } if self.title.is_some() && self.screen != Screen::Options => {
                     if let Some(title) = &mut self.title {
@@ -13005,9 +13029,9 @@ impl ApplicationHandler for Game<'_> {
                         title.release_field();
                     }
                 }
-                WindowEvent::MouseInput {
+                WindowEvent::PointerButton {
                     state,
-                    button: MouseButton::Left,
+                    button: ButtonSource::Mouse(MouseButton::Left),
                     ..
                 } if self.title.is_some() && state == ElementState::Pressed => {
                     let size = self
@@ -13054,8 +13078,12 @@ impl ApplicationHandler for Game<'_> {
                         Action::None => {}
                     }
                 }
-                WindowEvent::MouseInput { .. } if self.title.is_some() => {}
-                WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
+                WindowEvent::PointerButton { .. } if self.title.is_some() => {}
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.book.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let size = self
                             .renderer
@@ -13065,7 +13093,11 @@ impl ApplicationHandler for Game<'_> {
                         self.book_click(size);
                     }
                 }
-                WindowEvent::MouseInput { state, button, .. } if self.sign_edit.is_some() => {
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } if self.sign_edit.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let size = self
                             .renderer
@@ -13075,7 +13107,11 @@ impl ApplicationHandler for Game<'_> {
                         self.sign_edit_click(size);
                     }
                 }
-                WindowEvent::MouseInput { state, button, .. } => {
+                WindowEvent::PointerButton {
+                    state,
+                    button: ButtonSource::Mouse(button),
+                    ..
+                } => {
                     let pressed = state == ElementState::Pressed;
                     if matches!(self.screen, Screen::Inventory | Screen::Creative)
                         && let Some(key) = self
@@ -13620,19 +13656,19 @@ impl ApplicationHandler for Game<'_> {
             event_loop.exit();
         }
     }
-    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+    fn device_event(&mut self, _: &dyn ActiveEventLoop, _: Option<DeviceId>, event: DeviceEvent) {
         if self.pending_save.is_none()
             && self.captured
             && self.focused
             && self.screen == Screen::Playing
-            && let DeviceEvent::MouseMotion { delta: (x, y) } = event
+            && let DeviceEvent::PointerMotion { delta: (x, y) } = event
         {
             // MouseHandler.onMove with the pointer grabbed; applied once per frame.
             self.mouse.on_move(0.0, 0.0, x, y, true, true);
             self.last_input = Instant::now();
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         if horizon_threads::stop_requests() > 0
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
         {
@@ -13690,15 +13726,56 @@ impl ApplicationHandler for Game<'_> {
         }
         event_loop.set_control_flow(ControlFlow::Poll);
     }
+}
+impl Game<'_> {
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
     /// window turns it into a window close, so Minecraft.stop saves the world.
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+    fn exiting(&mut self) {
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
             log::warn!("Horizon: failed to save the world on exit: {e}");
         }
         self.finish_perf();
+    }
+}
+
+/// Runs the app until the event loop ends, then its exit work. winit drops the handler when it
+/// ends (on macOS, Quit ends the process there without returning), so the work runs on drop.
+struct Exiting<'a, A: ExitWork>(&'a mut A);
+trait ExitWork: ApplicationHandler {
+    fn exiting(&mut self);
+}
+impl<A: ExitWork> Drop for Exiting<'_, A> {
+    fn drop(&mut self) {
+        self.0.exiting();
+    }
+}
+impl<A: ExitWork> ApplicationHandler for Exiting<'_, A> {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.0.can_create_surfaces(event_loop);
+    }
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.0.window_event(event_loop, id, event);
+    }
+    fn device_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: Option<DeviceId>,
+        event: DeviceEvent,
+    ) {
+        self.0.device_event(event_loop, id, event);
+    }
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.0.about_to_wait(event_loop);
+    }
+}
+fn run_app<A: ExitWork>(app: &mut A) -> std::result::Result<(), EventLoopError> {
+    EventLoop::new()?.run_app_on_demand(Exiting(app))
+}
+impl ExitWork for Game<'_> {
+    fn exiting(&mut self) {
+        Game::exiting(self);
     }
 }
 /// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
@@ -14728,7 +14805,7 @@ fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::Prepa
 
 /// Upload pack textures and create the renderer on the window's device.
 fn build_renderer(
-    window: Arc<Window>,
+    window: Arc<dyn Window>,
     offscreen: bool,
     pack: &PackResources,
     gui: &UiResources,
@@ -14780,7 +14857,7 @@ fn build_renderer(
 /// white block-sprite layer, an empty border texture and the title panorama
 /// once the menu bundle is ready.
 fn loading_renderer(
-    window: Arc<Window>,
+    window: Arc<dyn Window>,
     offscreen: bool,
     gui: Option<&UiResources>,
     previous: Option<&Renderer>,
@@ -15074,7 +15151,7 @@ fn leave_fullscreen_after(
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    let result = EventLoop::new()?.run_app(&mut game);
+    let result = run_app(&mut game);
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -15087,7 +15164,7 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 
 /// The loading screen's state while the worker loads the resources.
 struct Loading {
-    window: Option<Arc<Window>>,
+    window: Option<Arc<dyn Window>>,
     renderer: Option<Renderer>,
     gui: Option<UiResources>,
     settings: Settings,
@@ -15106,7 +15183,7 @@ struct Loading {
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
@@ -15118,27 +15195,30 @@ impl Loading {
             .map_or([1280, 720], |o| o.window_size)
             .map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
+        let attributes = WindowAttributes::default()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
-        let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
-            attributes, "horizon", "horizon",
-        );
+        let attributes = attributes.with_platform_attributes(Box::new(
+            winit::platform::wayland::WindowAttributesWayland::default()
+                .with_name("horizon", "horizon"),
+        ));
         let window = match event_loop.create_window(
             attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
-                .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None))),
+                .with_surface_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+                .with_fullscreen(
+                    fullscreen.then_some(winit::monitor::Fullscreen::Borderless(None)),
+                ),
         ) {
-            Ok(w) => Arc::new(w),
+            Ok(w) => Arc::from(w),
             Err(e) => {
                 self.error = Some(e.into());
                 event_loop.exit();
                 return;
             }
         };
-        horizon_client::telemetry::note_display(&window);
+        horizon_client::telemetry::note_display(&*window);
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         match loading_renderer(
             window.clone(),
@@ -15157,7 +15237,7 @@ impl Loading {
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
@@ -15198,7 +15278,7 @@ impl Loading {
             Err(e) => self.error = Some(e),
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         if horizon_threads::stop_requests() > 0 {
             // No world is open yet: nothing to save.
             event_loop.exit();
@@ -15331,24 +15411,29 @@ enum App {
     Ready(Box<Game<'static>>),
 }
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         match self {
-            App::Loading(loading) => loading.resumed(event_loop),
-            App::Ready(game) => game.resumed(event_loop),
+            App::Loading(loading) => loading.can_create_surfaces(event_loop),
+            App::Ready(game) => game.can_create_surfaces(event_loop),
         }
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match self {
             App::Loading(loading) => loading.window_event(event_loop, id, event),
             App::Ready(game) => game.window_event(event_loop, id, event),
         }
     }
-    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+    fn device_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: Option<DeviceId>,
+        event: DeviceEvent,
+    ) {
         if let App::Ready(game) = self {
             game.device_event(event_loop, id, event);
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         enum Step {
             Waiting,
             Ready(Box<Game<'static>>),
@@ -15393,9 +15478,11 @@ impl ApplicationHandler for App {
             }
         }
     }
-    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+}
+impl ExitWork for App {
+    fn exiting(&mut self) {
         if let App::Ready(game) = self {
-            game.exiting(event_loop);
+            game.exiting();
         }
     }
 }
@@ -15433,7 +15520,7 @@ fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    let result = run_app(&mut app);
     match &mut app {
         App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),

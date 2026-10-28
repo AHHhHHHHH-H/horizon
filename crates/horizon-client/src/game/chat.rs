@@ -576,7 +576,7 @@ impl Game<'_> {
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
         // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
         let (left, right) = if cfg!(target_os = "macos") {
-            (KeyCode::SuperLeft, KeyCode::SuperRight)
+            (KeyCode::MetaLeft, KeyCode::MetaRight)
         } else {
             (KeyCode::ControlLeft, KeyCode::ControlRight)
         };

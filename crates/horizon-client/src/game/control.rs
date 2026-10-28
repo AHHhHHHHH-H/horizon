@@ -107,7 +107,7 @@ impl Game<'_> {
             let _ = flight.reply.send(summary.to_string());
         }
     }
-    pub(super) fn poll_control(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn poll_control(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some((deadline, reply)) = self.pending_bench.take() {
             if Instant::now() >= deadline {
                 let _ = reply.send(self.frame_stats.summary().to_string());
@@ -137,7 +137,11 @@ impl Game<'_> {
         }
     }
 
-    fn answer(&mut self, request: horizon_client::control::Request, event_loop: &ActiveEventLoop) {
+    fn answer(
+        &mut self,
+        request: horizon_client::control::Request,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
         let reply = match self.control_command(&request.line, &request.reply, event_loop) {
             Ok(Some(value)) => value,
             // Deferred: the command keeps its own reply channel.
@@ -151,7 +155,7 @@ impl Game<'_> {
         &mut self,
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
@@ -305,7 +309,7 @@ impl Game<'_> {
                 if self.book.is_some() && arg(2)? != "up" {
                     let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.contains(k));
                     let edit = if cfg!(target_os = "macos") {
-                        held([KeyCode::SuperLeft, KeyCode::SuperRight])
+                        held([KeyCode::MetaLeft, KeyCode::MetaRight])
                     } else {
                         held([KeyCode::ControlLeft, KeyCode::ControlRight])
                     };
@@ -1060,12 +1064,15 @@ impl Game<'_> {
             "streaming": self.streaming.stages().into_iter().map(|(k, v)| (k.to_string(), v.into())).collect::<serde_json::Map<_, _>>(),
             "dirty_light": self.world.dirty_light.len(),
             "renderer": renderer,
-            "display": self.window.as_deref().and_then(horizon_client::telemetry::monitor).map(|m| json!({
-                "width": m.size().width,
-                "height": m.size().height,
-                "scale": m.scale_factor(),
-                "refresh_hz": m.refresh_rate_millihertz().map(|r| r.div_ceil(1000)),
-            })),
+            "display": self.window.as_deref().and_then(horizon_client::telemetry::monitor).map(|m| {
+                let mode = m.current_video_mode();
+                json!({
+                    "width": mode.as_ref().map_or(0, |v| v.size().width),
+                    "height": mode.as_ref().map_or(0, |v| v.size().height),
+                    "scale": m.scale_factor(),
+                    "refresh_hz": mode.and_then(|v| v.refresh_rate_millihertz()).map(|r| r.get().div_ceil(1000)),
+                })
+            }),
             "uptime_seconds": self.started.elapsed().as_secs_f64(),
             "server": self.remote_status(),
             // The names the name tags show now, seen from the eyes.
@@ -1171,7 +1178,7 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "shift" | "lshift" => KeyCode::ShiftLeft,
         "ctrl" | "control" | "lctrl" => KeyCode::ControlLeft,
         // The edit modifier on macOS (Cmd+A selects all there).
-        "super" | "cmd" | "meta" => KeyCode::SuperLeft,
+        "super" | "cmd" | "meta" => KeyCode::MetaLeft,
         "esc" | "escape" => KeyCode::Escape,
         "tab" => KeyCode::Tab,
         "enter" | "return" => KeyCode::Enter,

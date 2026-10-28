@@ -302,9 +302,9 @@ impl Game<'_> {
             .window
             .as_ref()
             .and_then(|w| w.current_monitor())
-            .and_then(|m| m.refresh_rate_millihertz())
+            .and_then(|m| m.current_video_mode()?.refresh_rate_millihertz())
             .map_or("0".into(), |mhz| {
-                debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
+                debug_overlay::refresh_rate_label(f64::from(mhz.get()) / 1000.0)
             });
         d.priority(format!(
             "{} fps T: {}{present} @{refresh}Hz",
@@ -384,7 +384,7 @@ impl Game<'_> {
             );
             if let Some(w) = self.window.as_ref() {
                 let density = w.scale_factor();
-                let logical = w.inner_size().to_logical::<f64>(density);
+                let logical = w.surface_size().to_logical::<f64>(density);
                 d.group(
                     "system",
                     [format!(

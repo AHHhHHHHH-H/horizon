@@ -517,7 +517,7 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+        let ctrl = self.modifiers.control_key() || self.modifiers.meta_key();
         let shift = self.modifiers.shift_key();
         let Some(open) = self.dialogs.open.as_mut() else {
             return Ok(());
