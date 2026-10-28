@@ -6200,12 +6200,7 @@ impl Game<'_> {
                     max_air: 300,
                     under_water,
                     vehicle_hearts,
-                    colored: self.settings.extras.colored_hearts.then(|| {
-                        horizon_client::heart_colors::Rows::new(
-                            self.settings.extras.heart_colors.len(),
-                            self.settings.extras.absorption_colors.len(),
-                        )
-                    }),
+                    colored: self.settings.extras.colored_hearts,
                 };
                 let draws = self.health_hud.layout(&inputs, wi, hi);
                 hud_layout::paint(&mut batch, atlas, &draws);

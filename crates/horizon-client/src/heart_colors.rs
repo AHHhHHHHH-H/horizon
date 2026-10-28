@@ -8,8 +8,14 @@
 //! recolor of the vanilla sprites keeps their shading. Nothing here runs
 //! while the extra is off.
 
-/// How many colors each list may hold: eight rows of ten hearts.
-pub const COLORS: usize = 8;
+/// How many rows the atlas bakes a tinted sprite for. The configured colors
+/// fill the first rows; past them the passes continue (see `expand`), so a
+/// player with far more than ten hearts still sees the row change. Rows past
+/// this many repeat the last baked color.
+pub const MAX_ROWS: usize = 32;
+
+/// How many colors each list may hold in `horizon-extras.txt`.
+pub const COLORS: usize = MAX_ROWS;
 
 /// The heart sprites the extra recolors, in the vanilla table's order:
 /// `[full, full_blinking, half, half_blinking] x [normal, hardcore]`.
@@ -34,9 +40,10 @@ pub const DEFAULT_ABSORPTION: [u32; 8] = [
     0xFF_C832, 0xFF_E08A, 0xFF_FFFF, 0x8A_E0FF, 0xB4_69FF, 0x69_FF95, 0xF1_8A35, 0xA0_A0A0,
 ];
 
-/// The colors the atlas bakes the tinted sprites with, from the settings'
-/// parsed `#RRGGBB` values. A list is at least one color: a missing list or
-/// an empty one keeps the defaults.
+/// The colors the atlas bakes the tinted sprites with: `MAX_ROWS` of them,
+/// the configured `#RRGGBB` list first and the passes of `expand` after. A
+/// list is at least one color: a missing list or an empty one keeps the
+/// defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Palette {
     pub health: Vec<[u8; 3]>,
@@ -52,20 +59,42 @@ impl Palette {
     }
 }
 
-fn colors(given: &[u32], default: &[u32; 8]) -> Vec<[u8; 3]> {
-    let taken: Vec<[u8; 3]> = given
-        .iter()
-        .take(COLORS)
-        .map(|c| [(c >> 16) as u8, (c >> 8) as u8, (c & 0xFF) as u8])
-        .collect();
-    if taken.is_empty() {
-        default
-            .iter()
-            .map(|c| [(c >> 16) as u8, (c >> 8) as u8, (c & 0xFF) as u8])
-            .collect()
+fn colors(given: &[u32], default: &[u32]) -> Vec<[u8; 3]> {
+    let parse = |c: &u32| [(c >> 16) as u8, (c >> 8) as u8, (c & 0xFF) as u8];
+    let taken: Vec<[u8; 3]> = given.iter().take(COLORS).map(parse).collect();
+    let base: Vec<[u8; 3]> = if taken.is_empty() {
+        default.iter().map(parse).collect()
     } else {
         taken
+    };
+    expand(&base)
+}
+
+/// `MAX_ROWS` colors out of a shorter list: the list repeats in order, and
+/// each full pass through it shifts one step lighter (odd passes) or darker
+/// (even passes), a step further each time — 12% of the way to white or
+/// black. Deterministic, so a player with hundreds of hearts climbs through
+/// the same colors every time.
+fn expand(base: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    let step = 12u32;
+    let mut out = Vec::with_capacity(MAX_ROWS);
+    for row in 0..MAX_ROWS {
+        let pass = (row / base.len()) as u32;
+        let c = base[row % base.len()];
+        out.push(if pass == 0 {
+            c
+        } else {
+            let (amount, lighter) = (step * pass.div_ceil(2), pass % 2 == 1);
+            c.map(|v| {
+                if lighter {
+                    (u32::from(v) + (255 - u32::from(v)) * amount / 100).min(255) as u8
+                } else {
+                    (u32::from(v) * (100 - amount.min(100)) / 100) as u8
+                }
+            })
+        });
     }
+    out
 }
 
 /// The atlas slot of one tinted sprite, as the atlas knows it and as a
@@ -85,22 +114,6 @@ pub fn slot_id(absorption: bool, variant: usize, color: usize) -> String {
         variant,
         color
     )
-}
-
-/// How many rows of colors the HUD's tinted hearts draw with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rows {
-    pub health: u8,
-    pub absorption: u8,
-}
-
-impl Rows {
-    pub fn new(health: usize, absorption: usize) -> Self {
-        Self {
-            health: health.clamp(1, COLORS) as u8,
-            absorption: absorption.clamp(1, COLORS) as u8,
-        }
-    }
 }
 
 /// Parses a `heartColors` value: `#RRGGBB` values separated by commas.
@@ -260,18 +273,33 @@ mod tests {
         assert_eq!(parse_colors("#FF1313, #FFB832"), vec![0xFF_1313, 0xFF_B832]);
         assert_eq!(parse_colors("heartColors"), Vec::<u32>::new());
         assert_eq!(colors_to_text(&[0xFF_1313, 0xB]), "#FF1313,#00000B");
-        // More than eight rows of ten have no colors left to give.
-        assert_eq!(parse_colors(&"#010203,".repeat(9)).len(), 8);
+        // The file's lists stop at the baked rows' worth of colors.
+        assert_eq!(parse_colors(&"#010203,".repeat(40)).len(), MAX_ROWS);
     }
 
     #[test]
-    fn palettes_fall_back_to_their_defaults() {
+    fn palettes_fall_back_to_their_defaults_and_expand() {
         let p = Palette::new(&[], &[]);
         assert_eq!(p.health[0], [0xFF, 0x13, 0x13]);
         assert_eq!(p.absorption[0], [0xFF, 0xC8, 0x32]);
-        assert_eq!(p.health.len(), 8);
-        let p = Palette::new(&[0x12_34_56], &[]);
-        assert_eq!(p.health, vec![[0x12, 0x34, 0x56]]);
+        assert_eq!(p.health.len(), MAX_ROWS);
+        // One color fills every row; the passes alternate lighter and darker
+        // by growing steps, deterministically.
+        let p = Palette::new(&[0x80_00_00], &[]);
+        assert_eq!(p.health[0], [0x80, 0x00, 0x00], "the list itself first");
+        assert!(
+            p.health[1][0] > 0x80,
+            "the first pass is lighter: {:?}",
+            p.health[1]
+        );
+        assert_eq!(p.health[2], [0x70, 0x00, 0x00], "the second darker by 12%");
+        let (first, third) = (p.health[1], p.health[3]);
+        assert!(
+            third[0] > first[0],
+            "the next light pass steps further: {third:?}"
+        );
+        let p2 = Palette::new(&[0x80_00_00], &[]);
+        assert_eq!(p.health, p2.health, "deterministic");
     }
 
     #[test]
@@ -279,12 +307,5 @@ mod tests {
         assert_eq!(slot_id(false, 3, 2), "horizon/heart3x2");
         assert_eq!(slot_id(true, 0, 7), "horizon/aheart0x7");
         assert_eq!(slot_atlas_name(true, 0, 7), "gui/sprites/horizon/aheart0x7");
-        assert_eq!(
-            Rows::new(0, 99),
-            Rows {
-                health: 1,
-                absorption: 8
-            }
-        );
     }
 }

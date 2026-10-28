@@ -520,9 +520,8 @@ pub struct HealthInputs {
     pub under_water: bool,
     /// `getVehicleMaxHearts` of the ridden living vehicle (0 = none).
     pub vehicle_hearts: i32,
-    /// The colored hearts extra's row counts (`heart_colors`); none keeps
-    /// vanilla's rows.
-    pub colored: Option<crate::heart_colors::Rows>,
+    /// The colored hearts extra (`heart_colors`) is on.
+    pub colored: bool,
 }
 
 /// `Hud.getVehicleMaxHearts` for a vehicle that shows its health.
@@ -639,14 +638,14 @@ fn heart(
 /// instead; the blink swaps the whole row to its blinking sprites.
 fn colored_hearts(
     i: &HealthInputs,
-    rows: crate::heart_colors::Rows,
     blink: bool,
     jitter: bool,
     x_left: i32,
     y_base: i32,
     next: &mut dyn FnMut(i32) -> i32,
 ) -> Vec<GuiDraw> {
-    use crate::heart_colors::slot_id;
+    use crate::heart_colors::{MAX_ROWS, slot_id};
+    let at = |row: i32| (row.max(0) as usize).min(MAX_ROWS - 1);
     let mut out = Vec::new();
     let health_points = ceil(i.max_health);
     let filled = ceil(i.health) + ceil(i.absorption);
@@ -661,18 +660,13 @@ fn colored_hearts(
         let health_rows = (health_points + 19) / 20;
         if seg == 0 {
             None
-        } else if seg_start >= health_points {
-            if seg - (health_points + 19) / 20 > 0 {
-                let below = seg - health_rows - 1;
-                Some((true, (below as usize).min(rows.absorption as usize - 1)))
-            } else {
-                Some((
-                    false,
-                    (health_rows as usize - 1).min(rows.health as usize - 1),
-                ))
-            }
+        } else if seg_start >= health_points && seg - health_rows > 0 {
+            // A deeper absorption row: the absorption color below it.
+            Some((true, at(seg - health_rows - 1)))
         } else {
-            Some((false, ((seg - 1) as usize).min(rows.health as usize - 1)))
+            // The first absorption row sits on the last health color; a
+            // deeper health row on the color before it.
+            Some((false, at(health_rows.min(seg) - 1)))
         }
     };
     for n in 0..10 {
@@ -689,13 +683,7 @@ fn colored_hearts(
         } else {
             (false, point / 20)
         };
-        let color = row.min(
-            i32::from(if absorption {
-                rows.absorption
-            } else {
-                rows.health
-            }) - 1,
-        ) as usize;
+        let color = at(row);
         let variant = usize::from(i.hardcore) * 4 + usize::from(fill == 1) * 2 + usize::from(blink);
         if let Some((behind_absorption, behind_color)) = behind {
             // A full heart of the row below's color.
@@ -782,7 +770,7 @@ impl HealthHud {
         let (x_left, x_right, y_base) = (w / 2 - 91, w / 2 + 91, h - 39);
         let max_health = i.max_health.max(old.max(current) as f32);
         let absorption = ceil(i.absorption);
-        let (rows, row_height) = if i.colored.is_some() {
+        let (rows, row_height) = if i.colored {
             (1, 10)
         } else {
             let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
@@ -812,10 +800,9 @@ impl HealthHud {
                 }
             }
         }
-        if let Some(rows) = i.colored {
+        if i.colored {
             out.extend(colored_hearts(
                 i,
-                rows,
                 blink,
                 current + absorption <= 4,
                 x_left,
@@ -1091,9 +1078,8 @@ pub fn abgr(color: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::heart_colors::Rows;
 
-    fn inputs(colored: Option<Rows>) -> (HealthHud, HealthInputs) {
+    fn inputs(colored: bool) -> (HealthHud, HealthInputs) {
         (
             HealthHud::default(),
             HealthInputs {
@@ -1131,10 +1117,7 @@ mod tests {
 
     #[test]
     fn colored_hearts_show_one_row_of_ten() {
-        let (mut hud, mut i) = inputs(Some(Rows {
-            health: 2,
-            absorption: 1,
-        }));
+        let (mut hud, mut i) = inputs(true);
         i.max_health = 40.0;
         i.health = 30.0;
         let draws = hud.layout(&i, 400, 300);
@@ -1164,10 +1147,7 @@ mod tests {
 
     #[test]
     fn absorption_tints_with_its_own_colors() {
-        let (mut hud, mut i) = inputs(Some(Rows {
-            health: 2,
-            absorption: 2,
-        }));
+        let (mut hud, mut i) = inputs(true);
         i.max_health = 20.0;
         i.health = 20.0;
         i.absorption = 8.0;
@@ -1197,10 +1177,7 @@ mod tests {
 
     #[test]
     fn a_half_heart_container_covers_only_its_filled_half() {
-        let (mut hud, mut i) = inputs(Some(Rows {
-            health: 1,
-            absorption: 1,
-        }));
+        let (mut hud, mut i) = inputs(true);
         i.health = 1.0;
         let draws = hud.layout(&i, 400, 300);
         let containers: Vec<_> = draws
@@ -1226,25 +1203,23 @@ mod tests {
     }
 
     #[test]
-    fn rows_past_the_colors_repeat_the_last_one() {
-        let (mut hud, mut i) = inputs(Some(Rows {
-            health: 2,
-            absorption: 1,
-        }));
+    fn rows_past_the_colors_get_expanded_ones() {
+        let (mut hud, mut i) = inputs(true);
         i.max_health = 80.0;
         i.health = 70.0;
         let draws = hud.layout(&i, 400, 300);
-        // The fourth row of health has no color left: the second's again.
+        // The fourth row of health draws the fourth baked color (the list
+        // repeats with lighter and darker passes past its length).
         assert!(
             sprites(&draws)
                 .iter()
-                .any(|(n, _, _)| *n == "horizon/heart0x1")
+                .any(|(n, _, _)| *n == "horizon/heart0x3")
         );
     }
 
     #[test]
     fn without_the_extra_the_rows_are_vanillas() {
-        let (mut hud, mut i) = inputs(None);
+        let (mut hud, mut i) = inputs(false);
         i.max_health = 40.0;
         i.health = 30.0;
         let draws = hud.layout(&i, 400, 300);

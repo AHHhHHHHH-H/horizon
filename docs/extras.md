@@ -89,10 +89,13 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   row below's color, and in the first row the black container (covering only
   a half-filled icon's filled half). The idea is ported, not a mod's code.
 - The colors are the `heartColors` and `absorptionColors` lists in
-  `horizon-extras.txt`, `#RRGGBB` values separated by commas, up to eight
-  each. The defaults start with the heart sprite's own red and the absorbing
+  `horizon-extras.txt`, `#RRGGBB` values separated by commas, up to 32 each.
+  The defaults start with the heart sprite's own red and the absorbing
   heart's gold, so a first row of either looks vanilla; further rows are
   gold, green, cyan, purple, pink, yellow and white (absorption varies).
+  Past the list's end the colors repeat in order, each full pass one step
+  lighter (odd passes) or darker (even ones), a step further each time —
+  deterministic, so even hundreds of hearts keep climbing through colors.
 - The tinted sprites are generated when the atlas is packed, from the
   installed resource pack's own heart sprites: each sprite's distinct
   colors, ranked by luminance (shade, body, highlight), map onto darker,
