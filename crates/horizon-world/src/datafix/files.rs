@@ -667,7 +667,7 @@ fn files_with_suffix(folder: &Path, suffix: &str) -> Vec<PathBuf> {
 fn upgrade_regions(folder: &Path, mut fix: impl FnMut(&mut Tag)) -> io::Result<()> {
     let limits = Limits::default();
     for path in files_with_suffix(folder, ".mca") {
-        let mut region = RegionFile::open(&path)?;
+        let region = RegionFile::open(&path)?;
         let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
         let mut records = Vec::new();
         for pos in positions {

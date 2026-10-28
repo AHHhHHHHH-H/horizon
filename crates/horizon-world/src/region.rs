@@ -8,6 +8,7 @@ use crate::{
 };
 use horizon_core::position::ChunkPos;
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -59,6 +60,10 @@ pub struct RegionFile {
     /// The sectors in use (`RegionBitmap`): the header's two and every
     /// chunk's.
     used: Vec<bool>,
+    /// The lowest sector that may be free: allocations start here instead of
+    /// scanning from zero, and freeing a lower run rewinds it, so the chosen
+    /// sectors (first fit) are the same as a full scan.
+    next_free: usize,
 }
 
 pub fn position_from_path(path: &Path) -> io::Result<ChunkPos> {
@@ -103,6 +108,93 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
+    }
+}
+/// Positioned I/O: a read needs no file cursor, so concurrent readers of one
+/// region do not serialize.
+#[cfg(unix)]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+#[cfg(unix)]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(buf, offset)
+}
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_write(buf, offset) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                buf = &buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buf)
+}
+#[cfg(not(any(unix, windows)))]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(buf)
+}
+fn force_in(used: &mut Vec<bool>, start: usize, count: usize) {
+    if used.len() < start + count {
+        used.resize(start + count, false);
+    }
+    used[start..start + count].fill(true);
+}
+fn free_in(used: &mut [bool], next_free: &mut usize, start: usize, count: usize) {
+    let end = (start + count).min(used.len());
+    if start < end {
+        used[start..end].fill(false);
+    }
+    if start < *next_free {
+        *next_free = start;
+    }
+}
+/// The first run of free sectors long enough, starting from `next_free`.
+fn allocate_in(used: &mut Vec<bool>, next_free: &mut usize, count: usize) -> usize {
+    let mut current = *next_free;
+    loop {
+        let start = (current..used.len())
+            .find(|&s| !used[s])
+            .unwrap_or(used.len());
+        let end = (start..used.len()).find(|&s| used[s]);
+        if end.is_none_or(|end| end - start >= count) {
+            force_in(used, start, count);
+            *next_free = start + count;
+            return start;
+        }
+        current = end.unwrap_or(start);
     }
 }
 
@@ -169,6 +261,7 @@ impl RegionFile {
             offsets,
             timestamps,
             used: Vec::new(),
+            next_free: 0,
         };
         region.force(0, 2);
         for offset in offsets.into_iter().filter(|&o| o != 0) {
@@ -179,33 +272,11 @@ impl RegionFile {
 
     /// `RegionBitmap.force`.
     fn force(&mut self, start: usize, count: usize) {
-        if self.used.len() < start + count {
-            self.used.resize(start + count, false);
-        }
-        self.used[start..start + count].fill(true);
+        force_in(&mut self.used, start, count);
     }
     /// `RegionBitmap.free`.
     fn free(&mut self, start: usize, count: usize) {
-        let end = (start + count).min(self.used.len());
-        if start < end {
-            self.used[start..end].fill(false);
-        }
-    }
-    /// `RegionBitmap.allocate`: the first run of free sectors long enough
-    /// (the end of the file is free).
-    fn allocate(&mut self, count: usize) -> usize {
-        let mut current = 0;
-        loop {
-            let start = (current..self.used.len())
-                .find(|&s| !self.used[s])
-                .unwrap_or(self.used.len());
-            let end = (start..self.used.len()).find(|&s| self.used[s]);
-            if end.is_none_or(|end| end - start >= count) {
-                self.force(start, count);
-                return start;
-            }
-            current = end.unwrap_or(start);
-        }
+        free_in(&mut self.used, &mut self.next_free, start, count);
     }
 
     /// `RegionFile.write`: the chunk goes to the first free run of sectors
@@ -214,58 +285,174 @@ impl RegionFile {
     /// and only then are its old sectors freed. The other chunks stay where
     /// they are. A chunk's last sector is padded with zeros.
     pub fn write(&mut self, chunk: ChunkPos, record: &ChunkRecord) -> io::Result<()> {
-        let i = slot(self.position, chunk)?;
-        if record.compressed.len() > MAX_COMPRESSED {
-            return Err(invalid("compressed chunk limit exceeded"));
+        self.write_batch(&[(chunk, Some(record))], record.timestamp)
+            .map(|_| ())
+    }
+
+    /// Write and clear several chunks of this region with one header write.
+    /// Planning uses copies of the tables and bitmap, so a validation error
+    /// leaves the file and the in-memory tables as they were; data is written
+    /// before the header points at it, and old sectors are freed only after
+    /// the header is durable. Returns whether any slot changed.
+    pub fn write_batch(
+        &mut self,
+        records: &[(ChunkPos, Option<&ChunkRecord>)],
+        clear_timestamp: u32,
+    ) -> io::Result<bool> {
+        enum BatchOp<'a> {
+            Write {
+                chunk: ChunkPos,
+                start: usize,
+                sectors: usize,
+                data: Vec<u8>,
+                external: Option<&'a [u8]>,
+                old: u32,
+            },
+            Clear {
+                chunk: ChunkPos,
+                old: u32,
+            },
         }
-        let required = (record.compressed.len() + 5).div_ceil(SECTOR);
-        let external = required >= 256;
-        let sectors = if external { 1 } else { required };
-        let start = self.allocate(sectors);
-        if start + sectors > 0x100_0000 {
-            self.free(start, sectors);
-            return Err(invalid("region sector address limit exceeded"));
+        let mut used = self.used.clone();
+        let mut next_free = self.next_free;
+        let mut offsets = self.offsets;
+        let mut timestamps = self.timestamps;
+        let mut plans: BTreeMap<usize, BatchOp<'_>> = BTreeMap::new();
+        for &(chunk, record) in records {
+            let i = slot(self.position, chunk)?;
+            // A repeated slot writes once, as sequential writes would end up.
+            if let Some(BatchOp::Write { start, sectors, .. }) = plans.remove(&i) {
+                free_in(&mut used, &mut next_free, start, sectors);
+            }
+            let old = self.offsets[i];
+            match record {
+                Some(record) => {
+                    if record.compressed.len() > MAX_COMPRESSED {
+                        return Err(invalid("compressed chunk limit exceeded"));
+                    }
+                    let required = (record.compressed.len() + 5).div_ceil(SECTOR);
+                    let external = required >= 256;
+                    let sectors = if external { 1 } else { required };
+                    let start = allocate_in(&mut used, &mut next_free, sectors);
+                    if start + sectors > 0x100_0000 {
+                        return Err(invalid("region sector address limit exceeded"));
+                    }
+                    let mut data = Vec::with_capacity(sectors * SECTOR);
+                    if external {
+                        data.extend_from_slice(&1u32.to_be_bytes());
+                        data.push(record.compression as u8 | 128);
+                    } else {
+                        data.extend_from_slice(&(record.compressed.len() as u32 + 1).to_be_bytes());
+                        data.push(record.compression as u8);
+                        data.extend_from_slice(&record.compressed);
+                    }
+                    data.resize(sectors * SECTOR, 0);
+                    offsets[i] = (start as u32) << 8 | sectors as u32;
+                    timestamps[i] = record.timestamp;
+                    plans.insert(
+                        i,
+                        BatchOp::Write {
+                            chunk,
+                            start,
+                            sectors,
+                            data,
+                            external: external.then_some(record.compressed.as_slice()),
+                            old,
+                        },
+                    );
+                }
+                None => {
+                    // The final clear wins even if an earlier record in the
+                    // batch planned a write to this slot: reset its offset.
+                    offsets[i] = 0;
+                    timestamps[i] = clear_timestamp;
+                    if old != 0 {
+                        plans.insert(i, BatchOp::Clear { chunk, old });
+                    }
+                }
+            }
+        }
+        if plans.is_empty() {
+            return Ok(false);
         }
         let directory = self.path.parent().unwrap_or(Path::new(".")).to_owned();
-        let external_file = external_path(&directory, chunk);
-        let mut data = Vec::with_capacity(sectors * SECTOR);
-        if external {
+        let external_path_of = |chunk: ChunkPos| external_path(&directory, chunk);
+        // External files first: a failure leaves the header on the old data.
+        for op in plans.values() {
+            let BatchOp::Write {
+                chunk,
+                external: Some(bytes),
+                ..
+            } = op
+            else {
+                continue;
+            };
             let temporary = directory.join(format!(".c.{}.{}.mcc.tmp", chunk.x, chunk.z));
             let written = File::create(&temporary)
-                .and_then(|mut f| f.write_all(&record.compressed))
-                .and_then(|_| fs::rename(&temporary, &external_file));
+                .and_then(|mut f| f.write_all(bytes))
+                .and_then(|_| fs::rename(&temporary, external_path_of(*chunk)));
             if let Err(e) = written {
                 let _ = fs::remove_file(&temporary);
-                self.free(start, sectors);
                 return Err(e);
             }
-            data.extend_from_slice(&1u32.to_be_bytes());
-            data.push(record.compression as u8 | 128);
-        } else {
-            data.extend_from_slice(&(record.compressed.len() as u32 + 1).to_be_bytes());
-            data.push(record.compression as u8);
-            data.extend_from_slice(&record.compressed);
         }
-        data.resize(sectors * SECTOR, 0);
-        let written = self
-            .file
-            .seek(SeekFrom::Start((start * SECTOR) as u64))
-            .and_then(|_| self.file.write_all(&data));
-        if let Err(e) = written {
-            self.free(start, sectors);
-            return Err(e);
+        // Adjacent runs go out as one buffer.
+        let mut runs: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut unlink = Vec::new();
+        let mut old_runs = Vec::new();
+        for (_, op) in std::mem::take(&mut plans) {
+            match op {
+                BatchOp::Write {
+                    chunk,
+                    start,
+                    data,
+                    external,
+                    old,
+                    ..
+                } => {
+                    if old != 0 {
+                        old_runs.push((old >> 8, old & 255));
+                    }
+                    // A header record does not say whether it was external, so
+                    // any previous record may still have a `.mcc`. A slot
+                    // without one (a fresh region) skips the unlink entirely.
+                    if old != 0 && external.is_none() {
+                        unlink.push(external_path_of(chunk));
+                    }
+                    match runs.last_mut() {
+                        Some((last, buffer)) if *last * SECTOR + buffer.len() == start * SECTOR => {
+                            buffer.extend_from_slice(&data);
+                        }
+                        _ => runs.push((start, data)),
+                    }
+                }
+                BatchOp::Clear { chunk, old } => {
+                    old_runs.push((old >> 8, old & 255));
+                    unlink.push(external_path_of(chunk));
+                }
+            }
         }
-        let old = self.offsets[i];
-        self.offsets[i] = (start as u32) << 8 | sectors as u32;
-        self.timestamps[i] = record.timestamp;
-        self.write_header_entry(i)?;
-        if !external {
-            remove_if_exists(&external_file)?;
+        for (start, data) in runs {
+            write_all_at(&self.file, &data, (start * SECTOR) as u64)?;
         }
-        if old != 0 {
-            self.free((old >> 8) as usize, (old & 255) as usize);
+        let mut header = [0; HEADER];
+        for i in 0..1024 {
+            header[i * 4..i * 4 + 4].copy_from_slice(&offsets[i].to_be_bytes());
+            header[SECTOR + i * 4..SECTOR + i * 4 + 4]
+                .copy_from_slice(&timestamps[i].to_be_bytes());
         }
-        Ok(())
+        write_all_at(&self.file, &header, 0)?;
+        self.offsets = offsets;
+        self.timestamps = timestamps;
+        self.used = used;
+        self.next_free = next_free;
+        for path in unlink {
+            remove_if_exists(&path)?;
+        }
+        for (start, count) in old_runs {
+            self.free(start as usize, count as usize);
+        }
+        Ok(true)
     }
 
     /// `RegionFile.clear`: the chunk is gone; `timestamp` marks when.
@@ -292,10 +479,12 @@ impl RegionFile {
 
     /// The header's offset and timestamp of slot `i`.
     fn write_header_entry(&mut self, i: usize) -> io::Result<()> {
-        self.file.seek(SeekFrom::Start((i * 4) as u64))?;
-        self.file.write_all(&self.offsets[i].to_be_bytes())?;
-        self.file.seek(SeekFrom::Start((SECTOR + i * 4) as u64))?;
-        self.file.write_all(&self.timestamps[i].to_be_bytes())
+        write_all_at(&self.file, &self.offsets[i].to_be_bytes(), (i * 4) as u64)?;
+        write_all_at(
+            &self.file,
+            &self.timestamps[i].to_be_bytes(),
+            (SECTOR + i * 4) as u64,
+        )
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPos, u32)> + '_ {
@@ -306,16 +495,15 @@ impl RegionFile {
             .map(|(i, _)| (position(self.position, i), self.timestamps[i]))
     }
 
-    pub fn read(&mut self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {
+    pub fn read(&self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {
         let i = slot(self.position, chunk)?;
         let offset = self.offsets[i];
         if offset == 0 {
             return Ok(None);
         }
-        self.file
-            .seek(SeekFrom::Start(u64::from(offset >> 8) * SECTOR as u64))?;
+        let start = u64::from(offset >> 8) * SECTOR as u64;
         let mut header = [0; 5];
-        self.file.read_exact(&mut header)?;
+        read_exact_at(&self.file, &mut header, start)?;
         let len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         if len < 1 || len as u64 + 4 > (u64::from(offset & 255) * SECTOR as u64) {
             return Err(invalid("invalid chunk payload length"));
@@ -336,7 +524,7 @@ impl RegionFile {
             data
         } else {
             let mut data = vec![0; len - 1];
-            self.file.read_exact(&mut data)?;
+            read_exact_at(&self.file, &mut data, start + 5)?;
             data
         };
         Ok(Some(ChunkRecord {

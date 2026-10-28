@@ -42,10 +42,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
+    time::Instant,
 };
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
@@ -1646,7 +1647,43 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
     chunk.light_loaded = true;
 }
 
-type RegionCache = Mutex<HashMap<(i32, i32), Option<Arc<Mutex<RegionFile>>>>>;
+struct CachedRegion {
+    /// `None` records a missing file, so a read does not retry the open.
+    region: Option<Arc<RwLock<RegionFile>>>,
+    /// When the cache last handed it out; the least recently used goes first.
+    used: Instant,
+}
+type RegionCache = Mutex<HashMap<(i32, i32), CachedRegion>>;
+/// Enough descriptors for a long exploration without approaching the low
+/// soft limits of some systems; a region reopened later re-reads its header.
+const REGION_CACHE_CAP: usize = 64;
+/// A region nobody used for this long is closed even below the cap.
+const REGION_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Close the least recently used unheld regions past `cap`, and any idle one.
+/// An `Arc` a reader or the writer holds keeps its region open: dropping the
+/// last one closes the descriptor.
+fn trim_region_cache(regions: &mut HashMap<(i32, i32), CachedRegion>, cap: usize) {
+    let now = Instant::now();
+    let mut order: Vec<_> = regions
+        .iter()
+        .map(|(&key, cached)| (cached.used, key))
+        .collect();
+    order.sort_unstable();
+    for (used, key) in order {
+        if regions.len() <= cap && now.duration_since(used) < REGION_IDLE {
+            break;
+        }
+        let unheld = regions.get(&key).is_some_and(|cached| {
+            cached
+                .region
+                .as_ref()
+                .is_none_or(|region| Arc::strong_count(region) == 1)
+        });
+        if unheld {
+            regions.remove(&key);
+        }
+    }
+}
 /// The region file at `path` through the cache, which readers and the writer
 /// share, so a read never sees a header older than the sectors it points to.
 /// `create` makes a missing file (for a write); otherwise a missing file is
@@ -1656,13 +1693,13 @@ fn cached_region(
     key: (i32, i32),
     path: &Path,
     create: bool,
-) -> Result<Option<Arc<Mutex<RegionFile>>>> {
+) -> Result<Option<Arc<RwLock<RegionFile>>>> {
     let mut regions = cache.lock().map_err(|_| "region cache poisoned")?;
-    if let Some(Some(region)) = regions.get(&key) {
-        return Ok(Some(region.clone()));
-    }
-    if !create && regions.contains_key(&key) {
-        return Ok(None);
+    if let Some(cached) = regions.get_mut(&key) {
+        cached.used = Instant::now();
+        if cached.region.is_some() || !create {
+            return Ok(cached.region.clone());
+        }
     }
     if create && let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1675,11 +1712,18 @@ fn cached_region(
         other => other,
     };
     let region = match region {
-        Ok(r) => Some(Arc::new(Mutex::new(r))),
+        Ok(r) => Some(Arc::new(RwLock::new(r))),
         Err(_) if !create => None,
         Err(e) => return Err(e.into()),
     };
-    regions.insert(key, region.clone());
+    regions.insert(
+        key,
+        CachedRegion {
+            region: region.clone(),
+            used: Instant::now(),
+        },
+    );
+    trim_region_cache(&mut regions, REGION_CACHE_CAP);
     Ok(region)
 }
 /// Write `records` into the region files of `folder` in place, as vanilla's
@@ -1713,18 +1757,9 @@ fn write_region_records(
         let Some(region) = cached_region(cache, (rx, rz), &path, create)? else {
             continue;
         };
-        let mut region = region.lock().map_err(|_| "region file poisoned")?;
-        let mut changed = false;
-        for (pos, record) in &list {
-            match record {
-                Some(record) => {
-                    region.write(*pos, record)?;
-                    changed = true;
-                }
-                None => changed |= region.clear(*pos, timestamp)?,
-            }
-        }
-        if changed {
+        let mut region = region.write().map_err(|_| "region file poisoned")?;
+        let batch: Vec<_> = list.iter().map(|(p, r)| (*p, r.as_ref())).collect();
+        if region.write_batch(&batch, timestamp)? {
             region.sync()?;
         }
     }
@@ -1859,8 +1894,9 @@ fn read_region_record(
     let Some(region) = cached_region(cache, key, &path, false)? else {
         return Ok(None);
     };
+    // A read lock: several loaders can read one region at the same time.
     let record = region
-        .lock()
+        .read()
         .map_err(|_| "region file poisoned")?
         .read(ChunkPos::new(x, z))?;
     Ok(match record {
@@ -3728,7 +3764,7 @@ impl SaveDir {
             record.tag().map(|tag| (*tag).clone())?
         } else {
             // Far-only reads must not populate the gameplay region cache across the whole view.
-            let mut region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
+            let region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
             region
                 .read(ChunkPos::new(x, z))
                 .ok()??
@@ -4452,6 +4488,46 @@ mod tests {
     }
 
     #[test]
+    fn region_cache_closes_idle_regions_and_reopens_their_header() {
+        let dir = std::env::temp_dir().join(format!("horizon-region-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("region/r.0.0.mca");
+        let cache: super::RegionCache = Default::default();
+        let record = ChunkRecord {
+            compression: Compression::None,
+            compressed: vec![1, 2, 3],
+            timestamp: 9,
+        };
+        let region = super::cached_region(&cache, (0, 0), &path, true)
+            .unwrap()
+            .unwrap();
+        region
+            .write()
+            .unwrap()
+            .write(ChunkPos::new(0, 0), &record)
+            .unwrap();
+        // A held Arc keeps its region open, even at a zero cap.
+        super::trim_region_cache(&mut cache.lock().unwrap(), 0);
+        assert_eq!(cache.lock().unwrap().len(), 1);
+        drop(region);
+        super::trim_region_cache(&mut cache.lock().unwrap(), 0);
+        assert!(cache.lock().unwrap().is_empty());
+        // The next access reopens the file and re-reads the header.
+        let region = super::cached_region(&cache, (0, 0), &path, false)
+            .unwrap()
+            .unwrap();
+        let got = region
+            .read()
+            .unwrap()
+            .read(ChunkPos::new(0, 0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.compressed, record.compressed);
+        drop(region);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn older_worlds_are_upgraded_on_opening() {
         let dir = std::env::temp_dir().join(format!("horizon-dv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4485,7 +4561,7 @@ mod tests {
             .unwrap()
             .unwrap();
         // Hold the actual region lock, rather than relying on disk speed or sleeps.
-        let blocked = region.lock().unwrap();
+        let blocked = region.write().unwrap();
         let entity = |version| Tag::compound([("version", Tag::Int(version))]);
         save.save_entities_later(vec![((1, 2), vec![entity(1)])])
             .unwrap();

@@ -60,7 +60,7 @@ fn external_threshold_negative_coordinates_and_timestamps_roundtrip() {
     writer.finish().unwrap();
     assert!(!dir.0.join("c.-32.0.mcc").exists());
     assert!(dir.0.join("c.-1.31.mcc").exists());
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(
         reader.chunks().collect::<Vec<_>>(),
         [(a, inline.timestamp), (b, external.timestamp)]
@@ -103,7 +103,7 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
     assert!(!region.clear(b, 7).unwrap());
     region.sync().unwrap();
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(reader.chunks().map(|(p, _)| p).collect::<Vec<_>>(), [a, c]);
     assert_eq!(
         reader.read(a).unwrap().unwrap().compressed,
@@ -122,7 +122,7 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
         .write(ChunkPos::new(-30, 0), &record(4096 - 5))
         .unwrap();
     drop(region);
-    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let reader = RegionFile::open(dir.region()).unwrap();
     assert_eq!(
         reader.read(a).unwrap().unwrap().compressed,
         record(3 * 4096 - 5).compressed
@@ -136,6 +136,29 @@ fn in_place_writes_reuse_freed_sectors_and_keep_other_chunks() {
         record(4096 - 5).compressed
     );
     assert_eq!(sectors(&dir.region()), 9);
+}
+
+/// A slot written and then cleared in one batch stays clear, even when it had
+/// no original record and its planned sectors are reused by another chunk.
+#[test]
+fn a_write_cleared_in_the_same_batch_leaves_no_record() {
+    let dir = Directory::new();
+    let (a, b) = (ChunkPos::new(-32, 0), ChunkPos::new(-31, 0));
+    let (first, second) = (record(100), record(100));
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region
+        .write_batch(&[(a, Some(&first)), (a, None), (b, Some(&second))], 7)
+        .unwrap();
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    assert!(
+        reader.read(a).unwrap().is_none(),
+        "a cleared slot must not keep its planned offset"
+    );
+    assert_eq!(
+        reader.read(b).unwrap().unwrap().compressed,
+        second.compressed
+    );
 }
 
 #[test]
@@ -208,7 +231,7 @@ fn corrupt_allocations_are_dropped_and_bad_payloads_fail() {
         (1, 131),
     ] {
         malformed_region(&dir.region(), 513, 0, len, codec);
-        let mut reader = RegionFile::open(dir.region()).unwrap();
+        let reader = RegionFile::open(dir.region()).unwrap();
         assert!(reader.read(ChunkPos::new(-32, 0)).is_err());
     }
 }
@@ -271,6 +294,115 @@ fn chunk_storage_edit_preserves_unknown_fields_and_other_blocks() {
     assert_eq!(record.nbt(Limits::default()).unwrap(), root);
 }
 
+#[test]
+fn positioned_reads_share_one_region_handle() {
+    let dir = Directory::new();
+    let (a, b) = (ChunkPos::new(-32, 0), ChunkPos::new(-1, 31));
+    let payload = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region.write(a, &payload).unwrap();
+    region.write(b, &payload).unwrap();
+    region.sync().unwrap();
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    // `read` takes `&self`: several threads read one handle at once.
+    std::thread::scope(|scope| {
+        for pos in [a, b, a, b] {
+            let reader = &reader;
+            let payload = &payload;
+            scope.spawn(move || {
+                for _ in 0..100 {
+                    let got = reader.read(pos).unwrap().unwrap();
+                    assert_eq!(got.compressed, payload.compressed);
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn batch_writes_a_full_region_and_clears_with_one_header() {
+    let dir = Directory::new();
+    let chunks: Vec<ChunkPos> = (0..1024)
+        .map(|i| ChunkPos::new(-32 + i % 32, i / 32))
+        .collect();
+    let saved = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    for batch in chunks.chunks(256) {
+        let entries: Vec<_> = batch.iter().map(|&c| (c, Some(&saved))).collect();
+        assert!(region.write_batch(&entries, 0).unwrap());
+    }
+    assert_eq!(region.chunks().count(), 1024);
+    // A batch can mix growth, an external record and clears.
+    let grown = record(7000);
+    let external = record(256 * 4096);
+    let external_chunk = chunks[3];
+    let cleared: Vec<_> = chunks.iter().step_by(7).copied().collect();
+    let mut entries: Vec<(ChunkPos, Option<&ChunkRecord>)> = chunks
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 10 == 1)
+        .map(|(_, &c)| (c, Some(&grown)))
+        .collect();
+    entries.push((external_chunk, Some(&external)));
+    entries.extend(cleared.iter().map(|&c| (c, None)));
+    assert!(region.write_batch(&entries, 42).unwrap());
+    let external_file = dir
+        .0
+        .join(format!("c.{}.{}.mcc", external_chunk.x, external_chunk.z));
+    assert!(external_file.exists());
+    // Back inline: the stub's external file is unlinked after the header.
+    assert!(
+        region
+            .write_batch(&[(external_chunk, Some(&saved))], 43)
+            .unwrap()
+    );
+    assert!(!external_file.exists());
+    region.sync().unwrap();
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    for &c in &chunks {
+        let got = reader.read(c).unwrap();
+        if cleared.contains(&c) {
+            assert!(got.is_none(), "{c:?} should be cleared");
+        } else {
+            let want = if c == external_chunk {
+                &saved
+            } else if (chunks.iter().position(|&p| p == c).unwrap()) % 10 == 1 {
+                &grown
+            } else {
+                &saved
+            };
+            assert_eq!(got.unwrap().compressed, want.compressed, "{c:?}");
+        }
+    }
+    for &c in &cleared {
+        assert_eq!(reader.chunks().find(|(p, _)| *p == c), None);
+    }
+}
+
+#[test]
+fn a_rejected_batch_leaves_the_region_unchanged() {
+    let dir = Directory::new();
+    let a = ChunkPos::new(-32, 0);
+    let b = ChunkPos::new(-31, 0);
+    let saved = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region.write(a, &saved).unwrap();
+    // The second chunk belongs to another region: the batch is rejected
+    // before anything is written, so the header still points at a's data.
+    let entries = [(b, Some(&saved)), (ChunkPos::new(0, 0), Some(&saved))];
+    assert!(region.write_batch(&entries, 0).is_err());
+    drop(region);
+    let reader = RegionFile::open(dir.region()).unwrap();
+    assert_eq!(
+        reader.read(a).unwrap().unwrap().compressed,
+        saved.compressed
+    );
+    assert!(reader.read(b).unwrap().is_none());
+    assert_eq!(reader.chunks().count(), 1);
+}
+
 /// Saving one chunk into a full region: the whole file rewritten (every
 /// chunk read and written again, then the new file published), against
 /// vanilla's in-place write. Run with --ignored --nocapture.
@@ -293,7 +425,7 @@ fn benchmark_saving_into_a_full_region() {
     let start = std::time::Instant::now();
     for round in 0..rounds {
         let changed = chunks[round * 7 % 1024];
-        let mut existing = RegionFile::open(dir.region()).unwrap();
+        let existing = RegionFile::open(dir.region()).unwrap();
         let mut records = Vec::new();
         for (p, _) in existing.chunks().collect::<Vec<_>>() {
             let r = if p == changed {

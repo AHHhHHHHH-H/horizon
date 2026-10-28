@@ -41,7 +41,7 @@ pub fn main() -> horizon_client::Result<()> {
     let mut arrays: HashMap<(i32, i32), Arrays> = HashMap::new();
     for entry in std::fs::read_dir(dim.join("region"))? {
         let path = entry?.path();
-        let mut region = RegionFile::open(&path)?;
+        let region = RegionFile::open(&path)?;
         let positions: Vec<ChunkPos> = region.chunks().map(|(p, _)| p).collect();
         for p in positions {
             let Some(record) = region.read(p)? else {
