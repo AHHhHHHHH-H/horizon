@@ -722,9 +722,7 @@ impl Game<'_> {
                 else {
                     continue;
                 };
-                let color = undyed.map_or(0xFFFF_FFFF, |c| {
-                    0xFF00_0000 | (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF
-                });
+                let color = horizon_client::mobs::render::armor_tint(*undyed, Some(stack));
                 // ArmorStandRenderer's HumanoidArmorLayer: the armour glint
                 // when `stack.hasFoil()`, as on a living entity.
                 let item_glint = self
