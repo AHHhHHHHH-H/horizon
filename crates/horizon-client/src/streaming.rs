@@ -705,12 +705,11 @@ impl Streaming {
     /// been generated.
     fn requeue(&mut self) {
         let basis = (self.center, self.loading, self.band);
-        if self.queue_basis.0 == basis && self.queue_basis.1 == self.extra {
+        if self.queue_basis.0 == basis && same_areas(&self.queue_basis.1, &self.extra) {
             return;
         }
-        self.queue_basis = (basis, self.extra.clone());
-        let mut queue = self.shared.queue.lock().unwrap();
-        rank_again(&mut queue, |x, z| self.distance(x, z));
+        self.queue_basis = (basis, canonical_areas(&self.extra));
+        rerank_queue(&self.shared.queue, |x, z| self.distance(x, z));
     }
     fn receive_decorated(&mut self, x: i32, z: i32, region: [Proto; 9]) {
         self.generation_scan.exhausted = false;
@@ -1850,6 +1849,28 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
     }
     *queue = BinaryHeap::from(jobs);
 }
+/// Re-rank the queue without holding its mutex while distances are computed:
+/// workers block on that mutex before every pop. Jobs pushed meanwhile keep
+/// their own priorities and are merged back in.
+fn rerank_queue(queue: &Mutex<BinaryHeap<Queued>>, distance: impl Fn(i32, i32) -> i64) {
+    let mut heap = std::mem::take(&mut *queue.lock().unwrap());
+    rank_again(&mut heap, distance);
+    let mut queue = queue.lock().unwrap();
+    while let Some(job) = queue.pop() {
+        heap.push(job);
+    }
+    *queue = heap;
+}
+/// `extra` as a set: the order areas are stored in must not matter.
+fn canonical_areas(areas: &[((i32, i32), i32)]) -> Vec<((i32, i32), i32)> {
+    let mut areas = areas.to_vec();
+    areas.sort_unstable();
+    areas.dedup();
+    areas
+}
+fn same_areas(canonical: &[((i32, i32), i32)], areas: &[((i32, i32), i32)]) -> bool {
+    canonical == areas || canonical_areas(areas) == canonical
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1941,6 +1962,38 @@ mod tests {
             world.dirty_light,
             [(0, -1), (1, 1)].into_iter().collect::<FxHashSet<_>>()
         );
+    }
+
+    #[test]
+    fn reranking_keeps_jobs_submitted_meanwhile() {
+        let generate = |x, z, priority, order| Queued {
+            priority,
+            at: Some((x, z)),
+            bias: 0,
+            order,
+            job: Job::Generate(x, z),
+        };
+        let queue = Mutex::new(BinaryHeap::from(vec![
+            generate(5, 0, 500, 1),
+            generate(20, 0, 100, 2),
+        ]));
+        let late = AtomicBool::new(false);
+        rerank_queue(&queue, |x, z| {
+            if !late.swap(true, Ordering::Relaxed) {
+                // `submit` pushes while the re-rank runs.
+                queue.lock().unwrap().push(generate(9, 0, 324, 3));
+            }
+            i64::from(x * x + z * z)
+        });
+        let pops: Vec<_> = std::iter::from_fn(|| queue.lock().unwrap().pop())
+            .map(|q| q.at)
+            .collect();
+        assert_eq!(pops, [Some((5, 0)), Some((9, 0)), Some((20, 0))]);
+        assert!(same_areas(&[], &[]));
+        let canonical = canonical_areas(&[((1, 2), 3), ((0, 0), 1), ((1, 2), 3)]);
+        assert_eq!(canonical, [((0, 0), 1), ((1, 2), 3)]);
+        assert!(same_areas(&canonical, &[((1, 2), 3), ((0, 0), 1)]));
+        assert!(!same_areas(&canonical, &[((1, 2), 3), ((0, 0), 2)]));
     }
 
     #[test]
