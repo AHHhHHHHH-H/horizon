@@ -1070,7 +1070,10 @@ impl Streaming {
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
         let workers = self.threads.len();
-        if self.decorates && self.order_area != Some((self.center, self.radius)) {
+        // Re-ranking thousands of chunks buys nothing while no proto can be
+        // decorated: the next proto triggers it.
+        let may_decorate = !self.protos.is_empty() || self.decorating > 0;
+        if self.decorates && may_decorate && self.order_area != Some((self.center, self.radius)) {
             let (decorated, chunks) = (&self.decorated, &world.chunks);
             // The render distance is the server view distance in singleplayer.
             self.decoration_order
