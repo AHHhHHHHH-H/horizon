@@ -261,6 +261,9 @@ pub struct Streaming {
     pub radius: i32,
     /// `/forceload`ed chunks: kept loaded whatever the distance.
     pub forced: HashSet<(i32, i32)>,
+    /// `forced`'s bounding box, refreshed each `update`: one compare rejects
+    /// most columns before the per-forced-chunk scan.
+    forced_bounds: Option<(i32, i32, i32, i32)>,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
     /// The level loading screen is up: work goes ring by ring (`Ranges::rings`).
@@ -420,6 +423,7 @@ impl GenerationScan {
                     radius: input.ranges.radius,
                     extra: input.ranges.extra,
                     forced: input.ranges.forced,
+                    forced_bounds: input.ranges.forced_bounds,
                     cover: input.ranges.cover,
                     band: input.ranges.band,
                 };
@@ -590,6 +594,7 @@ impl Streaming {
             center: (0, 0),
             radius: 8,
             forced: HashSet::new(),
+            forced_bounds: None,
             paused: false,
             loading: false,
             sky_light: true,
@@ -895,6 +900,7 @@ impl Streaming {
         if self.paused {
             return (uploads, Vec::new());
         }
+        self.forced_bounds = forced_bounds(&self.forced);
         ExtraCover::refresh(&mut self.cover, &self.extra);
         self.requeue();
         self.relight_edits(world);
@@ -1077,6 +1083,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                forced_bounds: self.forced_bounds,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -1098,6 +1105,7 @@ impl Streaming {
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
+                    forced_bounds: self.forced_bounds,
                     cover: ExtraCover::matching(&self.cover, &self.extra),
                     band: self.band.as_ref(),
                 };
@@ -1129,6 +1137,7 @@ impl Streaming {
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
+                    forced_bounds: self.forced_bounds,
                     cover: ExtraCover::matching(&self.cover, &self.extra),
                     band: self.band.as_ref(),
                 };
@@ -1221,6 +1230,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                forced_bounds: self.forced_bounds,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             };
@@ -1299,6 +1309,7 @@ impl Streaming {
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
+                forced_bounds: self.forced_bounds,
                 cover: ExtraCover::matching(&self.cover, &self.extra),
                 band: self.band.as_ref(),
             },
@@ -1396,6 +1407,7 @@ impl Streaming {
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
+            forced_bounds: self.forced_bounds,
             cover: ExtraCover::matching(&self.cover, &self.extra),
             band: self.band.as_ref(),
         }
@@ -1551,6 +1563,8 @@ struct Ranges<'a> {
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
+    /// `forced`'s bounding box, when known.
+    forced_bounds: Option<(i32, i32, i32, i32)>,
     /// `extra` as a grid, when one was made for it: `in_extra` without a
     /// scan of every area.
     cover: Option<&'a ExtraCover>,
@@ -1624,12 +1638,17 @@ impl ExtraCover {
         cover: &'a Option<ExtraCover>,
         extra: &[((i32, i32), i32)],
     ) -> Option<&'a ExtraCover> {
-        cover.as_ref().filter(|c| c.extra == extra)
+        cover
+            .as_ref()
+            .filter(|c| c.extra == extra || same_areas(&c.extra, extra))
     }
     /// Make the grid again if `extra` changed; none for one area or none
     /// (a scan is as quick), or areas too far apart.
     fn refresh(cover: &mut Option<ExtraCover>, extra: &[((i32, i32), i32)]) {
-        if cover.as_ref().is_some_and(|c| c.extra == extra) {
+        if cover
+            .as_ref()
+            .is_some_and(|c| c.extra == extra || same_areas(&c.extra, extra))
+        {
             return;
         }
         *cover = Self::new(extra);
@@ -1673,7 +1692,7 @@ impl ExtraCover {
             }
         }
         Some(Self {
-            extra: extra.to_vec(),
+            extra: canonical_areas(extra),
             x0,
             z0,
             width,
@@ -1801,6 +1820,15 @@ impl Ranges<'_> {
             return true;
         }
         let reach = (margin - 1).max(0);
+        // Outside the forced box, no scan can find a forced chunk near enough.
+        if let Some((x0, z0, x1, z1)) = self.forced_bounds
+            && (x.saturating_add(reach) < x0
+                || x.saturating_sub(reach) > x1
+                || z.saturating_add(reach) < z0
+                || z.saturating_sub(reach) > z1)
+        {
+            return false;
+        }
         self.forced
             .iter()
             .any(|f| (x - f.0).abs() <= reach && (z - f.1).abs() <= reach)
@@ -1885,6 +1913,14 @@ fn canonical_areas(areas: &[((i32, i32), i32)]) -> Vec<((i32, i32), i32)> {
 fn same_areas(canonical: &[((i32, i32), i32)], areas: &[((i32, i32), i32)]) -> bool {
     canonical == areas || canonical_areas(areas) == canonical
 }
+/// The bounding box of the forced chunks, or `None` when there are none.
+fn forced_bounds(forced: &HashSet<(i32, i32)>) -> Option<(i32, i32, i32, i32)> {
+    let mut forced = forced.iter();
+    let &(x, z) = forced.next()?;
+    Some(forced.fold((x, z, x, z), |(x0, z0, x1, z1), &(x, z)| {
+        (x0.min(x), z0.min(z), x1.max(x), z1.max(z))
+    }))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1897,6 +1933,7 @@ mod tests {
             radius: 32,
             extra: &[],
             forced: &forced,
+            forced_bounds: None,
             cover: None,
             band: None,
         };
@@ -2011,6 +2048,48 @@ mod tests {
     }
 
     #[test]
+    fn forced_bounds_answers_as_the_scan() {
+        for forced in [
+            HashSet::new(),
+            [(40, -40)].into(),
+            [(40, -40), (-10, 5), (41, -39)].into(),
+            [(-500, 200), (500, -200)].into(),
+        ] {
+            let bounds = forced_bounds(&forced);
+            let ranges = |bounds| Ranges {
+                center: (3, -2),
+                radius: 10,
+                extra: &[],
+                forced: &forced,
+                forced_bounds: bounds,
+                cover: None,
+                band: None,
+            };
+            let (scan, quick) = (ranges(None), ranges(bounds));
+            for x in -520..=520 {
+                for z in -220..=220 {
+                    for margin in 0..5 {
+                        assert_eq!(
+                            scan.in_main_range(x, z, margin),
+                            quick.in_main_range(x, z, margin),
+                            "({x}, {z}) margin {margin}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_reordered_area_set_keeps_the_grid() {
+        let extra = [((0, 0), 5), ((30, 30), 5)];
+        let mut cover = None;
+        ExtraCover::refresh(&mut cover, &extra);
+        assert!(ExtraCover::matching(&cover, &[((30, 30), 5), ((0, 0), 5)]).is_some());
+        assert!(ExtraCover::matching(&cover, &[((30, 30), 5), ((0, 1), 5)]).is_none());
+    }
+
+    #[test]
     fn view_distance_is_vanillas_shape() {
         // ChunkTrackingView.isInViewDistance at render distance 12: a column
         // of slack on each axis, so 533 columns rather than the 441 of a
@@ -2069,6 +2148,7 @@ mod tests {
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
+                    forced_bounds: None,
                     cover: None,
                     band: None,
                 },
@@ -2383,6 +2463,7 @@ mod tests {
                     radius,
                     extra: &[],
                     forced: &forced,
+                    forced_bounds: None,
                     cover: None,
                     band: None,
                 };
@@ -2439,6 +2520,7 @@ mod tests {
             radius: 12,
             extra: &[],
             forced: &forced,
+            forced_bounds: None,
             cover: None,
             band: None,
         };
@@ -2466,6 +2548,7 @@ mod tests {
                     radius,
                     extra: &[((radius * 2 + 9, 3), 4)],
                     forced: &forced,
+                    forced_bounds: None,
                     cover: None,
                     band: None,
                 };
@@ -2507,6 +2590,7 @@ mod tests {
                 radius: 2,
                 extra: &extra,
                 forced: &forced,
+                forced_bounds: None,
                 cover: None,
                 band: None,
             };
@@ -2581,6 +2665,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                forced_bounds: None,
                 cover,
                 band: None,
             };
@@ -2640,6 +2725,7 @@ mod cover_tests {
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
+                forced_bounds: None,
                 cover,
                 band: None,
             };
