@@ -14980,13 +14980,14 @@ fn build_renderer(
     Ok(renderer)
 }
 
-/// The loading screen's renderer: the real HUD atlas and font over one opaque
-/// white block-sprite layer, an empty border texture and the title panorama
-/// once the menu bundle is ready.
+/// The loading screen's renderer: one atlas (the boot screen's until the
+/// pack's GUI atlas is ready) over one opaque white block-sprite layer, an
+/// empty border texture and the title panorama once the menu bundle is ready.
 fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,
-    gui: Option<&UiResources>,
+    atlas: Option<&horizon_client::hud::HudAtlas>,
+    panorama: Option<&horizon_client::gfx::panorama::Faces>,
     previous: Option<&Renderer>,
     api: horizon_client::graphics::GraphicsApi,
 ) -> Result<Renderer> {
@@ -14997,16 +14998,14 @@ fn loading_renderer(
         size: 1,
         pixels: [0u8; 4].repeat(6),
     };
-    let panorama = gui.map_or(&empty_panorama, |gui| gui.panorama.as_ref());
-    let atlas = gui.map(|gui| &gui.atlas);
-    let (pixels, width, height) = match atlas {
-        Some(atlas) => (atlas.pixels.as_slice(), atlas.width, atlas.height),
-        None => (EMPTY_HUD.as_slice(), 1, 1),
-    };
-    let (glint_pixels, glint_width, glint_height) = match atlas {
-        Some(atlas) => (atlas.glint.0.as_slice(), atlas.glint.1, atlas.glint.2),
-        None => (EMPTY_GLINT.as_slice(), 1, 1),
-    };
+    let panorama = panorama.unwrap_or(&empty_panorama);
+    let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
+        (a.pixels.as_slice(), a.width, a.height)
+    });
+    let (glint_pixels, glint_width, glint_height) = atlas
+        .map_or((EMPTY_GLINT.as_slice(), 1, 1), |a| {
+            (a.glint.0.as_slice(), a.glint.1, a.glint.2)
+        });
     // A glyph rasterized into an earlier texture is not in these pixels; the
     // new texture gets it again when the character is drawn (see
     // `build_renderer`).
@@ -15042,6 +15041,20 @@ fn loading_renderer(
 }
 
 /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
+/// The window's `HWND`, for the boot screen's GDI paint (`horizon_threads`):
+/// the raw handle read is safe, the paint is not.
+#[cfg(target_os = "windows")]
+fn hwnd(window: &Window) -> Option<isize> {
+    use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    match window.window_handle() {
+        Ok(raw) => match raw.as_raw() {
+            RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+            _ => None,
+        },
+        Err(_) => None,
+    }
+}
+
 fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         weather: &[],
@@ -15293,6 +15306,8 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 struct Loading {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// The boot screen's atlas, until the pack's GUI atlas replaces it.
+    boot: horizon_client::hud::HudAtlas,
     gui: Option<UiResources>,
     settings: Settings,
     fullscreen: horizon_client::window::FullscreenState,
@@ -15343,11 +15358,34 @@ impl Loading {
             }
         };
         horizon_client::telemetry::note_display(&window);
+        // The renderer takes seconds to build and winit's window sits white
+        // until the first frame presents, so paint the boot screen on it and
+        // keep repainting it as the console's lines arrive; the wgpu frames
+        // redraw the same design when they start. GDI is unsafe:
+        // horizon-threads holds it (this crate forbids unsafe code).
+        #[cfg(target_os = "windows")]
+        let boot_paint_stop = hwnd(&window).map(|hwnd| {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let repaint_stop = stop.clone();
+            std::thread::spawn(move || {
+                while !repaint_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    horizon_threads::boot_paint::paint(
+                        hwnd,
+                        horizon_theme::fonts::GEIST_SEMIBOLD,
+                        horizon_theme::fonts::GEIST_MONO,
+                        &horizon_client::logging::recent_lines(),
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+            });
+            stop
+        });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         match loading_renderer(
             window.clone(),
             offscreen,
-            self.gui.as_ref(),
+            Some(&self.boot),
+            None,
             None,
             self.settings.horizon.api,
         ) {
@@ -15357,6 +15395,12 @@ impl Loading {
                 event_loop.exit();
                 return;
             }
+        }
+        // The wgpu frames take the window over: stop the boot paint thread
+        // before the first one presents.
+        #[cfg(target_os = "windows")]
+        if let Some(stop) = &boot_paint_stop {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
@@ -15388,10 +15432,12 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
+        let bundle = self.gui.as_ref().expect("the menu bundle was just set");
         match loading_renderer(
             window,
             offscreen,
-            self.gui.as_ref(),
+            Some(&bundle.atlas),
+            Some(bundle.panorama.as_ref()),
             self.renderer.as_ref(),
             self.settings.horizon.api,
         ) {
@@ -15620,6 +15666,7 @@ fn run_loading(
     let loading = Loading {
         window: None,
         renderer: None,
+        boot: horizon_client::hud::HudAtlas::boot(),
         gui: None,
         settings,
         fullscreen: horizon_client::window::FullscreenState::new(false),

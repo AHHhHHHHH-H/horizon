@@ -614,7 +614,13 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
-        let Some(gui) = &self.gui else { return };
+        let logs = horizon_client::logging::recent_lines();
+        let Some(gui) = &self.gui else {
+            // The pack's screens do not exist yet: the boot screen holds the
+            // window, the wordmark and the console's lines while they load.
+            horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
+            return;
+        };
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_progress(
                 batch,
@@ -701,6 +707,7 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
+            boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),

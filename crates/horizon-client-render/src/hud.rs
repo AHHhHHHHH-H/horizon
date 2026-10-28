@@ -346,6 +346,59 @@ impl HudAtlas {
         atlas.pixels = Vec::new();
         Ok(atlas)
     }
+    /// The boot screen's atlas, before any pack loads: the theme's run-time
+    /// glyphs (`horizon/ui-text`), a white sprite and the glyph rows over
+    /// transparent black. Nothing from a pack: the boot screen draws with
+    /// the theme's bundled faces, so the font here has no sheets to read.
+    pub fn boot() -> Self {
+        let (width, height) = (1024, 1024);
+        let text_rows = 512;
+        let glyph_top = text_rows + 4;
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        // The white sprite the fills and the font's underline pass sample.
+        for row in 0..4 {
+            let at = ((text_rows + row) * width * 4) as usize;
+            pixels[at..at + 16].fill(255);
+        }
+        let rect = |u0: u32, v0: u32, u1: u32, v1: u32, w: u32, h: u32| Rect {
+            u0: u0 as f32 / width as f32,
+            v0: v0 as f32 / height as f32,
+            u1: u1 as f32 / width as f32,
+            v1: v1 as f32 / height as f32,
+            w,
+            h,
+        };
+        let mut sprites = HashMap::new();
+        sprites.insert(
+            "horizon/white".into(),
+            rect(0, text_rows, 4, glyph_top, 4, 4),
+        );
+        sprites.insert(
+            "horizon/ui-text".into(),
+            rect(0, 0, width, text_rows, width, text_rows),
+        );
+        let white = sprites["horizon/white"];
+        Self {
+            font: crate::font::Font::load(
+                Path::new("horizon-boot"),
+                &sprites,
+                &pixels,
+                (width, height),
+                (glyph_top, height - glyph_top),
+                white,
+            ),
+            pixels,
+            width,
+            height,
+            sprites,
+            translucent: HashSet::new(),
+            flags: HashMap::new(),
+            sprite_animations: Vec::new(),
+            glint: (vec![0; 4], 1, 1),
+            glint_armor: (vec![0; 4], 1, 1),
+            white,
+        }
+    }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
     /// width from 4096 up that keeps the atlas, glyph rows included, within
     /// `max` texels a side; and the first row free for glyphs. High-resolution
