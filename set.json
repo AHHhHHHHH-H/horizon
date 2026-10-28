@@ -2,11 +2,11 @@
   "prs": [
     {
       "number": 3048,
-      "head": "af2a331a1e05b0683881b0154c72a8a81647e403",
+      "head": "c2ce8ea2dd86d0056abcc9c054c15cd574ee8423",
       "title": "Nightly integration: about 154 open pull requests together (do not merge)",
       "author": "kacpherek",
       "asked_by": "kacpherek",
-      "asked_at": "2026-10-28T07:27:46+00:00"
+      "asked_at": "2026-10-28T08:50:34+00:00"
     }
   ],
   "blocked": [],
@@ -45,6 +45,13 @@
       "command": "/nightly add 3048",
       "issue": "3048",
       "url": "https://github.com/horizon-rust/horizon/pull/3048#issuecomment-6463273136"
+    },
+    {
+      "at": "2026-10-28T08:50:34+00:00",
+      "by": "kacpherek",
+      "command": "/nightly add 3048",
+      "issue": "3048",
+      "url": "https://github.com/horizon-rust/horizon/pull/3048#issuecomment-6464685032"
     }
   ]
 }
