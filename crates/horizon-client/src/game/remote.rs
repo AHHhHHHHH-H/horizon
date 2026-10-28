@@ -548,6 +548,8 @@ impl Game<'_> {
         }
         self.clear_waypoints();
         self.boss_overlay.reset();
+        // GameRenderer.resetData (Minecraft.disconnect).
+        self.item_activation.reset();
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
@@ -3646,6 +3648,7 @@ impl Game<'_> {
         // the time only while the level runs normally.
         let running = self.clock.world_runs();
         self.boss_overlay.tick_darken(running);
+        self.tick_item_activation();
         if running {
             self.world.game_time += 1;
             self.remote_clock_tick();
