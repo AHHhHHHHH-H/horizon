@@ -175,6 +175,44 @@ fn fingerprint(registry: &BlockRegistry, root: &Path) -> io::Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
+/// The hashes `horizon-prepare` recorded for the files it wrote. Reusing them
+/// saves hashing ~70 MB on every launch; a source whose stamp is newer than
+/// the manifest is hashed instead, so a dev edit or a pack overlay still keys
+/// its own snapshot.
+struct Manifest {
+    modified: SystemTime,
+    hashes: HashMap<String, String>,
+}
+
+fn manifest(root: &Path) -> Option<Manifest> {
+    let path = root.join("horizon-resources.json");
+    let modified = fs::metadata(&path).ok()?.modified().ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    let mut hashes = HashMap::new();
+    for (name, key) in [
+        ("facts.json", "facts_sha256"),
+        ("block-behaviours.json", "behaviour_sha256"),
+        ("gameplay-facts.json", "gameplay_facts_sha256"),
+        ("block-tags.json", "block_tags_sha256"),
+        ("cached-collision.nbt", "collision_sha256"),
+    ] {
+        if let Some(hash) = value.get(key).and_then(|v| v.as_str()) {
+            hashes.insert(name.to_owned(), hash.to_owned());
+        }
+    }
+    for (name, hash) in value
+        .get("fluid_tags_sha256")
+        .and_then(|v| v.as_object())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(hash) = hash.as_str() {
+            hashes.insert(name.clone(), hash.to_owned());
+        }
+    }
+    Some(Manifest { modified, hashes })
+}
+
 /// The source files the snapshot is resolved from, as their lengths and
 /// modification times, and the hash of their contents.
 type Sources = (Vec<(PathBuf, u64, Option<SystemTime>)>, [u8; 32]);
@@ -212,9 +250,26 @@ fn sources_digest(root: &Path) -> io::Result<[u8; 32]> {
         return Ok(*digest);
     }
     drop(known);
+    let manifest = manifest(root);
     let mut hasher = Sha256::new();
-    for path in &paths {
-        hash_file(&mut hasher, root, path)?;
+    for (path, len, modified) in &stamps {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| invalid(e.to_string()))?
+            .to_string_lossy()
+            .into_owned();
+        // shortcut: a file replaced while keeping an older mtime trusts the
+        // manifest; the snapshot is disposable, so delete .horizon-cache then.
+        let recorded = match (&manifest, modified) {
+            (Some(manifest), Some(stamp)) if *stamp <= manifest.modified => {
+                manifest.hashes.get(&relative).map(String::as_str)
+            }
+            _ => None,
+        };
+        match recorded {
+            Some(hash) => hash_stamp(&mut hasher, &relative, *len, hash),
+            None => hash_file(&mut hasher, root, path)?,
+        }
     }
     let digest: [u8; 32] = hasher.finalize().into();
     SOURCES
@@ -233,11 +288,31 @@ fn hash_file(hasher: &mut Sha256, root: &Path, path: &Path) -> io::Result<()> {
     let relative = path
         .strip_prefix(root)
         .map_err(|e| invalid(e.to_string()))?;
-    hash_str(hasher, &relative.to_string_lossy());
     let bytes = fs::read(path)?;
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
+    let digest = hex(&Sha256::digest(&bytes));
+    hash_stamp(
+        hasher,
+        &relative.to_string_lossy(),
+        bytes.len() as u64,
+        &digest,
+    );
     Ok(())
+}
+
+/// One source's contribution to the digest: its path, length and content hash.
+/// A manifest hash is fed the same way as a file hash, so the two agree.
+fn hash_stamp(hasher: &mut Sha256, relative: &str, len: u64, digest: &str) {
+    hash_str(hasher, relative);
+    hasher.update(len.to_le_bytes());
+    hash_str(hasher, digest);
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 fn direction(index: u8) -> io::Result<Direction> {
@@ -864,6 +939,98 @@ mod tests {
         fs::write(&tags, bytes).unwrap();
         assert_ne!(sources_digest(&root.0).unwrap(), first);
         assert_eq!(entries(), 2);
+    }
+
+    fn forget_sources(root: &Path) {
+        SOURCES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(stamps, _)| {
+                !stamps
+                    .first()
+                    .is_some_and(|(path, _, _)| path.starts_with(root))
+            });
+    }
+
+    /// A manifest with every recorded hash, optionally one file's wrong.
+    fn write_manifest(root: &Path, wrong_tags: bool) {
+        let mut json = serde_json::Map::new();
+        for (name, key) in [
+            ("facts.json", "facts_sha256"),
+            ("block-behaviours.json", "behaviour_sha256"),
+            ("gameplay-facts.json", "gameplay_facts_sha256"),
+            ("block-tags.json", "block_tags_sha256"),
+            ("cached-collision.nbt", "collision_sha256"),
+        ] {
+            let digest = if wrong_tags && name == "block-tags.json" {
+                "0".repeat(64)
+            } else {
+                hex(&Sha256::digest(fs::read(root.join(name)).unwrap()))
+            };
+            json.insert(key.into(), serde_json::Value::String(digest));
+        }
+        let mut fluids = serde_json::Map::new();
+        let mut paths: Vec<_> = fs::read_dir(root.join("data/minecraft/tags/fluid"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+            let digest = hex(&Sha256::digest(fs::read(&path).unwrap()));
+            fluids.insert(relative.into_owned(), serde_json::Value::String(digest));
+        }
+        json.insert(
+            "fluid_tags_sha256".into(),
+            serde_json::Value::Object(fluids),
+        );
+        fs::write(
+            root.join("horizon-resources.json"),
+            serde_json::to_vec(&serde_json::Value::Object(json)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// The recorded hashes key the snapshot exactly like hashing the files;
+    /// a manifest is trusted, and a file newer than it is hashed again.
+    #[test]
+    fn manifest_hashes_key_the_snapshot_and_newer_files_still_hash() {
+        let Some(root) = fixture() else {
+            return;
+        };
+        forget_sources(&root.0);
+        let hashed = sources_digest(&root.0).unwrap();
+
+        forget_sources(&root.0);
+        write_manifest(&root.0, false);
+        assert_eq!(
+            sources_digest(&root.0).unwrap(),
+            hashed,
+            "the manifest reproduces the file digests"
+        );
+
+        forget_sources(&root.0);
+        write_manifest(&root.0, true);
+        let wrong = sources_digest(&root.0).unwrap();
+        assert_ne!(wrong, hashed, "the recorded hash is used as it is");
+
+        // A file rewritten after the manifest is hashed, not taken from it.
+        forget_sources(&root.0);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let tags = root.0.join("block-tags.json");
+        let mut bytes = fs::read(&tags).unwrap();
+        bytes[0] ^= 1;
+        fs::write(&tags, bytes).unwrap();
+        let changed = sources_digest(&root.0).unwrap();
+        assert_ne!(changed, wrong, "the newer file is not reused");
+        fs::remove_file(root.0.join("horizon-resources.json")).unwrap();
+        forget_sources(&root.0);
+        assert_eq!(
+            sources_digest(&root.0).unwrap(),
+            changed,
+            "without a manifest every file is hashed"
+        );
     }
 
     #[test]

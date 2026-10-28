@@ -909,6 +909,30 @@ fn steps(
                 .collect::<Result<_, String>>()?,
         ))
     };
+    // The fluid tags are the one seed of the behaviour snapshot that is a
+    // folder; the game keys them by their relative path, as recorded here.
+    let fluid_hashes = {
+        let dir = root.join("data/minecraft/tags/fluid");
+        let mut paths: Vec<PathBuf> = if dir.is_dir() {
+            fs::read_dir(&dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        paths.sort();
+        let mut hashes = Value::Object(Vec::new());
+        for path in paths {
+            hashes.insert(
+                &relative_display(&path, root)?,
+                Value::Str(digest(&path, "sha256")?),
+            );
+        }
+        hashes
+    };
     let mut manifest = vec![("schema".to_string(), Value::Int(SCHEMA.to_string()))];
     manifest.extend(run.origin.as_object().unwrap().iter().cloned());
     manifest.extend([
@@ -947,9 +971,18 @@ fn steps(
         ),
         ("facts_sha256".into(), run.file_hash("facts.json")?),
         (
+            "gameplay_facts_sha256".into(),
+            run.file_hash("gameplay-facts.json")?,
+        ),
+        (
+            "behaviour_sha256".into(),
+            run.file_hash("block-behaviours.json")?,
+        ),
+        (
             "block_tags_sha256".into(),
             run.file_hash("block-tags.json")?,
         ),
+        ("fluid_tags_sha256".into(), fluid_hashes),
         ("resource_files".into(), Value::Int(count.to_string())),
     ]);
     write_json(
