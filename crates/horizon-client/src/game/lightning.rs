@@ -431,11 +431,8 @@ impl Game<'_> {
             .map(|m| (m.id, self.mob_entity(m)))
             .collect();
         b.hit.extend(struck.iter().map(|(id, _)| *id));
-        let damage = Damage {
-            kind: DamageKind::Generic,
-            attacker: None,
-            from: Some(b.at),
-        };
+        // DamageSources.lightningBolt: its own type, with no position.
+        let damage = Damage::of(DamageKind::LightningBolt);
         let mut events = Vec::new();
         let peaceful = self.ui.difficulty == 0;
         for m in self.mobs.iter_mut().filter(|m| m.alive()) {

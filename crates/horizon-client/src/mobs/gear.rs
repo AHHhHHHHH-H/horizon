@@ -184,6 +184,8 @@ pub fn protection_points(g: &Gear, kind: DamageKind) -> f32 {
             | DamageKind::Lava
             | DamageKind::Fireball
             | DamageKind::SulfurCubeHot
+            | DamageKind::Campfire
+            | DamageKind::HotFloor
     );
     let projectile = matches!(
         kind,

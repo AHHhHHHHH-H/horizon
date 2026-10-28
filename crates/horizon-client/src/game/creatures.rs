@@ -470,6 +470,7 @@ impl Game<'_> {
             nether: self.dim == Dim::Nether,
             block_tags: &self.res.items().block_tags,
             biomes: self.res.biomes(),
+            max_cramming: self.ui.rules.int("max_entity_cramming"),
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             mob_drops: self.ui.rules.bool("mob_drops"),
             end: self.dim == Dim::End,
@@ -3004,7 +3005,7 @@ impl Game<'_> {
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
             (ProjectileKind::Trident, Hit::Block { .. }) => {}
-            (ProjectileKind::Arrow { effect, .. }, Hit::Entity { who, .. }) => {
+            (ProjectileKind::Arrow { .. }, Hit::Entity { who, .. }) => {
                 let mut arrow = p.clone();
                 let amount = arrow_damage(&mut arrow, &mut self.world.random) + p.bonus.damage;
                 let player_fire = self.player.as_ref().map(|pl| pl.fire_ticks);
@@ -3016,17 +3017,11 @@ impl Game<'_> {
                     }])?;
                 }
                 let hurt = match who {
-                    Who::Player => {
-                        let hurt = self.mob_hits_player(
-                            amount,
-                            [p.previous.x, p.previous.y, p.previous.z],
-                            "minecraft:arrow",
-                        );
-                        if hurt && let Some((e, t)) = effect {
-                            self.give_player_effect(e, *t, 0);
-                        }
-                        hurt
-                    }
+                    Who::Player => self.mob_hits_player(
+                        amount,
+                        [p.previous.x, p.previous.y, p.previous.z],
+                        "minecraft:arrow",
+                    ),
                     Who::Mob(id) => {
                         let hurt = self
                             .mobs
@@ -3139,6 +3134,9 @@ impl Game<'_> {
                         target: who,
                         velocity: [p.velocity.x * k, 0.1, p.velocity.z * k],
                     }])?;
+                }
+                if hurt {
+                    self.arrow_post_hurt_effects(p, who);
                 }
                 match (hurt, who) {
                     (true, _) => self.finish_arrow_hit(arrow, EntityHit::Hurt),
@@ -4828,6 +4826,8 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, player: bool) 
         K::SulfurCubeHot => "minecraft:sulfur_cube_hot",
         K::WindCharge => "minecraft:wind_charge",
         K::Wither => "minecraft:wither",
+        K::Campfire => "minecraft:campfire",
+        K::HotFloor => "minecraft:hot_floor",
     }
 }
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments).

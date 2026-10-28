@@ -533,12 +533,25 @@ pub fn tick(
     true
 }
 /// `LivingEntity.aiStep` -> `Entity.applyEffectsFromBlocks` for the blocks
-/// that hurt or hold a mob: the cactus (`CactusBlock.entityInside`, 1), the
-/// cobweb (stuck at 0.25, 0.05, 0.25) and the sweet berry bush
+/// that hurt or hold a mob (and the magma block it stands on): the cactus
+/// (`CactusBlock.entityInside`, 1), a lit campfire (`CampfireBlock.entityInside`),
+/// the cobweb (stuck at 0.25, 0.05, 0.25) and the sweet berry bush
 /// (`SweetBerryBushBlock.entityInside`: stuck at 0.8, 0.75, 0.8, and a grown bush pricks for 1 when the mob moved at least 0.003 on X
 /// or Z this tick). The blocks are those the mob's box touches anywhere along
 /// its move this tick, from where it started to where it ended.
 fn effects_from_blocks(m: &mut Mob, w: &MobWorld) {
+    // Block.stepOn for the block under a mob on the ground (`getOnPosLegacy`):
+    // MagmaBlock.stepOn's hot floor, 1 damage (a mob never sneaks).
+    if m.on_ground && m.alive() {
+        let (x, y, z) = (
+            m.position.x.floor() as i32,
+            (m.position.y - f64::from(0.2_f32)).floor() as i32,
+            m.position.z.floor() as i32,
+        );
+        if w.block_name(x, y, z) == "minecraft:magma_block" {
+            m.damage(1.0, Damage::of(DamageKind::HotFloor));
+        }
+    }
     let mut visited: Vec<[i32; 3]> = Vec::new();
     let travel = m.position.subtract(m.previous);
     let longest = travel.x.abs().max(travel.y.abs()).max(travel.z.abs());
@@ -576,6 +589,18 @@ fn effects_from_blocks(m: &mut Mob, w: &MobWorld) {
                             } else {
                                 Vec3::new(0.25, f64::from(0.05_f32), 0.25)
                             };
+                        }
+                        // CampfireBlock.entityInside: a lit one hurts by its
+                        // fireDamage (1, 2 for a soul campfire).
+                        name @ ("minecraft:campfire" | "minecraft:soul_campfire") => {
+                            if w.prop(x, y, z, "lit") == Some("true") {
+                                let fire = if name == "minecraft:campfire" {
+                                    1.0
+                                } else {
+                                    2.0
+                                };
+                                m.damage(fire, Damage::of(DamageKind::Campfire));
+                            }
                         }
                         "minecraft:sweet_berry_bush"
                             if !matches!(m.species(), Species::Fox | Species::Bee) =>
@@ -1084,7 +1109,8 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && m.species() != Species::Shulker
         && !on_climbable(m, w)
         && (m.species() != Species::Creaking || super::creaking::can_move(m));
-    let mut targets: Vec<(Who, Vec3)> = Vec::new();
+    // Each pusher with whether it is a passenger (`isPassenger`).
+    let mut targets: Vec<(Who, Vec3, bool)> = Vec::new();
     if let Some(p) = &w.player
         // Entity.push: passengers of the same vehicle never push each other.
         && m.rider.is_none()
@@ -1092,21 +1118,26 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && !p.spectator
         && p.bounds.intersects(bounds)
     {
-        targets.push((Who::Player, p.position));
+        targets.push((Who::Player, p.position, p.passenger));
     }
     for o in w.others_near(bounds) {
         if o.id != m.id && o.alive && o.pushable && o.bounds.intersects(bounds) {
-            targets.push((Who::Mob(o.id), o.position));
+            targets.push((Who::Mob(o.id), o.position, o.passenger));
         }
     }
     // EntitySelector.pushableBy(this): the teams' collision rules.
     let own = w.teams.of(Who::Mob(m.id));
-    targets.retain(|(who, _)| crate::scoreboard::pushable_by(own, w.teams.of(*who), true));
-    // Cramming (maxEntityCramming 24).
-    if targets.len() > 23 {
-        let _ = m.random.next_int_bound(4);
+    targets.retain(|(who, ..)| crate::scoreboard::pushable_by(own, w.teams.of(*who), true));
+    // Cramming: in one in four ticks, with `maxEntityCramming` or more
+    // pushers around and that many not riding, 6 damage.
+    if w.max_cramming > 0
+        && targets.len() as i32 > w.max_cramming - 1
+        && m.random.next_int_bound(4).ok() == Some(0)
+        && targets.iter().filter(|t| !t.2).count() as i32 > w.max_cramming - 1
+    {
+        m.damage(6.0, Damage::of(DamageKind::Cramming));
     }
-    for (who, at) in targets {
+    for (who, at, _) in targets {
         // Warden.doPush: touching it angers it, then the push itself.
         if m.species() == Species::Warden {
             super::warden::do_push(m, w, who, events);

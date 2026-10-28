@@ -563,6 +563,10 @@ pub enum DamageKind {
     WindCharge,
     /// `wither`: the wither effect.
     Wither,
+    /// `campfire`: standing in a lit campfire.
+    Campfire,
+    /// `hot_floor`: stepping on a magma block.
+    HotFloor,
 }
 impl DamageKind {
     /// DamageTypeTags.BYPASSES_INVULNERABILITY
@@ -641,6 +645,7 @@ impl Damage {
                 | DamageKind::Spit
                 | DamageKind::Stalagmite
                 | DamageKind::Starve
+                | DamageKind::Campfire
         )
     }
     /// DamageTypeTags.BYPASSES_ARMOR
@@ -672,6 +677,8 @@ impl Damage {
                 | DamageKind::Lava
                 | DamageKind::Fireball
                 | DamageKind::SulfurCubeHot
+                | DamageKind::Campfire
+                | DamageKind::HotFloor
         )
     }
     /// DamageTypeTags.NO_KNOCKBACK
@@ -700,6 +707,8 @@ impl Damage {
                 | DamageKind::Starve
                 | DamageKind::SulfurCubeHot
                 | DamageKind::Wither
+                | DamageKind::Campfire
+                | DamageKind::HotFloor
         )
     }
     pub fn is_projectile(&self) -> bool {
@@ -1908,6 +1917,8 @@ pub struct MobWorld<'a> {
     pub nether: bool,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
     pub biomes: &'a crate::biome::Biomes,
+    /// The `max_entity_cramming` game rule.
+    pub max_cramming: i32,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
     /// The `mob_drops` game rule (`shouldDropLoot`).
