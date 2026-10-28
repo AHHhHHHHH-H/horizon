@@ -367,7 +367,7 @@ pub fn light_chunk_masked_with(
                 if section.is_uniform(0) {
                     continue;
                 }
-                section.unpack(&mut **ids);
+                section.unpack(ids);
                 for (i, &id) in ids.iter().enumerate() {
                     let (lx, lz, ly) = (i & 15, (i >> 4) & 15, i >> 8);
                     let p = at(dx * 16 + lx, si * 16 + ly, dz * 16 + lz);
@@ -1116,7 +1116,7 @@ mod tests {
             .collect();
         lit.into_iter().collect()
     }
-    fn region<'a>(chunks: &'a HashMap<(i32, i32), Arc<Chunk>>) -> [[Option<&'a Chunk>; 3]; 3] {
+    fn region(chunks: &HashMap<(i32, i32), Arc<Chunk>>) -> [[Option<&Chunk>; 3]; 3] {
         std::array::from_fn(|dz| {
             std::array::from_fn(|dx| chunks.get(&(dx as i32 - 1, dz as i32 - 1)).map(|c| &**c))
         })
