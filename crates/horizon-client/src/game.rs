@@ -1677,6 +1677,11 @@ struct Game<'a> {
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
+    /// The world's auto `icon.png` until it exists (GameRenderer's
+    /// tryTakeScreenshotIfNeeded). Single player only.
+    world_icon: Option<PathBuf>,
+    /// When a world icon was last attempted; at most once a second.
+    world_icon_attempt: Option<Instant>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// A player carried through a portal, re-placed once the destination loads.
@@ -9034,6 +9039,13 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
+        // A single-player world takes its icon from its first good frame.
+        let icon = std::env::current_dir()?
+            .join("saves")
+            .join(folder)
+            .join("icon.png");
+        self.world_icon = (!icon.is_file()).then_some(icon);
+        self.world_icon_attempt = None;
         if self
             .options
             .execution_role
@@ -9498,6 +9510,8 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        self.world_icon = None;
+        self.world_icon_attempt = None;
         self.sleeping = None;
         self.sleep_timer = 0;
         self.clear_entities();
@@ -11585,6 +11599,36 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// `GameRenderer.tryTakeScreenshotIfNeeded`: the first frame drawn in a
+    /// single-player world after its sections are meshed becomes `icon.png`.
+    fn try_take_world_icon(&mut self) {
+        let Some(path) = self.world_icon.clone() else {
+            return;
+        };
+        if self.title.is_some() || self.player.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .world_icon_attempt
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.world_icon_attempt = Some(now);
+        if path.is_file() {
+            self.world_icon = None;
+            return;
+        }
+        let busy = self.streaming.busy();
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        if renderer.world_icon.is_some() || renderer.drawn_sections <= 10 || busy {
+            return;
+        }
+        renderer.world_icon = Some(path);
+    }
     fn render(&mut self) -> Result<bool> {
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts. Its chunk map and progress are the server's, which
@@ -11659,6 +11703,7 @@ impl Game<'_> {
         else {
             return Ok(false);
         };
+        self.try_take_world_icon();
         let alpha = self.clock.fraction();
         // Camera.getCameraEntityPartialTicks: the view, the hand and the
         // player's own model stay smooth while the level is frozen.
@@ -13990,6 +14035,8 @@ impl<'a> Game<'a> {
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
+            world_icon: None,
+            world_icon_attempt: None,
             world_flat: false,
             travelling: None,
             server_trips: Vec::new(),
