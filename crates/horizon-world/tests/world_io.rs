@@ -271,6 +271,89 @@ fn chunk_storage_edit_preserves_unknown_fields_and_other_blocks() {
     assert_eq!(record.nbt(Limits::default()).unwrap(), root);
 }
 
+#[test]
+fn batch_writes_a_full_region_and_clears_with_one_header() {
+    let dir = Directory::new();
+    let chunks: Vec<ChunkPos> = (0..1024)
+        .map(|i| ChunkPos::new(-32 + i % 32, i / 32))
+        .collect();
+    let saved = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    for batch in chunks.chunks(256) {
+        let entries: Vec<_> = batch.iter().map(|&c| (c, Some(&saved))).collect();
+        assert!(region.write_batch(&entries, 0).unwrap());
+    }
+    assert_eq!(region.chunks().count(), 1024);
+    // A batch can mix growth, an external record and clears.
+    let grown = record(7000);
+    let external = record(256 * 4096);
+    let external_chunk = chunks[3];
+    let cleared: Vec<_> = chunks.iter().step_by(7).copied().collect();
+    let mut entries: Vec<(ChunkPos, Option<&ChunkRecord>)> = chunks
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 10 == 1)
+        .map(|(_, &c)| (c, Some(&grown)))
+        .collect();
+    entries.push((external_chunk, Some(&external)));
+    entries.extend(cleared.iter().map(|&c| (c, None)));
+    assert!(region.write_batch(&entries, 42).unwrap());
+    let external_file = dir
+        .0
+        .join(format!("c.{}.{}.mcc", external_chunk.x, external_chunk.z));
+    assert!(external_file.exists());
+    // Back inline: the stub's external file is unlinked after the header.
+    assert!(
+        region
+            .write_batch(&[(external_chunk, Some(&saved))], 43)
+            .unwrap()
+    );
+    assert!(!external_file.exists());
+    region.sync().unwrap();
+    drop(region);
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    for &c in &chunks {
+        let got = reader.read(c).unwrap();
+        if cleared.contains(&c) {
+            assert!(got.is_none(), "{c:?} should be cleared");
+        } else {
+            let want = if c == external_chunk {
+                &saved
+            } else if (chunks.iter().position(|&p| p == c).unwrap()) % 10 == 1 {
+                &grown
+            } else {
+                &saved
+            };
+            assert_eq!(got.unwrap().compressed, want.compressed, "{c:?}");
+        }
+    }
+    for &c in &cleared {
+        assert_eq!(reader.chunks().find(|(p, _)| *p == c), None);
+    }
+}
+
+#[test]
+fn a_rejected_batch_leaves_the_region_unchanged() {
+    let dir = Directory::new();
+    let a = ChunkPos::new(-32, 0);
+    let b = ChunkPos::new(-31, 0);
+    let saved = record(6000);
+    let mut region = RegionFile::open_writable(dir.region(), true).unwrap();
+    region.write(a, &saved).unwrap();
+    // The second chunk belongs to another region: the batch is rejected
+    // before anything is written, so the header still points at a's data.
+    let entries = [(b, Some(&saved)), (ChunkPos::new(0, 0), Some(&saved))];
+    assert!(region.write_batch(&entries, 0).is_err());
+    drop(region);
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    assert_eq!(
+        reader.read(a).unwrap().unwrap().compressed,
+        saved.compressed
+    );
+    assert!(reader.read(b).unwrap().is_none());
+    assert_eq!(reader.chunks().count(), 1);
+}
+
 /// Saving one chunk into a full region: the whole file rewritten (every
 /// chunk read and written again, then the new file published), against
 /// vanilla's in-place write. Run with --ignored --nocapture.

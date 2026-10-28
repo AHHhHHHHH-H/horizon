@@ -1679,17 +1679,8 @@ fn write_region_records(
             continue;
         };
         let mut region = region.lock().map_err(|_| "region file poisoned")?;
-        let mut changed = false;
-        for (pos, record) in &list {
-            match record {
-                Some(record) => {
-                    region.write(*pos, record)?;
-                    changed = true;
-                }
-                None => changed |= region.clear(*pos, timestamp)?,
-            }
-        }
-        if changed {
+        let batch: Vec<_> = list.iter().map(|(p, r)| (*p, r.as_ref())).collect();
+        if region.write_batch(&batch, timestamp)? {
             region.sync()?;
         }
     }
