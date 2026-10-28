@@ -266,6 +266,33 @@ const OFFSETS: [(i32, i32, i32); 6] = [
     (1, 0, 0),
 ];
 
+/// Per-worker light scratch, reused between jobs: the 48x48xheight region and
+/// its flood-fill queues. Resized only upward; cleared before each job.
+pub struct LightScratch {
+    states: Vec<u16>,
+    sky: Vec<u8>,
+    block: Vec<u8>,
+    present: Vec<bool>,
+    lowest: Vec<i32>,
+    queue: VecDeque<u32>,
+    sky_queue: VecDeque<u32>,
+    ids: Box<[u32; 4096]>,
+}
+impl Default for LightScratch {
+    fn default() -> Self {
+        Self {
+            states: Vec::new(),
+            sky: Vec::new(),
+            block: Vec::new(),
+            present: Vec::new(),
+            lowest: Vec::new(),
+            queue: VecDeque::new(),
+            sky_queue: VecDeque::new(),
+            ids: Box::new([0; 4096]),
+        }
+    }
+}
+
 /// `region[dz][dx]` holds the chunks around the centre (index 1,1).
 /// `sky` is false in dimensions without skylight (the Nether).
 pub fn light_chunk(
@@ -273,6 +300,26 @@ pub fn light_chunk(
     tables: &LightTables,
     sky_light: bool,
 ) -> Vec<Light> {
+    light_chunk_masked(region, tables, sky_light).0
+}
+
+/// `light_chunk`, plus the sections whose light differs from the centre
+/// chunk's snapshot (bit `sy` set): the game thread then replays only those.
+pub fn light_chunk_masked(
+    region: &[[Option<&Chunk>; 3]; 3],
+    tables: &LightTables,
+    sky_light: bool,
+) -> (Vec<Light>, u32) {
+    light_chunk_masked_with(region, tables, sky_light, &mut LightScratch::default())
+}
+
+/// `light_chunk_masked` with a caller-owned scratch buffer (`LightScratch`).
+pub fn light_chunk_masked_with(
+    region: &[[Option<&Chunk>; 3]; 3],
+    tables: &LightTables,
+    sky_light: bool,
+    scratch: &mut LightScratch,
+) -> (Vec<Light>, u32) {
     region[1][1].expect("centre chunk");
     // Highest occupied section in the region bounds the work.
     let mut top_section = 0;
@@ -289,13 +336,30 @@ pub fn light_chunk(
     let h = ((top_section + 1) * 16).min(HEIGHT as usize);
     let at = |x: usize, y: usize, z: usize| (y * W + z) * W + x;
     // Packed cells (`type << 4 | dampening`), not state ids: the flood fill
-    // then never touches the large `LightTables::cells` table.
-    let mut states = vec![0u16; W * W * h];
-    let mut sky = vec![0u8; W * W * h];
-    let mut block = vec![0u8; W * W * h];
-    let mut queue = VecDeque::new();
-    let mut sky_queue = VecDeque::new();
-    let mut ids = Box::new([0u32; 4096]);
+    // then never touches the large `LightTables::cells` table. Every used cell
+    // is cleared: the flood fill reads stale values otherwise.
+    let cells = W * W * h;
+    scratch.states.resize(cells, 0);
+    scratch.states.fill(0);
+    scratch.sky.resize(cells, 0);
+    scratch.sky.fill(0);
+    scratch.block.resize(cells, 0);
+    scratch.block.fill(0);
+    scratch.queue.clear();
+    scratch.sky_queue.clear();
+    let LightScratch {
+        states,
+        sky,
+        block,
+        present,
+        lowest,
+        queue,
+        sky_queue,
+        ids,
+    } = scratch;
+    let states = &mut states[..cells];
+    let sky = &mut sky[..cells];
+    let block = &mut block[..cells];
     for (dz, row) in region.iter().enumerate() {
         for (dx, chunk) in row.iter().enumerate() {
             let Some(chunk) = chunk else { continue };
@@ -303,7 +367,7 @@ pub fn light_chunk(
                 if section.is_uniform(0) {
                     continue;
                 }
-                section.unpack(&mut ids);
+                section.unpack(ids);
                 for (i, &id) in ids.iter().enumerate() {
                     let (lx, lz, ly) = (i & 15, (i >> 4) & 15, i >> 8);
                     let p = at(dx * 16 + lx, si * 16 + ly, dz * 16 + lz);
@@ -319,13 +383,15 @@ pub fn light_chunk(
         }
     }
     // Columns of missing neighbour chunks neither hold nor pass light.
-    let mut present = vec![false; W * W];
+    present.resize(W * W, false);
+    present.fill(false);
     for z in 0..W {
         for x in 0..W {
             present[z * W + x] = region[z / 16][x / 16].is_some();
         }
     }
-    let mut lowest = vec![h as i32; W * W];
+    lowest.resize(W * W, h as i32);
+    lowest.fill(h as i32);
     for z in 0..W {
         for x in 0..W {
             if !present[z * W + x] || !sky_light {
@@ -420,21 +486,36 @@ pub fn light_chunk(
             }
         }
     };
-    spread(&mut sky, &mut sky_queue);
-    spread(&mut block, &mut queue);
-    pack_lighting(h, &sky, &block, sky_light)
+    spread(sky, sky_queue);
+    spread(block, queue);
+    pack_lighting(h, sky, block, sky_light, region[1][1])
 }
 
 /// Extract just the centre column's light; never copy worker snapshot sections.
-fn pack_lighting(h: usize, sky: &[u8], block: &[u8], sky_light: bool) -> Vec<Light> {
+fn pack_lighting(
+    h: usize,
+    sky: &[u8],
+    block: &[u8],
+    sky_light: bool,
+    old: Option<&Chunk>,
+) -> (Vec<Light>, u32) {
     let at = |x: usize, y: usize, z: usize| (y * W + z) * W + x;
     let open = if sky_light { 0xF0 } else { 0x00 };
-    (0..SECTIONS)
+    let mut changed = 0u32;
+    let lights = (0..SECTIONS)
         .map(|si| {
+            let old = old.and_then(|c| c.sections.get(si)).map(|s| &s.light);
             if si * 16 >= h {
-                return Light::Uniform(open);
+                let light = Light::Uniform(open);
+                match old {
+                    Some(Light::Uniform(v)) if *v == open => {}
+                    Some(Light::Full(data)) if data.iter().all(|&v| v == open) => {}
+                    _ => changed |= 1 << si,
+                }
+                return light;
             }
             let mut data = Box::new([open; 4096]);
+            let mut differs = false;
             for ly in 0..16 {
                 let y = si * 16 + ly;
                 if y >= h {
@@ -443,9 +524,15 @@ fn pack_lighting(h: usize, sky: &[u8], block: &[u8], sky_light: bool) -> Vec<Lig
                 for lz in 0..16 {
                     for lx in 0..16 {
                         let p = at(16 + lx, y, 16 + lz);
-                        data[index(lx as i32, ly as i32, lz as i32)] = sky[p] << 4 | block[p];
+                        let i = index(lx as i32, ly as i32, lz as i32);
+                        let v = sky[p] << 4 | block[p];
+                        data[i] = v;
+                        differs |= old.is_some_and(|old| old.get(i) != v);
                     }
                 }
+            }
+            if differs {
+                changed |= 1 << si;
             }
             if data.iter().all(|&v| v == data[0]) {
                 Light::Uniform(data[0])
@@ -453,7 +540,8 @@ fn pack_lighting(h: usize, sky: &[u8], block: &[u8], sky_light: bool) -> Vec<Lig
                 Light::Full(data)
             }
         })
-        .collect()
+        .collect();
+    (lights, changed)
 }
 
 /// Move a worker's light into current sections, preserving later block/biome
@@ -465,9 +553,18 @@ pub fn apply_lighting(chunk: &mut Chunk, lights: Vec<Light>) {
 }
 
 /// `apply_lighting` for a chunk lit before: writes only the sections whose
-/// light changed and adds the cells that changed to `changed`.
-pub fn apply_relighting(chunk: &mut Chunk, lights: Vec<Light>, changed: &mut LightChanges) {
+/// light changed and adds the cells that changed to `changed`. `mask` has a bit
+/// per section the worker saw differ from its snapshot.
+pub fn apply_relighting_masked(
+    chunk: &mut Chunk,
+    lights: Vec<Light>,
+    mask: u32,
+    changed: &mut LightChanges,
+) {
     for (sy, (section, light)) in chunk.sections.iter_mut().zip(lights).enumerate() {
+        if mask & (1 << sy) == 0 {
+            continue;
+        }
         let old = &section.light;
         if let (Light::Uniform(a), Light::Uniform(b)) = (old, &light)
             && a == b
@@ -486,6 +583,10 @@ pub fn apply_relighting(chunk: &mut Chunk, lights: Vec<Light>, changed: &mut Lig
             Arc::make_mut(section).light = light;
         }
     }
+}
+
+pub fn apply_relighting(chunk: &mut Chunk, lights: Vec<Light>, changed: &mut LightChanges) {
+    apply_relighting_masked(chunk, lights, u32::MAX, changed);
 }
 
 /// `DataLayer.get`: the nibble at index `i` (`y << 8 | z << 4 | x`), low first.
@@ -1015,6 +1116,11 @@ mod tests {
             .collect();
         lit.into_iter().collect()
     }
+    fn region(chunks: &HashMap<(i32, i32), Arc<Chunk>>) -> [[Option<&Chunk>; 3]; 3] {
+        std::array::from_fn(|dz| {
+            std::array::from_fn(|dx| chunks.get(&(dx as i32 - 1, dz as i32 - 1)).map(|c| &**c))
+        })
+    }
     fn sky(world: &HashMap<(i32, i32), Arc<Chunk>>, x: i32, y: i32, z: i32) -> u8 {
         world[&(x >> 4, z >> 4)].light(x & 15, y, z & 15) >> 4
     }
@@ -1243,6 +1349,51 @@ mod tests {
     }
 
     #[test]
+    fn light_mask_names_the_sections_the_full_diff_changes() {
+        let w = world(|c| {
+            c.set(8, 0, 8, TORCH);
+        });
+        let (_, same) = light_chunk_masked(&region(&w), &tables(), true);
+        assert_eq!(same, 0, "the centre is already lit like this");
+
+        let mut edited = w.clone();
+        Arc::make_mut(edited.get_mut(&(0, 0)).unwrap()).set(8, 0, 8, STONE);
+        let (lights, mask) = light_chunk_masked(&region(&edited), &tables(), true);
+        let mut expected = 0;
+        for (sy, (old, new)) in w[&(0, 0)].sections.iter().zip(&lights).enumerate() {
+            if (0..4096).any(|i| old.light(i) != new.get(i)) {
+                expected |= 1 << sy;
+            }
+        }
+        assert_eq!(mask, expected);
+        assert_ne!(mask, 0);
+    }
+
+    #[test]
+    fn reused_light_scratch_matches_a_fresh_call() {
+        let short = world(|c| {
+            c.set(8, 0, 8, TORCH);
+        });
+        let tall = world(|c| {
+            c.set(8, 0, 8, TORCH);
+            c.set(9, 200, 9, STONE);
+        });
+        let mut scratch = LightScratch::default();
+        // Shrink, grow, then shrink again: every cell must be cleared.
+        for w in [&short, &tall, &short] {
+            let (fresh, fresh_mask) = light_chunk_masked(&region(w), &tables(), true);
+            let (reused, reused_mask) =
+                light_chunk_masked_with(&region(w), &tables(), true, &mut scratch);
+            assert_eq!(fresh_mask, reused_mask);
+            for (a, b) in fresh.iter().zip(&reused) {
+                for i in 0..4096 {
+                    assert_eq!(a.get(i), b.get(i));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn relighting_reports_exactly_the_changed_positions() {
         let mut chunk = Chunk::empty(1, -1);
         chunk.set(3, MIN_Y + 20, 5, TORCH);
@@ -1460,7 +1611,7 @@ mod tests {
         let mut old = fixture.clone();
         let mut new = fixture.clone();
         baseline_apply(&mut old, baseline_pack(&fixture, h, &sky, &block));
-        apply_lighting(&mut new, pack_lighting(h, &sky, &block, true));
+        apply_lighting(&mut new, pack_lighting(h, &sky, &block, true, None).0);
         for (a, b) in old.sections.iter().zip(&new.sections) {
             for i in 0..4096 {
                 assert_eq!(a.light(i), b.light(i));
@@ -1477,14 +1628,14 @@ mod tests {
                     let mut current = fixture.clone();
                     let held = shared.then(|| current.clone());
                     // Warm up and detach for the uniquely-owned scenario.
-                    apply_lighting(&mut current, pack_lighting(h, &sky, &block, true));
+                    apply_lighting(&mut current, pack_lighting(h, &sky, &block, true, None).0);
                     let started = Instant::now();
                     for _ in 0..500 {
                         let retained = shared.then(|| current.clone());
                         if optimized {
                             apply_lighting(
                                 black_box(&mut current),
-                                pack_lighting(h, black_box(&sky), black_box(&block), true),
+                                pack_lighting(h, black_box(&sky), black_box(&block), true, None).0,
                             );
                         } else {
                             baseline_apply(

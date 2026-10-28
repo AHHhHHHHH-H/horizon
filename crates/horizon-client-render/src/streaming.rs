@@ -5,7 +5,10 @@
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::{
     chunk::{Chunk, SECTIONS},
-    light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
+    light::{
+        LightChanges, LightScratch, LightTables, apply_lighting, apply_relighting_masked,
+        light_chunk_masked_with,
+    },
     mesher::{MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
 };
@@ -174,7 +177,7 @@ pub enum Done {
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
     Decorated(i32, i32, Box<[Proto; 9]>),
-    Lit(i32, i32, Vec<crate::chunk::Light>, u64),
+    Lit(i32, i32, Vec<crate::chunk::Light>, u32, u64),
     Meshed(i32, i32, i32, SectionMesh, u64),
     Saved(Vec<((i32, i32), Proto)>),
 }
@@ -475,6 +478,8 @@ impl Streaming {
                         // the worker across mesh jobs, like vanilla's per-thread cache:
                         // cloning it per job copied every state and face shape.
                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
+                        // Light scratch stays with the worker across jobs.
+                        let mut light_scratch = LightScratch::default();
                         loop {
                             let job = {
                                 let mut queue = shared.queue.lock().unwrap();
@@ -511,7 +516,13 @@ impl Streaming {
                                     Done::Saved(protos)
                                 }
                                 Job::Light(x, z, region, seq, sky) => {
-                                    Done::Lit(x, z, light_chunk(&borrow(&region), &light, sky), seq)
+                                    let (sections, changed) = light_chunk_masked_with(
+                                        &borrow(&region),
+                                        &light,
+                                        sky,
+                                        &mut light_scratch,
+                                    );
+                                    Done::Lit(x, z, sections, changed, seq)
                                 }
                                 Job::Mesh(x, sy, z, region, seq, settings) => {
                                     let context = shared.context.read().unwrap().clone();
@@ -783,14 +794,7 @@ impl Streaming {
                 world.dirty_sections.insert((key.0, sy, key.1));
             }
         }
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let n = (key.0 + dx, key.1 + dz);
-                if !loaded || world.chunks.get(&n).is_some_and(|c| !c.light_loaded) {
-                    world.dirty_light.insert(n);
-                }
-            }
-        }
+        mark_dirty_light(world, key, loaded, &self.lit);
     }
     /// The order jobs around the player run in, lowest first.
     fn distance(&self, x: i32, z: i32) -> i64 {
@@ -925,7 +929,7 @@ impl Streaming {
                 Done::Decorated(x, z, region) => self.receive_decorated(x, z, *region),
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
-                Done::Lit(x, z, sections, seq) => {
+                Done::Lit(x, z, sections, mask, seq) => {
                     if self.lighting.get(&(x, z)) != Some(&seq) {
                         continue;
                     }
@@ -942,7 +946,7 @@ impl Streaming {
                         if first {
                             apply_lighting(chunk, sections);
                         } else {
-                            apply_relighting(chunk, sections, &mut changed);
+                            apply_relighting_masked(chunk, sections, mask, &mut changed);
                         }
                         // Saved unlit (at the edge of what was loaded), or its light
                         // changed: saved again.
@@ -1824,6 +1828,20 @@ impl Drop for Streaming {
         }
     }
 }
+/// Mark the columns whose light a newly resident column at `key` can change:
+/// itself and its face neighbours, plus any neighbour still unlit. A diagonal
+/// column's light can only change through a face neighbour, and a lit diagonal
+/// had all nine columns around it, this one included, so it is not relit.
+fn mark_dirty_light(world: &mut World, key: (i32, i32), loaded: bool, lit: &FxHashSet<(i32, i32)>) {
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let n = (key.0 + dx, key.1 + dz);
+            if !lit.contains(&n) || (!loaded && (dx == 0 || dz == 0)) {
+                world.dirty_light.insert(n);
+            }
+        }
+    }
+}
 /// The section indexes set in a column's bits, lowest first.
 fn section_indexes(mut bits: u32) -> impl Iterator<Item = i32> {
     std::iter::from_fn(move || {
@@ -1904,6 +1922,41 @@ mod tests {
         let moved = ranges((19, 0));
         rank_again(&mut queue, |x, z| moved.priority(x, z, false));
         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+    }
+
+    #[test]
+    fn a_new_column_relights_itself_and_its_faces_not_lit_diagonals() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut lit = FxHashSet::default();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let key = (dx, dz);
+                world.chunks.insert(key, Arc::new(Chunk::empty(dx, dz)));
+                lit.insert(key);
+            }
+        }
+        // A fresh column queued every lit face and itself, but no lit diagonal.
+        mark_dirty_light(&mut world, (0, 0), false, &lit);
+        let expected = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
+            .into_iter()
+            .collect::<FxHashSet<_>>();
+        assert_eq!(world.dirty_light, expected);
+
+        // A diagonal still unlit stays queued.
+        lit.remove(&(1, 1));
+        world.dirty_light.clear();
+        mark_dirty_light(&mut world, (0, 0), false, &lit);
+        assert!(world.dirty_light.contains(&(1, 1)));
+        assert!(!world.dirty_light.contains(&(-1, -1)));
+
+        // A column loaded with light only queues its unlit neighbours.
+        lit.remove(&(0, -1));
+        world.dirty_light.clear();
+        mark_dirty_light(&mut world, (0, 0), true, &lit);
+        assert_eq!(
+            world.dirty_light,
+            [(0, -1), (1, 1)].into_iter().collect::<FxHashSet<_>>()
+        );
     }
 
     #[test]
