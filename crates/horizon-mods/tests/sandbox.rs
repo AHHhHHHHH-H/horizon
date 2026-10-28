@@ -3,7 +3,7 @@
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
     BlockPos, Clock, Corner, GameMode, HeldItem, Hit, Mods, Output, Package, Player, Runs,
-    ServerPlayer, Shape, Snapshot, Status,
+    ServerPlayer, Shape, Snapshot, Status, StorageQuota,
     manifest::componentize,
     testing::{Script, TestGame},
 };
@@ -365,7 +365,7 @@ fn storage_write_budget_limits_one_call() {
     let path = dir.join("guest.hmod");
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
-    // Under the 4 MiB on-disk quota, but over the 1 MiB a single call may
+    // Under the 16 MiB on-disk quota, but over the 1 MiB a single call may
     // write: a loop replacing one key can never bypass the quota by
     // writing a lot in one call, only across many.
     let over_budget = "a".repeat((1 << 20) + 1024);
@@ -383,7 +383,9 @@ fn storage_quota_is_enforced() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("guest.hmod");
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
-    let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
+    // A server owner's quota (`server.toml`'s `[mods]`): 4 MiB.
+    let quota = StorageQuota::parse("4,256").unwrap();
+    let mut mods = Mods::load_for(Runs::Both, quota, &[path], |_| true, |_| false);
     // Each call is under the per-call write budget; distinct keys so the
     // quota (not the fixed "note" key being overwritten) is what's tested.
     let chunk = "a".repeat(900 << 10);
@@ -412,7 +414,8 @@ fn storage_key_count_is_bounded() {
     let path = dir.join("guest.hmod");
     std::fs::copy(mods_dir().join("horizon_mods_test_guest.hmod"), &path).unwrap();
     let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
-    for i in 0..64 {
+    // 256 keys by default (`StorageQuota`).
+    for i in 0..256 {
         assert!(mods.command(&format!("save_key k{i} x")));
         assert_eq!(
             mods.drain(),
@@ -423,9 +426,9 @@ fn storage_key_count_is_bounded() {
             "key {i}"
         );
     }
-    assert!(mods.command("save_key k64 x"));
+    assert!(mods.command("save_key k256 x"));
     let refused = Output::Feedback {
-        text: "would hold over 64 keys".into(),
+        text: "would hold over 256 keys".into(),
         error: true,
     };
     assert_eq!(mods.drain(), [refused]);
@@ -1008,11 +1011,23 @@ fn a_server_mod_runs_only_where_the_world_does() {
     let path = dir.join("welcome.hmod");
     std::fs::copy(mods_dir().join("welcome.hmod"), &path).unwrap();
     let paths = std::slice::from_ref(&path);
-    let window = Mods::load_for(Runs::Client, paths, |_| true, |_| false);
+    let window = Mods::load_for(
+        Runs::Client,
+        StorageQuota::default(),
+        paths,
+        |_| true,
+        |_| false,
+    );
     assert_eq!(window.entries()[0].status, Status::Elsewhere);
     assert!(!window.is_running());
 
-    let mut mods = Mods::load_for(Runs::Server, paths, |_| true, |c| c == "give");
+    let mut mods = Mods::load_for(
+        Runs::Server,
+        StorageQuota::default(),
+        paths,
+        |_| true,
+        |c| c == "give",
+    );
     assert!(mods.runs_server());
     let commands: Vec<_> = mods.server_commands().map(|c| c.name.as_str()).collect();
     assert_eq!(commands, ["online", "mined"]);

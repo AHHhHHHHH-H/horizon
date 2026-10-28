@@ -17,7 +17,9 @@ use horizon_client::{
     hud_layout, hud_overlays, inventory_effects,
     items::ItemStack,
     mesher::Vertex,
+    mobs::{Damage, DamageKind, Who},
     particles::{ParticleOptions, ParticleType},
+    projectiles::{Projectile, ProjectileKind},
     text::Text,
 };
 use horizon_core::{
@@ -90,7 +92,7 @@ pub(super) fn mob_effect_id(id: &str) -> Option<&'static str> {
 /// `WitherSkeleton` shrug off wither, `Spider` and `AbstractNautilus` poison,
 /// `Parched` weakness): the immune-to-infested and immune-to-oozing tags
 /// decide first, then the tag of mobs that ignore poison and regeneration.
-fn mob_can_be_affected(
+pub(super) fn mob_can_be_affected(
     tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
     kind: &str,
     effect: &str,
@@ -469,7 +471,7 @@ impl Game<'_> {
                     (f64::from(dir[1]) / l + jitter()) * power,
                     (f64::from(dir[2]) / l + jitter()) * power,
                 );
-                let pv = self.player.as_ref().map_or(Vec3::ZERO, |p| p.velocity);
+                let pv = self.known_player_movement();
                 let on_ground = self.player.as_ref().is_some_and(|p| p.ground.on_ground);
                 let v = Vec3::new(
                     v.x + pv.x,
@@ -510,6 +512,47 @@ impl Game<'_> {
             }
             _ => Ok(false),
         }
+    }
+    /// `PotionItem.useOn`: a water bottle used on a block that turns to mud
+    /// (`#convertible_to_mud`), not on its underside, is poured out and the
+    /// block becomes mud.
+    pub(super) fn use_water_bottle_on_block(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        stack: &ItemStack,
+    ) -> horizon_client::Result<bool> {
+        if &*stack.item != "minecraft:potion"
+            || stack.potion() != Some("minecraft:water")
+            || face == [0, -1, 0]
+            || !self.block_in_tag("minecraft:convertible_to_mud", &self.block_name(pos))
+        {
+            return Ok(false);
+        }
+        let centre = pos.map(|v| f64::from(v) + 0.5);
+        self.audio
+            .play("minecraft:entity.generic.splash", Some(centre), 1.0, 1.0);
+        self.fill_held(ItemStack::new("minecraft:glass_bottle", 1));
+        // ServerLevel.sendParticles: five splashes above the block.
+        for _ in 0..5 {
+            let r = &mut self.world.random;
+            let at = [
+                f64::from(pos[0]) + r.next_double(),
+                f64::from(pos[1] + 1),
+                f64::from(pos[2]) + r.next_double(),
+            ];
+            self.particles
+                .add(&ParticleOptions::simple(ParticleType::Splash), at, [0.0; 3]);
+        }
+        self.audio
+            .play("minecraft:item.bottle.empty", Some(centre), 1.0, 1.0);
+        self.post_block_game_event("minecraft:fluid_place", pos, None, None);
+        if let Some(mud) = self.pack.assets.registry.default_state("minecraft:mud") {
+            self.level_set(pos, mud)?;
+        }
+        self.stats.add("used", &stack.item, 1);
+        self.swing_arm();
+        Ok(true)
     }
     /// `ItemUtils.createFilledResult`: replace one of the held stack.
     fn fill_held(&mut self, filled: ItemStack) {
@@ -553,7 +596,12 @@ impl Game<'_> {
             self.drink_ominous_bottle(slot, stack);
             return true;
         }
-        let (lasting, now) = PlayerEffects::potion_effects(stack.potion(), 1.0);
+        // PotionContents.onConsume: the potion's and the custom effects, at the
+        // stack's POTION_DURATION_SCALE.
+        let (lasting, now) = PlayerEffects::contents_effects(
+            &brewing::contents_effects(stack),
+            stack.potion_duration_scale(),
+        );
         for e in lasting {
             self.add_player_effect(e);
         }
@@ -575,6 +623,83 @@ impl Game<'_> {
             }
         }
         true
+    }
+    /// `Arrow.doPostHurtEffects` and `SpectralArrow.doPostHurtEffects`: the
+    /// arrow's item gives its target Glowing (spectral) or its potion contents
+    /// at the stack's duration scale (a tipped arrow's default is an eighth);
+    /// a mob's arrow without such an item (a stray's) carries its own effect.
+    /// Instant effects act at once: harming hurts and healing heals, the
+    /// other way round for the undead.
+    pub(super) fn arrow_post_hurt_effects(&mut self, p: &Projectile, who: Who) {
+        let from_item = p.arrow.as_ref().map(|a| &a.pickup_item);
+        let mut effects: Vec<(&'static str, i32, i32)> = match from_item {
+            Some(s) if &*s.item == "minecraft:spectral_arrow" => vec![("glowing", 200, 0)],
+            Some(s) => {
+                let scale = s.potion_duration_scale();
+                brewing::contents_effects(s)
+                    .into_iter()
+                    .map(|(id, d, amp)| {
+                        (id, horizon_client::effects::scaled_duration(d, scale), amp)
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        if effects.is_empty()
+            && let ProjectileKind::Arrow {
+                effect: Some((id, ticks)),
+                ..
+            } = p.kind
+            && let Some(e) = brewing::effect(id)
+        {
+            effects.push((e.id, ticks, 0));
+        }
+        if effects.is_empty() {
+            return;
+        }
+        match who {
+            Who::Player => {
+                for (id, duration, amp) in effects {
+                    if brewing::effect(id).is_some_and(|e| e.instant) {
+                        if let Some(a) = horizon_client::effects::instant(id, amp, 1.0) {
+                            self.apply_effect_action(a);
+                        }
+                    } else {
+                        self.add_player_effect(EffectInstance::new(id, duration, amp));
+                    }
+                }
+            }
+            Who::Mob(id) => {
+                let tags = &self.res.stations().enchantments.entity_tags;
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && m.alive()) else {
+                    return;
+                };
+                let inverted = tags
+                    .get("minecraft:inverted_healing_and_harm")
+                    .is_some_and(|t| t.contains(&m.kind.id));
+                for (effect, duration, amp) in effects {
+                    match effect {
+                        "instant_damage" | "instant_health" => {
+                            // `LivingEntity.addEffect` refuses nothing here; the
+                            // tick hurts with magic (6 << amp) or heals (4 << amp).
+                            if (effect == "instant_damage") != inverted {
+                                m.damage((6 << amp.min(30)) as f32, Damage::of(DamageKind::Magic));
+                            } else {
+                                m.health =
+                                    (m.health + (4 << amp.min(30)) as f32).min(m.kind.max_health);
+                            }
+                        }
+                        _ => {
+                            if mob_can_be_affected(tags, &m.kind.id, effect)
+                                && let Some(name) = mob_effect_id(effect)
+                            {
+                                m.add_effect(name, duration, amp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     pub(super) fn apply_effect_action(&mut self, action: EffectAction) {
         let creative = self.creative;
@@ -960,7 +1085,8 @@ impl Game<'_> {
                             let amount =
                                 |base: i32| (0.5 * f64::from(base << amp) + 0.5) as i32 as f32;
                             if (*id == "instant_damage") != inverted {
-                                m.hurt(amount(6), Some(at), &mut self.world.random);
+                                let harm = m.potion_harm(amount(6));
+                                m.hurt(harm, Some(at), &mut self.world.random);
                             } else {
                                 m.health = (m.health + amount(4)).min(m.kind.max_health);
                             }
@@ -1228,11 +1354,8 @@ impl Game<'_> {
                 };
                 let m = &mut self.mobs[i];
                 if harm {
-                    m.hurt(
-                        (intensity * f64::from(6 << amp) + 0.5) as i32 as f32,
-                        Some([at.x, at.y, at.z]),
-                        &mut self.world.random,
-                    );
+                    let harm = m.potion_harm((intensity * f64::from(6 << amp) + 0.5) as i32 as f32);
+                    m.hurt(harm, Some([at.x, at.y, at.z]), &mut self.world.random);
                 } else {
                     m.health = (m.health + (intensity * f64::from(4 << amp) + 0.5) as i32 as f32)
                         .min(m.kind.max_health);

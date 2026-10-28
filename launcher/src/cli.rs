@@ -5,6 +5,7 @@ use horizon_launcher::account::{self, Accounts};
 use horizon_launcher::backend::{self, Release};
 use horizon_launcher::instances;
 use horizon_launcher::server_list;
+use horizon_launcher::via;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::Command;
@@ -93,7 +94,7 @@ enum AccountCmd {
     /// as NAME (kept to switch back to; 3 to 16 letters, digits or _), or as the name the game
     /// made up
     Offline { name: Option<String> },
-    /// Forget one of your offline names
+    /// Forget one of your offline names; its skin and cape go with it
     ForgetOffline { name: String },
     /// Show or set an offline name's skin and cape: a 64x64 (or 64x32) skin PNG, a 64x32 cape
     /// PNG, the model. Kept by the launcher and given to the game when that name plays
@@ -581,6 +582,9 @@ enum Cmd {
         /// Join this server at once: an address, or a server of the list by name or position
         #[arg(long, conflicts_with_all = ["world", "join"])]
         server: Option<String>,
+        /// Join the server as this Minecraft version, through ViaProxy (needs Java 17 or newer)
+        #[arg(long, requires = "server")]
+        server_version: Option<String>,
         /// An extra argument for the game, passed through as-is (repeatable), for example
         /// --server-thread
         #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
@@ -1008,6 +1012,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             creative,
             join,
             server,
+            server_version,
             arg,
         } => {
             let instance = match instance {
@@ -1022,9 +1027,20 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             if let Some(world) = world {
                 cmd.arg("--world").arg(world);
             }
+            // ViaProxy stops when this is dropped, after the game has exited.
+            let mut via_proxy: Option<via::Proxy> = None;
             if let Some(server) = server {
                 let list = server_list::List::load(&instance.home);
                 let ip = server_list::find(&list, &server).map_or(server, |(_, s)| s.ip);
+                let ip = match &server_version {
+                    Some(version) => {
+                        let proxy = via::start(&ip, version, &|line| eprintln!("{line}"))?;
+                        let address = proxy.address();
+                        via_proxy = Some(proxy);
+                        address
+                    }
+                    None => ip,
+                };
                 cmd.arg("--server").arg(ip);
             }
             if creative {
@@ -1038,6 +1054,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             }
             cmd.envs(accounts.look_env());
             let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+            drop(via_proxy);
             if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                 eprintln!("Play time not saved: {e}");
             }
@@ -1466,7 +1483,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
             }
         }
         AccountCmd::ForgetOffline { name } => {
-            accounts.remove_offline(&name)?;
+            accounts.remove_offline(&name, &horizon_launcher::skins::dir())?;
             accounts.save()?;
             println!("Forgot the offline name {name}.");
         }

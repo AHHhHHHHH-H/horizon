@@ -907,14 +907,16 @@ impl Accounts {
         Ok(name.to_string())
     }
 
-    /// Forgets an offline name; if it was playing, the game's own name plays.
-    pub fn remove_offline(&mut self, name: &str) -> Result<(), String> {
+    /// Forgets an offline name: its look and its skin and cape files (`skins`) go with it; if
+    /// it was playing, the game's own name plays.
+    pub fn remove_offline(&mut self, name: &str, skins_dir: &Path) -> Result<(), String> {
         let before = self.offline.len();
         self.offline.retain(|n| !n.eq_ignore_ascii_case(name));
         self.looks.remove(&name.to_ascii_lowercase());
         if self.offline.len() == before {
             return Err(format!("No offline name {name}."));
         }
+        crate::skins::forget(skins_dir, name);
         if self
             .offline_selected
             .as_ref()
@@ -1092,6 +1094,92 @@ pub fn write_session_file(
     });
     std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+// ----- The account for ViaProxy ----------------------------------------------------------------------
+
+/// A throwaway P-256 key pair (PKCS#8 and X.509, base64). ViaProxy's saved-account format has a slot
+/// for the key of the Xbox "device" the account signed in on, and refuses an entry whose key does
+/// not decode. The device token it belongs to is never used here (see [`viaproxy_entry`]), so this
+/// key signs nothing and protects nothing: it only has to parse.
+const PLACEHOLDER_DEVICE_PUBLIC: &str = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETG50tec4jg8fxcQNzB0fFBI7f0tebW9hUbz/VmjZVbcdsYqBryulabGE4VJwO6UzvTHxedZ2YvBshMadbS9kKg==";
+const PLACEHOLDER_DEVICE_PRIVATE: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgKL+e8fJ8Zfqm/Sc9fvGyq0Bh436p+RP999PRKyCTer+hRANCAARMbnS15ziODx/FxA3MHR8UEjt/S15tb2FRvP9WaNlVtx2xioGvK6VpsYThUnA7pTO9MfF51nZi8GyExp1tL2Qq";
+/// The Minecraft token must have this long left for ViaProxy to be given it: it joins the server
+/// once, when the game connects, and a token about to run out would fail that join.
+const PROXY_TOKEN_MIN_LEFT: u64 = 600;
+
+/// The account as an entry of ViaProxy's `saves.json` (`accountsV4`, MinecraftAuth 5's
+/// `JavaAuthManager`), so ViaProxy can join an online-mode server as the player.
+///
+/// Only the Minecraft access token and the profile are real. The Microsoft refresh token stays in
+/// the keychain: it belongs to Horizon's Azure app, ViaProxy could not renew it with its own, and
+/// a plain file is the wrong place for it. Every other step of the chain is an empty placeholder
+/// that expired at time zero. ViaProxy 3.4.14 reads such an entry and, while the Minecraft token
+/// is valid, never touches the placeholders. The player certificates for signed chat (1.19+) are
+/// left out: ViaProxy asks the Minecraft services for them with the token.
+pub fn viaproxy_entry(account: &Account, secrets: &Secrets) -> Value {
+    let u = &account.uuid;
+    let dashed = if u.len() == 32 {
+        format!("{}-{}-{}-{}-{}", &u[..8], &u[8..12], &u[12..16], &u[16..20], &u[20..])
+    } else {
+        u.clone()
+    };
+    let expired = |extra: Value| {
+        let mut step = json!({ "_saveVersion": 1, "expireTimeMs": 0 });
+        if let (Some(step), Some(extra)) = (step.as_object_mut(), extra.as_object()) {
+            step.extend(extra.clone());
+        }
+        step
+    };
+    json!({
+        "_saveVersion": 1,
+        "msaApplicationConfig": {
+            "_saveVersion": 1,
+            "clientId": "00000000402b5328",
+            "scope": "service::user.auth.xboxlive.com::MBI_SSL",
+            "environment": "LIVE",
+        },
+        "deviceType": "Win32",
+        "deviceKeyPair": {
+            "algorithm": "EC",
+            "publicKey": PLACEHOLDER_DEVICE_PUBLIC,
+            "privateKey": PLACEHOLDER_DEVICE_PRIVATE,
+        },
+        "deviceId": "00000000-0000-0000-0000-000000000000",
+        "msaToken": expired(json!({ "accessToken": "", "refreshToken": "" })),
+        "xblDeviceToken": expired(json!({ "token": "", "deviceId": "" })),
+        "xblUserToken": expired(json!({ "token": "", "userHash": "" })),
+        "xblTitleToken": expired(json!({ "token": "", "titleId": "" })),
+        "javaXstsToken": expired(json!({ "token": "", "userHash": "" })),
+        "minecraftToken": {
+            "_saveVersion": 1,
+            "expireTimeMs": secrets.minecraft_expires_at.saturating_mul(1000),
+            "type": "Bearer",
+            "token": secrets.minecraft_token,
+        },
+        "minecraftProfile": { "_saveVersion": 1, "id": dashed, "name": account.name },
+        "accountType": "net.raphimc.viaproxy.saves.impl.accounts.MicrosoftAccount",
+    })
+}
+
+/// The selected account for ViaProxy: its name and its `saves.json` entry, after the owner gate
+/// ([`launch`]) renewed its Minecraft token if it was running low. None when an offline name plays,
+/// the account can't be renewed now, or the token would run out within minutes.
+pub fn proxy_account() -> Option<(String, Value)> {
+    let mut accounts = Accounts::load();
+    let pass = launch(
+        &Endpoints::live(),
+        client_id().as_deref(),
+        store(),
+        &mut accounts,
+    )
+    .ok()?;
+    let _ = accounts.save();
+    let (account, secrets) = pass.session?;
+    if secrets.minecraft_expires_at <= now() + PROXY_TOKEN_MIN_LEFT {
+        return None;
+    }
+    Some((account.name.clone(), viaproxy_entry(&account, &secrets)))
 }
 
 /// Where a background sign-in is (the window and the MCP server show it).

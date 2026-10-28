@@ -88,6 +88,9 @@ impl Session {
                 if let Some(code) = arg_str(args, "join") {
                     backend::join_friend(&mut cmd, code)?;
                 }
+                if arg_str(args, "server_version").is_some() {
+                    return Err("server_version is not supported through MCP yet: start the game with `horizon-launcher play --server-version`.".into());
+                }
                 if let Some(server) = arg_str(args, "server") {
                     let list = horizon_launcher::server_list::List::load(&instance.home);
                     let ip = horizon_launcher::server_list::find(&list, server)

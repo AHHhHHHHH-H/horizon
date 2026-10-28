@@ -1643,7 +1643,7 @@ impl Game<'_> {
                 continue;
             };
             let stack = self.slot_mut(i).clone();
-            self.draw_slot_item(batch, drag.as_ref(), i, stack, ox + sx, oy + sy);
+            self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) {
             let (sx, sy) = self.slot_position(slot);
@@ -1755,13 +1755,11 @@ impl Game<'_> {
         let display = horizon_client::item_tooltip::TooltipDisplay::for_stack(stack);
         let mut lines = Vec::new();
         if !nested && display.name_visible(self.screen == Screen::Creative) {
-            // `getStyledHoverName`: a custom name is italic.
-            let name = self.stack_hover_name(stack);
-            let name = if stack.custom_name().is_some() {
-                horizon_client::text::Text::literal(name).italic()
-            } else {
-                horizon_client::text::Text::legacy(&name)
-            };
+            // `getStyledHoverName`: a custom name keeps its own styles and is
+            // italic where it does not say otherwise.
+            let name = horizon_client::item_tooltip::custom_name_text(stack).unwrap_or_else(|| {
+                horizon_client::text::Text::legacy(&self.stack_hover_name(stack))
+            });
             lines.push((name, color));
         }
         let translate = |k: &str| self.pack.names.display_get(k);

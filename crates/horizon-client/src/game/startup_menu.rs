@@ -76,6 +76,7 @@ impl StartupMenu {
                 &self.root,
             );
             title.last_server = settings.file.string("lastServer");
+            title.skip_multiplayer_warning = settings.file.bool("skipMultiplayerWarning");
             self.title = Some(title);
         }
     }
@@ -167,6 +168,7 @@ impl StartupMenu {
         }
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
+            PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
             PhysicalKey::Code(KeyCode::Tab) => title.tab(),
             PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => title.confirm_edit(),
             PhysicalKey::Code(
@@ -303,12 +305,11 @@ impl Loading {
     }
 
     fn save_menu_address(&mut self) {
-        if self
-            .menu
-            .title
-            .as_ref()
-            .is_some_and(|title| title.last_server != self.settings.file.string("lastServer"))
-        {
+        if self.menu.title.as_ref().is_some_and(|title| {
+            title.last_server != self.settings.file.string("lastServer")
+                || title.skip_multiplayer_warning
+                    != self.settings.file.bool("skipMultiplayerWarning")
+        }) {
             self.save_menu_settings();
         }
     }
@@ -318,6 +319,10 @@ impl Loading {
             self.settings.file.set(
                 "lastServer",
                 horizon_client::options_file::V::Str(title.last_server.clone()),
+            );
+            self.settings.file.set(
+                "skipMultiplayerWarning",
+                horizon_client::options_file::V::Bool(title.skip_multiplayer_warning),
             );
         }
         self.settings.save(&Game::options_path());
@@ -337,6 +342,9 @@ impl Loading {
             match event {
                 Event::Changed => {
                     self.save_menu_settings();
+                    self.apply_menu_settings();
+                }
+                Event::SliderDrag => {
                     self.apply_menu_settings();
                 }
                 Event::Close if self.menu.options.resource_error.is_some() => {}

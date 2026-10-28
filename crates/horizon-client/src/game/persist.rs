@@ -374,6 +374,12 @@ impl Game<'_> {
         }
         let riders = self.take_mob_passengers(&mut tag);
         let mut m = entity_nbt::mob_from_nbt(&tag, self.res.mob_types(), self.next_entity)?;
+        // `NeutralMob.readPersistentAngerSaveData`: the anger runs until its
+        // end time, and the mob is angry at the target again.
+        m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
+        if m.extra.anger > 0 && m.extra.angry_at.is_some() {
+            m.ai.target = Some(horizon_client::mobs::Who::Player);
+        }
         m.extra.mount = mount;
         m.extra.passenger = mount.is_some();
         if finalize {
@@ -527,10 +533,75 @@ impl Game<'_> {
         }
         i
     }
+    /// The vehicle at the root of the rider chain (`Entity.getRootVehicle`):
+    /// the mob the ridden vehicle rides, when it rides one.
+    pub(super) fn root_vehicle(&self, id: u32) -> u32 {
+        let mut root = id;
+        for _ in 0..8 {
+            let Some(v) = self
+                .mobs
+                .iter()
+                .find(|m| m.id == root)
+                .and_then(|m| m.extra.mount)
+            else {
+                break;
+            };
+            root = v;
+        }
+        root
+    }
+    /// The UUID of the vehicle the player rides, for the player's file
+    /// (`ServerPlayer.saveParentVehicle`).
+    pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
+        let id = self.root_vehicle(id?);
+        Some(self.uuid_for(id))
+    }
+    /// The vehicle with this UUID, among the ones in the world.
+    pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
+        let id = *self
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, u)| **u == uuid)
+            .map(|(id, _)| id)?;
+        let there = self.mobs.iter().any(|m| m.id == id && m.alive())
+            || self.boats.iter().any(|b| b.id == id)
+            || self.carts.iter().any(|c| c.id == id);
+        there.then_some(id)
+    }
+    /// `ServerPlayer.loadAndSpawnParentVehicle`: the ride the player's file
+    /// names, once the vehicle is in the world.
+    pub(super) fn restore_root_vehicle(&mut self) {
+        if self.riding.is_some() || self.player.is_none() {
+            return;
+        }
+        let Some(uuid) = self.pending_vehicle else {
+            return;
+        };
+        let Some(id) = self.vehicle_by_uuid(uuid) else {
+            return;
+        };
+        self.pending_vehicle = None;
+        self.riding = Some(id);
+    }
     /// A mob's entity tag with the mobs riding it under `Passengers`.
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
         let id = self.mobs[i].id;
         let uuid = self.uuid_for(id);
+        // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
+        // absolute game time, so it goes on while the chunk is unloaded, and
+        // the target is the entity the mob is angry at.
+        let anger = self.mobs[i].extra.anger;
+        self.mobs[i].extra.anger_end = if anger > 0 {
+            self.world.game_time + i64::from(anger)
+        } else {
+            -1
+        };
+        self.mobs[i].extra.angry_at = if anger > 0 {
+            self.mobs[i].ai.target
+        } else {
+            None
+        };
         let mut tag = entity_nbt::mob_to_nbt(&self.mobs[i], uuid, self.persist.raw.get(&id));
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
@@ -600,7 +671,7 @@ impl Game<'_> {
         *self.persist.uuids.entry(id).or_insert_with(random_uuid)
     }
     /// `BlockState.CODEC`: a block name or `{id, properties}` (or legacy `{Name, Properties}`).
-    fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
+    pub(super) fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
         let registry = self.pack.assets.registry;
         let state = match tag.get("Name") {
             Some(Tag::String(name)) => BlockState {

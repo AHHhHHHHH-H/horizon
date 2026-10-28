@@ -627,9 +627,26 @@ fn offline_names_switch_with_accounts() {
     assert!(a.play_as(&store, Player::Microsoft("zzz".into())).is_err());
     a.play_as(&store, Player::Offline("Builder_1".into()))
         .unwrap();
-    a.remove_offline("BUILDER_1").unwrap();
+    // Forgetting drops the look and the name's skin and cape files too.
+    let dir = std::env::temp_dir().join(format!("horizon-accounts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (skin, cape) = crate::skins::files(&dir, "builder_1");
+    std::fs::write(&skin, b"skin").unwrap();
+    std::fs::write(&cape, b"cape").unwrap();
+    a.looks.insert(
+        "builder_1".into(),
+        crate::skins::Look {
+            skin: true,
+            cape: true,
+            ..crate::skins::Look::default()
+        },
+    );
+    a.remove_offline("BUILDER_1", &dir).unwrap();
     assert_eq!(a.player(), Player::GameName);
-    assert!(a.remove_offline("Builder_1").is_err());
+    assert!(a.looks.is_empty() && !skin.exists() && !cape.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(a.remove_offline("Builder_1", &dir).is_err());
     // An accounts.json from before offline names reads as it was, and writes nothing new.
     let old: Accounts = serde_json::from_str(r#"{"accounts":[],"selected":null}"#).unwrap();
     assert_eq!(old.player(), Player::GameName);
@@ -638,3 +655,44 @@ fn offline_names_switch_with_accounts() {
         r#"{"accounts":[],"selected":null}"#
     );
 }
+
+#[test]
+fn the_viaproxy_entry_carries_the_minecraft_token_and_nothing_secret_else() {
+    let s = secrets("mc-token-1", true);
+    let entry = viaproxy_entry(&notch(), &s);
+    assert_eq!(
+        entry["accountType"],
+        "net.raphimc.viaproxy.saves.impl.accounts.MicrosoftAccount"
+    );
+    assert_eq!(entry["minecraftToken"]["token"], "mc-token-1");
+    assert_eq!(entry["minecraftToken"]["type"], "Bearer");
+    assert_eq!(
+        entry["minecraftToken"]["expireTimeMs"],
+        s.minecraft_expires_at * 1000
+    );
+    // ViaProxy writes the UUID with dashes.
+    assert_eq!(
+        entry["minecraftProfile"]["id"],
+        "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+    );
+    assert_eq!(entry["minecraftProfile"]["name"], "Notch");
+    // The Microsoft refresh token stays in the keychain; the chain behind the Minecraft token is
+    // empty and already expired, so ViaProxy never tries to renew through it.
+    assert!(!entry.to_string().contains("ms-refresh-1"));
+    for step in ["msaToken", "xblDeviceToken", "xblUserToken", "xblTitleToken", "javaXstsToken"] {
+        assert_eq!(entry[step]["expireTimeMs"], 0, "{step}");
+        assert_eq!(entry[step]["_saveVersion"], 1, "{step}");
+    }
+    assert_eq!(entry["msaToken"]["refreshToken"], "");
+    // ViaProxy asks for the player certificates itself.
+    assert!(entry.get("minecraftPlayerCertificates").is_none());
+}
+
+#[test]
+fn the_viaproxy_entry_keeps_an_odd_uuid_as_it_is() {
+    let mut a = notch();
+    a.uuid = "not-a-uuid".into();
+    let entry = viaproxy_entry(&a, &secrets("t", true));
+    assert_eq!(entry["minecraftProfile"]["id"], "not-a-uuid");
+}
+

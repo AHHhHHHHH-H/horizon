@@ -87,6 +87,11 @@ impl Base<'_> {
     }
 }
 
+/// The mobs that save `Age` and `AgeLocked`.
+fn saves_age(s: crate::mobs::Species) -> bool {
+    use crate::mobs::{Species, drops::can_be_baby, finalize::ageable};
+    s == Species::Tadpole || (ageable(s) && can_be_baby(s))
+}
 /// `LivingEntity` + `Mob` (+ `AgeableMob`, creeper and skeleton specifics).
 /// The mobs whose class extends vanilla's `Animal` (and so save `InLove`):
 /// not allays, villagers, golems, dolphins or fish.
@@ -129,6 +134,27 @@ fn is_animal(id: &str) -> bool {
             | "zombie_nautilus"
     )
 }
+/// The `NeutralMob`s whose anger is `Extra::anger`: they write and read
+/// `anger_end_time` and `angry_at`. The bee keeps its own anger, and a
+/// piglin's is a brain memory, not `NeutralMob`'s.
+fn persistent_anger(s: crate::mobs::Species) -> bool {
+    use crate::mobs::Species as S;
+    matches!(
+        s,
+        S::Wolf | S::IronGolem | S::PolarBear | S::Enderman | S::ZombifiedPiglin
+    )
+}
+/// The single player's UUID (`offline_uuid("Player")`): the entity the
+/// neutral mobs are angry at.
+fn player_uuid() -> [i32; 4] {
+    let u = horizon_protocol::crypto::offline_uuid("Player");
+    [
+        (u >> 96) as u32 as i32,
+        (u >> 64) as u32 as i32,
+        (u >> 32) as u32 as i32,
+        u as u32 as i32,
+    ]
+}
 pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let base = Base {
         id: &m.kind.id,
@@ -158,6 +184,22 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         ("PersistenceRequired", Tag::Byte(i8::from(m.persistent))),
     ] {
         put(&mut tag, key, value);
+    }
+    // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
+    // absolute game time, and the target is the entity the mob is angry at.
+    if persistent_anger(m.species()) {
+        put(
+            &mut tag,
+            "anger_end_time",
+            Tag::Long(if m.extra.anger_end > 0 {
+                m.extra.anger_end
+            } else {
+                -1
+            }),
+        );
+        if m.extra.angry_at == Some(crate::mobs::Who::Player) {
+            put(&mut tag, "angry_at", Tag::IntArray(player_uuid().to_vec()));
+        }
     }
     // `Entity.saveWithoutId` writes the flag only when set.
     if m.name_visible {
@@ -249,19 +291,14 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         map.entry(key.into()).or_insert(value);
     }
     let id = m.kind.id.as_str();
-    // Only breedable animals have an age; a loaded creature that was saved without
-    // one (a frog) stays without.
-    let aged = raw.is_none_or(|r| r.get("Age").is_some());
-    if (m.kind.category == "creature" || m.species() == crate::mobs::Species::Hoglin) && aged {
+    // AgeableMob.addAdditionalSaveData, only if canBeABaby (not a frog or a
+    // parrot); a tadpole saves its own age.
+    let species = m.species();
+    if saves_age(species) {
         map.insert("Age".into(), Tag::Int(m.extra.age));
         map.insert("AgeLocked".into(), Tag::Byte(i8::from(m.extra.age_locked)));
-        map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
-        for (key, value) in [
-            ("Age", Tag::Int(0)),
-            ("ForcedAge", Tag::Int(0)),
-            ("AgeLocked", Tag::Byte(0)),
-        ] {
-            map.entry(key.into()).or_insert(value);
+        if species != crate::mobs::Species::Tadpole {
+            map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
     }
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
@@ -300,6 +337,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 map.entry(key.into()).or_insert(value);
             }
         }
+        // Rabbit.addAdditionalSaveData (the legacy id; 99 is the killer bunny).
         "minecraft:rabbit" => {
             map.insert("RabbitType".into(), Tag::Int(i32::from(m.extra.variant)));
             map.entry("MoreCarrotTicks".into()).or_insert(Tag::Int(0));
@@ -493,6 +531,8 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         }
         "minecraft:villager" => {
             map.insert("VillagerData".into(), villager_data(m));
+            // A loaded villager with VillagerData is finalized.
+            map.insert("VillagerDataFinalized".into(), Tag::Byte(1));
             let t = m.extra.trade.as_deref().cloned().unwrap_or_default();
             map.insert("Xp".into(), Tag::Int(t.xp));
             map.insert("LastRestock".into(), Tag::Long(t.last_restock));
@@ -683,8 +723,63 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     ) {
         map.insert("IsBaby".into(), Tag::Byte(i8::from(m.is_baby())));
     }
+    // NeutralMob.addPersistentAngerSaveData; the bee saves its own.
+    if matches!(
+        id,
+        "minecraft:iron_golem"
+            | "minecraft:wolf"
+            | "minecraft:polar_bear"
+            | "minecraft:zombified_piglin"
+            | "minecraft:enderman"
+    ) {
+        map.entry("anger_end_time".into()).or_insert(Tag::Long(-1));
+    }
     if let Some(a) = m.extra.attributes.as_deref() {
         put_attributes(map, m, a);
+    }
+    // The attribute their load makes, which AttributeMap.pack then saves:
+    // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
+    // the attack damage.
+    use crate::mobs::finalize::Attr;
+    let made = if crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin
+    {
+        Some(Attr::MovementSpeed)
+    } else if species == crate::mobs::Species::Rabbit {
+        Some(Attr::AttackDamage)
+    } else {
+        None
+    };
+    if let Some(attr) = made {
+        let base = crate::mobs::finalize::base_value(m, attr);
+        let mut list = match map.get(&"attributes".into()) {
+            Some(Tag::List(l)) => l.clone(),
+            _ => Vec::new(),
+        };
+        let attr_id = format!("minecraft:{}", attr.name());
+        if !list
+            .iter()
+            .any(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
+        {
+            list.push(Tag::compound([
+                ("id", string(&attr_id)),
+                ("base", Tag::Double(base.to_bits())),
+            ]));
+            map.insert("attributes".into(), Tag::List(list));
+        }
+    }
+    // Mob.addAdditionalSaveData: the chances that are not the default.
+    if let Some(chances) = &m.extra.drop_chances {
+        let set: Vec<(&str, Tag)> = crate::mobs::drops::SLOTS
+            .iter()
+            .zip(chances.iter())
+            .filter(|(_, c)| **c != crate::mobs::drops::DEFAULT_DROP_CHANCE)
+            .map(|(slot, c)| (*slot, Tag::Float(c.to_bits())))
+            .collect();
+        if set.is_empty() {
+            map.remove(&"drop_chances".into());
+        } else {
+            map.insert("drop_chances".into(), Tag::compound(set));
+        }
     }
     crate::mobs::raider::write_nbt(m, map);
     crate::mobs::riders::write_nbt(m, map);
@@ -714,12 +809,13 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         .into_iter()
         .enumerate()
         {
-            // Enchanted gear is saved with its `minecraft:enchantments`.
+            // Enchanted or trimmed gear is saved with its components.
             if let (Some(id), Some(g)) = (item, crate::mobs::gear::gear(m))
-                && !g.slots[index].is_empty()
+                && (!g.slots[index].is_empty() || g.trims[index].is_some())
             {
                 let mut stack = crate::items::ItemStack::new(id, 1);
                 stack.data_mut().enchantments = g.slots[index].clone();
+                stack.data_mut().trim = g.trims[index].clone();
                 equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
                 continue;
             }
@@ -907,7 +1003,20 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
                 continue;
             };
             let v = f64::from_bits(*bits);
+            // A mount's rolled health and speed stay attribute bases, which
+            // the server syncs (its hearts over the rider's hotbar).
+            let equine = crate::mobs::equine::is_equine(m.species());
             match id.as_str() {
+                "minecraft:max_health" if equine => crate::mobs::finalize::set_base(
+                    &mut m,
+                    crate::mobs::finalize::Attr::MaxHealth,
+                    v,
+                ),
+                "minecraft:movement_speed" if equine => crate::mobs::finalize::set_base(
+                    &mut m,
+                    crate::mobs::finalize::Attr::MovementSpeed,
+                    v,
+                ),
                 "minecraft:max_health" => m.attrs.max_health = v as f32,
                 "minecraft:movement_speed" => m.attrs.speed = v,
                 "minecraft:attack_damage" => m.attrs.attack_damage = v as f32,
@@ -934,6 +1043,16 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
             .get("mainhand")
             .and_then(|i| text(i.get("id")))
             .map(Into::into);
+        // The custom name of the main hand item (`ItemStack.hasCustomName`).
+        m.extra.main_hand_name = eq
+            .get("mainhand")
+            .and_then(|i| i.get("components"))
+            .and_then(|c| c.get("minecraft:custom_name"))
+            .map(|t| {
+                horizon_client_core::scoreboard::comp_text(
+                    &horizon_client_core::scoreboard::tag_to_json(t),
+                )
+            });
         m.extra.off_hand = eq
             .get("offhand")
             .and_then(|i| text(i.get("id")))
@@ -949,10 +1068,12 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
             m.extra.legs = slot("legs");
             m.extra.feet = slot("feet");
         }
-        // Their enchantments.
+        // Their enchantments and trims.
         for (index, key) in crate::mobs::gear::KEYS.iter().enumerate() {
             if let Some(stack) = eq.get(key).and_then(crate::save::item_from_nbt) {
                 crate::mobs::gear::set(&mut m, index, stack.enchantments().to_vec());
+                let trim = stack.data().and_then(|d| d.trim.clone());
+                crate::mobs::gear::set_trim(&mut m, index, trim);
             }
         }
     } else {
@@ -964,11 +1085,31 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     // Mob.readAdditionalSaveData overrides what the constructor set (copper
     // golems and elder guardians start persistent).
     m.persistent = flag(tag, "PersistenceRequired");
+    // `NeutralMob.readPersistentAngerSaveData`: the anger end time and the
+    // target come back with the mob.
+    if persistent_anger(m.species()) {
+        m.extra.anger_end = number(tag.get("anger_end_time")).unwrap_or(-1);
+        if tag
+            .get("angry_at")
+            .is_some_and(|t| uuid_from_tag(Some(t)) == Some(player_uuid()))
+        {
+            m.extra.angry_at = Some(crate::mobs::Who::Player);
+        }
+    }
     m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
     m.custom_name = custom_name(tag);
     m.custom_name_text = tag.get("CustomName").map(name_text);
     m.extra.left_handed = flag(tag, "LeftHanded");
-    if m.kind.category == "creature" || m.species() == crate::mobs::Species::Hoglin {
+    if let Some(Tag::Compound(c)) = tag.get("drop_chances") {
+        let mut chances = [crate::mobs::drops::DEFAULT_DROP_CHANCE; 8];
+        for (chance, slot) in chances.iter_mut().zip(crate::mobs::drops::SLOTS) {
+            if let Some(Tag::Float(v)) = c.get(&slot.into()) {
+                *chance = f32::from_bits(*v);
+            }
+        }
+        m.extra.drop_chances = Some(Box::new(chances));
+    }
+    if saves_age(m.species()) {
         m.extra.age = number(tag.get("Age")).unwrap_or(0) as i32;
         m.extra.forced_age = number(tag.get("ForcedAge")).unwrap_or(0) as i32;
         m.extra.age_locked = flag(tag, "AgeLocked");
@@ -1508,6 +1649,10 @@ pub fn arrow_to_nbt(
         // Projectile: LeftOwner only when set; Owner as the UUID.
         map.remove(&"LeftOwner".into());
         map.remove(&"inBlockState".into());
+        map.remove(&"weapon".into());
+    }
+    if let Some(weapon) = &a.fired_from_weapon {
+        put(&mut tag, "weapon", item_to_nbt(weapon));
     }
     if p.left_owner {
         put(&mut tag, "LeftOwner", Tag::Byte(1));
@@ -1554,6 +1699,7 @@ pub fn arrow_from_nbt(
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
     a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.pickup_item = item;
+    a.fired_from_weapon = tag.get("weapon").and_then(item_from_nbt);
     p.stuck = a.in_ground;
     Some((p, tag.get("inBlockState").cloned()))
 }
@@ -2893,6 +3039,33 @@ mod sheep_nbt_tests {
     }
 
     #[test]
+    fn a_baby_villager_keeps_its_age() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let saved = Tag::compound([
+            ("id", string("minecraft:villager")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ("Age", Tag::Int(-21359)),
+        ]);
+        let m = mob_from_nbt(&saved, &types, 1).unwrap();
+        assert_eq!(m.extra.age, -21359);
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
+        assert_eq!(number(tag.get("Age")), Some(-21359));
+        assert_eq!(number(tag.get("AgeLocked")), Some(0));
+        assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+    }
+
+    #[test]
     fn foxes_rabbits_and_goats_keep_their_kind() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -2977,5 +3150,51 @@ mod fireball_nbt_tests {
             (p.kind, p.acceleration),
             (ProjectileKind::LargeFireball { power: 1 }, 0.1)
         );
+    }
+}
+
+#[cfg(test)]
+mod neutral_anger_tests {
+    use super::*;
+
+    /// #2784: a neutral mob's anger survives the save: the anger ends at an
+    /// absolute game time and the target comes back with it
+    /// (`NeutralMob.addPersistentAngerSaveData` / `readPersistentAngerSaveData`).
+    #[test]
+    fn a_neutral_mobs_anger_survives_the_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            types["minecraft:wolf"].clone(),
+            Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        );
+        m.extra.anger = 400;
+        m.extra.anger_end = 3000;
+        m.extra.angry_at = Some(crate::mobs::Who::Player);
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
+        assert_eq!(number(tag.get("anger_end_time")), Some(3000));
+        assert!(tag.get("angry_at").is_some());
+        let back = mob_from_nbt(&tag, &types, 2).unwrap();
+        assert_eq!(back.extra.anger_end, 3000);
+        assert_eq!(back.extra.angry_at, Some(crate::mobs::Who::Player));
+        // A mob that is no NeutralMob writes no anger.
+        let pig = Mob::new(3, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
+        let tag = mob_to_nbt(&pig, [1, 2, 3, 5], None);
+        assert!(tag.get("anger_end_time").is_none());
+        // The anger that is left when the mob comes back.
+        assert_eq!(crate::mobs::anger_left(3000, 1000), 2000);
+        assert_eq!(crate::mobs::anger_left(3000, 4000), 0);
     }
 }
