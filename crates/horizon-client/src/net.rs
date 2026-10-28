@@ -700,11 +700,7 @@ fn configure(
                 let _ = send.send(Event::ProtocolGap(Gap::ConfigurationPacket(id)));
             }
             packet @ (cfg::Clientbound::ResetChat(_)
-            | cfg::Clientbound::StoreCookie(_)
-            | cfg::Clientbound::Transfer(_)
-            | cfg::Clientbound::UpdateEnabledFeatures(_)
-            | cfg::Clientbound::UpdateTags(_)
-            | cfg::Clientbound::ClearDialog(_)) => {
+            | cfg::Clientbound::UpdateEnabledFeatures(_)) => {
                 let _ = send.send(Event::ProtocolGap(Gap::UnhandledConfigurationPacket(
                     packet.id(),
                 )));
@@ -836,6 +832,7 @@ mod tests {
                 &AtomicBool::new(true),
                 &Language::new(),
                 &send,
+                &Cookies::default(),
             )
         });
         let mut server = Connection::local(server);
