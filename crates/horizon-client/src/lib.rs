@@ -96,7 +96,6 @@ pub mod sound_engine;
 pub mod spear;
 pub mod spectator_menu;
 pub mod sprint;
-mod sprite_cache;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;

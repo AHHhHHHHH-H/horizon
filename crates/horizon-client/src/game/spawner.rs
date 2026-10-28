@@ -10,7 +10,7 @@ use horizon_client::{
         Mob, Who,
         spawner::{SpawnDataExt, Spawner, SpawnerAdded, SpawnerEvent, SpawnerExt, SpawnerSpawn},
         spawning,
-        trial_spawner::TrialState,
+        trial_spawner::{TrialSpawnerExt, TrialState},
     },
     particles::{ParticleOptions, ParticleType},
 };
