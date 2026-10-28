@@ -172,7 +172,7 @@ fn force_in(used: &mut Vec<bool>, start: usize, count: usize) {
     }
     used[start..start + count].fill(true);
 }
-fn free_in(used: &mut Vec<bool>, next_free: &mut usize, start: usize, count: usize) {
+fn free_in(used: &mut [bool], next_free: &mut usize, start: usize, count: usize) {
     let end = (start + count).min(used.len());
     if start < end {
         used[start..end].fill(false);
