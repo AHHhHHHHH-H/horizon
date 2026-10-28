@@ -6226,7 +6226,7 @@ impl Game<'_> {
             // hotbar; hidden with the debug screen like the other corners.
             if self.settings.extras.target_details {
                 let draws = self.target_details_draws(wi, hi, bar_height);
-                hud_layout::paint(&mut batch, atlas, &draws);
+                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
             }
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
