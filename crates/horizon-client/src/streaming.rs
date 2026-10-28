@@ -715,6 +715,9 @@ impl Streaming {
         }
         self.queue_basis = (basis, canonical_areas(&self.extra));
         rerank_queue(&self.shared.queue, |x, z| self.distance(x, z));
+        // Workers that found the heap empty while it was swapped out must
+        // pick the restored jobs up even if nothing new is submitted.
+        self.shared.ready.notify_all();
     }
     fn receive_decorated(&mut self, x: i32, z: i32, region: [Proto; 9]) {
         self.generation_scan.exhausted = false;
