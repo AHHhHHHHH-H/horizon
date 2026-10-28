@@ -3958,6 +3958,7 @@ impl Game<'_> {
             hardness != 0.0
         };
         if wears && per_block > 0 && max > 0 {
+            self.trigger_item_durability(&stack);
             let loss = self.durability_loss(&stack, per_block);
             if let Some(held) = self.inventory[self.selected].as_mut() {
                 held.damage += loss;
@@ -5235,6 +5236,7 @@ impl Game<'_> {
             && !self.creative
             && let Some(stack) = self.armor[1].clone()
         {
+            self.trigger_item_durability(&stack);
             let loss = self.durability_loss(&stack, glider_wear);
             if let Some(elytra) = self.armor[1].as_mut() {
                 elytra.damage += loss;
@@ -9181,7 +9183,8 @@ impl Game<'_> {
         };
         let from = self.dim;
         let destination = self.switch_level(target, player.position)?;
-        self.trigger_dimension(from, target);
+        let at = player.position;
+        self.trigger_dimension(from, target, [at.x, at.y, at.z]);
         self.travelling = Some((player, destination));
         self.end_travel = (target == Dim::End || from == Dim::End) && self.end_portal_travel;
         Ok(())
@@ -9569,6 +9572,7 @@ impl Game<'_> {
                         .is_some_and(|info| info.equip_damage_on_hurt)
                         && !(fire && self.res.items().resists_fire(&s, &name)) =>
                 {
+                    self.trigger_item_durability(&s);
                     self.durability_loss(&s, amount)
                 }
                 _ => 0,
@@ -9885,7 +9889,10 @@ impl Game<'_> {
             return;
         }
         let amount = match self.held().cloned() {
-            Some(held) => self.durability_loss(&held, amount),
+            Some(held) => {
+                self.trigger_item_durability(&held);
+                self.durability_loss(&held, amount)
+            }
             None => amount,
         };
         let max = self
@@ -9921,6 +9928,7 @@ impl Game<'_> {
         let Some(held) = self.held().cloned() else {
             return;
         };
+        self.trigger_item_durability(&held);
         let amount = self.durability_loss(&held, amount);
         let max = self.res.items().get(&held.item).map_or(0, |i| i.max_damage);
         if amount == 0 || max == 0 {
