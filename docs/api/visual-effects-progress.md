@@ -50,7 +50,7 @@ These are bounded client APIs, not an unrestricted shader framework:
 - [x] Native integration fixture code for in-frame, server-thread and TCP guests.
 - [x] GPU readback test for filter composition, depth and resource cleanup.
 - [x] Run native fixtures and capture CPU/GPU timings in-frame, server-thread and over TCP.
-- [ ] Final full repository checks after the API 18 changes.
+- [x] Repository self-check after the API 18 changes (`pr_ready --quick`); CI parity remains a separate gate.
 
 The separate original Emissive Ores mod has been built and user-tested. The other
 five adaptations remain separate work; they do not block review of these APIs.
@@ -63,7 +63,7 @@ After merging main at `b6c936f82`, with the control-chat routing fix:
 - Generated API-reference checks: 4 passed.
 - Client library tests with mods: 1110 passed, 33 ignored. Includes GPU readback
   for filter composition/depth/cleanup and shader globals/HLSL validation.
-- Python suite: 398 passed before the additional fixture regression tests.
+- Python suite: 401 passed, including the additional fixture regression tests.
 - Native Effect Lab fixtures: in-frame, server-thread and TCP guest passed effect
   admission, disable cleanup and failed-hot-reload cleanup. On/off PNGs captured.
 - CPU/GPU timestamp summaries recorded for each mode. These are one-second smoke
@@ -71,8 +71,14 @@ After merging main at `b6c936f82`, with the control-chat routing fix:
   Post-processing targets used 1,509,120 bytes in these runs and returned to zero
   on disable and failed reload. Built-in effects have an opt-in CPU/GPU cost.
 - Full workspace clippy (mods enabled and no-default-features server): passed.
-- Full workspace tests, doc tests and content-root checks: still running; see PR
-  for their final results. Do not reuse the old particle-only validation report.
+- Clean-cache repository self-check passed: 2355 workspace tests, 2 doc tests,
+  5 full content-root checks and 204 launcher tests; formatting, workspace/server
+  Clippy and launcher Clippy passed too. Relocated debug artifacts were rebuilt
+  because stale pre-move manifest paths affected preparation/release-signing
+  tests; no test assertions were changed or skipped to obtain this pass.
+- `--quick` does not execute the 348 affected vanilla parity harnesses locally.
+  Upstream CI/review gates remain applicable. Windows/macOS interactive runs and
+  broad performance guarantees are not claimed. See the PR for the full report.
 
 The fixture exposed a control-socket chat bug: remote chat bypassed client-mod
 commands. It now uses the same routing as normal player chat. TCP guests use the
