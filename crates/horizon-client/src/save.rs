@@ -481,6 +481,13 @@ pub fn encode_block_entity(
             }
         }
         BlockEntity::Sculk(s) => entries.extend(s.to_nbt()),
+        BlockEntity::Shelf(shelf) => {
+            entries.push(("Items", encode_items(&shelf.items)));
+            entries.push((
+                "align_items_to_bottom",
+                Tag::Byte(i8::from(shelf.align_to_bottom)),
+            ));
+        }
         // ChiseledBookShelfBlockEntity.saveAdditional.
         BlockEntity::ChiseledBookshelf(b) => {
             entries.push(("Items", encode_items(&b.items)));
@@ -744,6 +751,12 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         }
         BlockEntity::Sign(sign) => sign.decode(tag),
         BlockEntity::Sculk(s) => s.load(tag),
+        BlockEntity::Shelf(shelf) => {
+            for (slot, item) in decode_items(tag.get("Items"), 3).into_iter().enumerate() {
+                shelf.items[slot] = item;
+            }
+            shelf.align_to_bottom = int("align_items_to_bottom").unwrap_or(0) != 0;
+        }
         // ChiseledBookShelfBlockEntity.loadAdditional.
         BlockEntity::ChiseledBookshelf(b) => {
             for (slot, item) in decode_items(tag.get("Items"), 6).into_iter().enumerate() {
