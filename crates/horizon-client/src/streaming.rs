@@ -6,7 +6,8 @@ use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::{
     chunk::{Chunk, SECTIONS},
     light::{
-        LightChanges, LightTables, apply_lighting, apply_relighting_masked, light_chunk_masked,
+        LightChanges, LightScratch, LightTables, apply_lighting, apply_relighting_masked,
+        light_chunk_masked_with,
     },
     mesher::{MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
@@ -473,6 +474,8 @@ impl Streaming {
                         // the worker across mesh jobs, like vanilla's per-thread cache:
                         // cloning it per job copied every state and face shape.
                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
+                        // Light scratch stays with the worker across jobs.
+                        let mut light_scratch = LightScratch::default();
                         loop {
                             let job = {
                                 let mut queue = shared.queue.lock().unwrap();
@@ -509,8 +512,12 @@ impl Streaming {
                                     Done::Saved(protos)
                                 }
                                 Job::Light(x, z, region, seq, sky) => {
-                                    let (sections, changed) =
-                                        light_chunk_masked(&borrow(&region), &light, sky);
+                                    let (sections, changed) = light_chunk_masked_with(
+                                        &borrow(&region),
+                                        &light,
+                                        sky,
+                                        &mut light_scratch,
+                                    );
                                     Done::Lit(x, z, sections, changed, seq)
                                 }
                                 Job::Mesh(x, sy, z, region, seq, settings) => {

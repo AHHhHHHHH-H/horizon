@@ -266,6 +266,33 @@ const OFFSETS: [(i32, i32, i32); 6] = [
     (1, 0, 0),
 ];
 
+/// Per-worker light scratch, reused between jobs: the 48x48xheight region and
+/// its flood-fill queues. Resized only upward; cleared before each job.
+pub struct LightScratch {
+    states: Vec<u16>,
+    sky: Vec<u8>,
+    block: Vec<u8>,
+    present: Vec<bool>,
+    lowest: Vec<i32>,
+    queue: VecDeque<u32>,
+    sky_queue: VecDeque<u32>,
+    ids: Box<[u32; 4096]>,
+}
+impl Default for LightScratch {
+    fn default() -> Self {
+        Self {
+            states: Vec::new(),
+            sky: Vec::new(),
+            block: Vec::new(),
+            present: Vec::new(),
+            lowest: Vec::new(),
+            queue: VecDeque::new(),
+            sky_queue: VecDeque::new(),
+            ids: Box::new([0; 4096]),
+        }
+    }
+}
+
 /// `region[dz][dx]` holds the chunks around the centre (index 1,1).
 /// `sky` is false in dimensions without skylight (the Nether).
 pub fn light_chunk(
@@ -283,6 +310,16 @@ pub fn light_chunk_masked(
     tables: &LightTables,
     sky_light: bool,
 ) -> (Vec<Light>, u32) {
+    light_chunk_masked_with(region, tables, sky_light, &mut LightScratch::default())
+}
+
+/// `light_chunk_masked` with a caller-owned scratch buffer (`LightScratch`).
+pub fn light_chunk_masked_with(
+    region: &[[Option<&Chunk>; 3]; 3],
+    tables: &LightTables,
+    sky_light: bool,
+    scratch: &mut LightScratch,
+) -> (Vec<Light>, u32) {
     region[1][1].expect("centre chunk");
     // Highest occupied section in the region bounds the work.
     let mut top_section = 0;
@@ -299,13 +336,30 @@ pub fn light_chunk_masked(
     let h = ((top_section + 1) * 16).min(HEIGHT as usize);
     let at = |x: usize, y: usize, z: usize| (y * W + z) * W + x;
     // Packed cells (`type << 4 | dampening`), not state ids: the flood fill
-    // then never touches the large `LightTables::cells` table.
-    let mut states = vec![0u16; W * W * h];
-    let mut sky = vec![0u8; W * W * h];
-    let mut block = vec![0u8; W * W * h];
-    let mut queue = VecDeque::new();
-    let mut sky_queue = VecDeque::new();
-    let mut ids = Box::new([0u32; 4096]);
+    // then never touches the large `LightTables::cells` table. Every used cell
+    // is cleared: the flood fill reads stale values otherwise.
+    let cells = W * W * h;
+    scratch.states.resize(cells, 0);
+    scratch.states.fill(0);
+    scratch.sky.resize(cells, 0);
+    scratch.sky.fill(0);
+    scratch.block.resize(cells, 0);
+    scratch.block.fill(0);
+    scratch.queue.clear();
+    scratch.sky_queue.clear();
+    let LightScratch {
+        states,
+        sky,
+        block,
+        present,
+        lowest,
+        queue,
+        sky_queue,
+        ids,
+    } = scratch;
+    let states = &mut states[..cells];
+    let sky = &mut sky[..cells];
+    let block = &mut block[..cells];
     for (dz, row) in region.iter().enumerate() {
         for (dx, chunk) in row.iter().enumerate() {
             let Some(chunk) = chunk else { continue };
@@ -313,7 +367,7 @@ pub fn light_chunk_masked(
                 if section.is_uniform(0) {
                     continue;
                 }
-                section.unpack(&mut ids);
+                section.unpack(&mut **ids);
                 for (i, &id) in ids.iter().enumerate() {
                     let (lx, lz, ly) = (i & 15, (i >> 4) & 15, i >> 8);
                     let p = at(dx * 16 + lx, si * 16 + ly, dz * 16 + lz);
@@ -329,13 +383,15 @@ pub fn light_chunk_masked(
         }
     }
     // Columns of missing neighbour chunks neither hold nor pass light.
-    let mut present = vec![false; W * W];
+    present.resize(W * W, false);
+    present.fill(false);
     for z in 0..W {
         for x in 0..W {
             present[z * W + x] = region[z / 16][x / 16].is_some();
         }
     }
-    let mut lowest = vec![h as i32; W * W];
+    lowest.resize(W * W, h as i32);
+    lowest.fill(h as i32);
     for z in 0..W {
         for x in 0..W {
             if !present[z * W + x] || !sky_light {
@@ -430,9 +486,9 @@ pub fn light_chunk_masked(
             }
         }
     };
-    spread(&mut sky, &mut sky_queue);
-    spread(&mut block, &mut queue);
-    pack_lighting(h, &sky, &block, sky_light, region[1][1])
+    spread(sky, sky_queue);
+    spread(block, queue);
+    pack_lighting(h, sky, block, sky_light, region[1][1])
 }
 
 /// Extract just the centre column's light; never copy worker snapshot sections.
@@ -1311,6 +1367,30 @@ mod tests {
         }
         assert_eq!(mask, expected);
         assert_ne!(mask, 0);
+    }
+
+    #[test]
+    fn reused_light_scratch_matches_a_fresh_call() {
+        let short = world(|c| {
+            c.set(8, 0, 8, TORCH);
+        });
+        let tall = world(|c| {
+            c.set(8, 0, 8, TORCH);
+            c.set(9, 200, 9, STONE);
+        });
+        let mut scratch = LightScratch::default();
+        // Shrink, grow, then shrink again: every cell must be cleared.
+        for w in [&short, &tall, &short] {
+            let (fresh, fresh_mask) = light_chunk_masked(&region(w), &tables(), true);
+            let (reused, reused_mask) =
+                light_chunk_masked_with(&region(w), &tables(), true, &mut scratch);
+            assert_eq!(fresh_mask, reused_mask);
+            for (a, b) in fresh.iter().zip(&reused) {
+                for i in 0..4096 {
+                    assert_eq!(a.get(i), b.get(i));
+                }
+            }
+        }
     }
 
     #[test]
