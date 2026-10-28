@@ -927,6 +927,12 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         None => super::aquatic::rotations(m, alpha, body)
             .unwrap_or_else(|| glam::Mat4::from_rotation_y((180.0 - body).to_radians())),
     };
+    let scale = m
+        .extra
+        .synced_attributes
+        .get("minecraft:scale")
+        .copied()
+        .unwrap_or(1.0) as f32;
     let mut base = origin * rotation;
     if m.death_time > 0 && !super::creaking::tearing_down(m) {
         let f = ((m.death_time as f32 + alpha - 1.0) / 20.0 * 1.6)
@@ -994,6 +1000,9 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
     }
     base *= species_rotations(m, alpha);
     base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
+    if scale != 1.0 {
+        base *= glam::Mat4::from_scale(glam::Vec3::splat(scale));
+    }
     base *= species_scale(m, alpha);
     base * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0))
 }
@@ -1607,6 +1616,19 @@ pub fn held_item_transform(
     {
         let time_held = m.extra.using_item as f32 + s.partial;
         t *= crate::spear::third_person_use_item(&kinetic, time_held, s.swing, 0.0, !left);
+    }
+    // ItemInHandLayer: a stab swing moves the spear (SpearAnimations.thirdPersonAttackItem).
+    if m.extra.swing_stab
+        && m.extra.swing_right_arm == Some(!left)
+        && let Some(kinetic) = (if off_hand {
+            &m.extra.off_hand
+        } else {
+            &m.extra.main_hand
+        })
+        .as_deref()
+        .and_then(crate::spear::Kinetic::of)
+    {
+        t *= anim::third_person_attack_item(s.swing, kinetic.forward_movement);
     }
     Some(t)
 }

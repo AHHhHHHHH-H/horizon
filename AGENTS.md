@@ -167,8 +167,11 @@ python3 tools/prune_worktrees.py           # list every worktree's PR state; --a
    "Server thread" with one level per dimension; the window joins it as a client through memory (`remote`),
    exactly as a LAN guest or a dedicated server's player does. This is what players run. Open
    `[server-thread]` issues list the gaps left.
-2. **In-frame (`--in-frame`, `--no-server-thread` or `HORIZON_SERVER_THREAD=0`):** the window's `Game` ticks
-   the world itself, one level that follows the player (`fn enter_dimension`). Deterministic rule fixtures still use this path; player-facing integration uses the default server thread.
+2. **Legacy in-frame (deprecated; no removal release scheduled):** `--in-frame`,
+   `--no-server-thread` and `HORIZON_SERVER_THREAD=0` warn but still work.
+   Remove these overrides to use the default server thread. The window's `Game` ticks the world itself,
+   one level that follows the player (`fn enter_dimension`). Deterministic rule fixtures still use this
+   path; player-facing integration and the command harness use the default server thread.
 
 LAN guests and dedicated servers always use the server code, so a fix there serves both. Test both paths
 when you touch player-facing gameplay:

@@ -433,7 +433,17 @@ impl Mob {
             let s = self.extra.size as f32;
             (w, h, e) = (w * s, h * s, e * s);
         }
-        (f64::from(w), f64::from(h), f64::from(e))
+        let scale = self
+            .extra
+            .synced_attributes
+            .get("minecraft:scale")
+            .copied()
+            .unwrap_or(1.0) as f32;
+        (
+            f64::from(w * scale),
+            f64::from(h * scale),
+            f64::from(e * scale),
+        )
     }
     pub fn eye_height(&self) -> f64 {
         self.dims().2
@@ -522,7 +532,7 @@ impl Mob {
             self.stuck_multiplier = Vec3::ZERO;
             self.velocity = Vec3::ZERO;
         }
-        let step = self.kind.step_height as f32;
+        let step = self.synced_attribute("minecraft:step_height", self.kind.step_height) as f32;
         let mut scene = SceneCollisions {
             world: w.world,
             binding: w.collision,
@@ -868,8 +878,14 @@ impl Mob {
         if self.kind.flags.fall_immune {
             return;
         }
-        let power = self.fall_distance + 1.0e-6 - self.kind.safe_fall_distance;
-        let mut damage = (power * self.kind.fall_damage_multiplier).floor();
+        let power = self.fall_distance + 1.0e-6
+            - self.synced_attribute("minecraft:safe_fall_distance", self.kind.safe_fall_distance);
+        let mut damage = (power
+            * self.synced_attribute(
+                "minecraft:fall_damage_multiplier",
+                self.kind.fall_damage_multiplier,
+            ))
+        .floor();
         // Frog.calculateFallDamage: five points less than the base damage.
         if self.species() == super::Species::Frog {
             damage -= 5.0;
@@ -908,7 +924,7 @@ impl Mob {
         if self.no_gravity {
             0.0
         } else {
-            self.kind.gravity
+            self.synced_attribute("minecraft:gravity", self.kind.gravity)
         }
     }
     /// LivingEntity.travel.
@@ -1071,7 +1087,10 @@ impl Mob {
         if self.fluids.in_water {
             let mut slow = self.kind.water_slowdown;
             let mut speed = 0.02f32;
-            let mut efficiency = self.kind.water_efficiency as f32;
+            let mut efficiency = self.synced_attribute(
+                "minecraft:water_movement_efficiency",
+                self.kind.water_efficiency,
+            ) as f32;
             if !self.on_ground {
                 efficiency *= 0.5;
             }

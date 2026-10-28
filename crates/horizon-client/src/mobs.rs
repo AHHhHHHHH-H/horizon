@@ -743,6 +743,9 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// Computed attributes received from a server. These override local
+    /// defaults/effect reconstruction, never an authoritative server's map.
+    pub synced_attributes: HashMap<String, f64>,
     /// Players: crouching and riding (HumanoidModel's poses).
     pub crouching: bool,
     /// A player's or mannequin's synced pose (`Entity.DATA_POSE`), which
@@ -840,6 +843,8 @@ pub struct Extra {
     /// The arm the current swing moves (`currentSwing.hand().asArm`): `Some(true)`
     /// for the right arm.
     pub swing_right_arm: Option<bool>,
+    /// The current swing uses `SwingAnimationType.STAB`.
+    pub swing_stab: bool,
     pub flag: bool,
     pub flag2: bool,
     /// Species scratch values (the wither's head targets and clocks).
@@ -1266,6 +1271,12 @@ pub enum MobEvent {
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
+    },
+    /// `LivingEntity.startSleeping` / `stopSleeping`: the bed head at `pos`
+    /// gets `occupied` (`setBlockAndUpdate`; the foot follows it).
+    BedOccupied {
+        pos: [i32; 3],
+        occupied: bool,
     },
     /// `DoorBlock.setOpen` by a mob (`InteractWithDoor`): the door opens or
     /// closes, both halves, with its sound and game event.
@@ -2082,6 +2093,13 @@ impl Mob {
                 position.z + w,
             ),
         )
+    }
+    pub fn synced_attribute(&self, name: &str, default: f64) -> f64 {
+        self.extra
+            .synced_attributes
+            .get(name)
+            .copied()
+            .unwrap_or(default)
     }
     pub fn alive(&self) -> bool {
         self.health > 0.0

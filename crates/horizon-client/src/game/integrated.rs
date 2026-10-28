@@ -6,12 +6,12 @@
 //! the world's options) with [`Integrated::call`], as vanilla's client calls
 //! into its `IntegratedServer`.
 //!
-//! On by default. `--in-frame` (or `--no-server-thread`, or
-//! `HORIZON_SERVER_THREAD=0`) runs the world in the frame instead, the
-//! escape hatch. LAN guests and dedicated servers use the same code either
-//! way.
+//! On by default. The public in-frame selectors (`--in-frame`,
+//! `--no-server-thread`, `HORIZON_SERVER_THREAD=0`) are deprecated and will
+//! be removed in a future release. LAN guests and dedicated servers use the
+//! same server code either way.
 use super::{
-    Game, Options, PackResources, Resources, UiResources,
+    Game, Options, PackResources, Resources, UiResources, WorldIcon,
     execution_role::ExecutionRole,
     lan::{LanSettings, Owner},
     world_loading::WorldRequest,
@@ -325,6 +325,15 @@ impl Game<'_> {
         };
         handle.world_name = world_name;
         self.connect_local(pipe, &player)?;
+        // IntegratedServer.getWorldScreenshotFile: the client grabs the frame
+        // the Select World list shows, and needs the save folder for it.
+        self.world_icon = Some(WorldIcon {
+            path: std::env::current_dir()?
+                .join("saves")
+                .join(folder)
+                .join("icon.png"),
+            last_attempt: None,
+        });
         self.integrated = Some(handle);
         Ok(())
     }
@@ -478,6 +487,8 @@ impl Game<'_> {
             self.lan = Some(host);
         }
         std::thread::sleep(Duration::from_millis(100));
+        // ServerPlayer.disconnect: nobody is left in a bed.
+        self.free_player_beds()?;
         self.save_game()?;
         self.lan_close(false);
         self.save.flush()?;

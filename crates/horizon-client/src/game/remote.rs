@@ -20,6 +20,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    net_gaps::{Gap, Gaps},
     save::SaveDir,
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
@@ -131,6 +132,7 @@ pub(super) struct Remote {
     /// Options.serverRenderDistance: the server's view distance from the
     /// login or the last chunk-cache-radius packet.
     pub(super) view_distance: i32,
+    simulation_distance: i32,
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
@@ -190,6 +192,9 @@ pub(super) struct Remote {
     online_mode: bool,
     /// Player entities in the level: entity id to profile UUID.
     level_players: HashMap<i32, u128>,
+    /// The profile name each player entity was created with (`RemotePlayer.getGameProfile`): it outlives the
+    /// player-list entry, which servers remove to hide their NPCs from the list.
+    level_player_names: HashMap<i32, String>,
     /// Entities with shared flag 6 (`Entity.isCurrentlyGlowing` on a client); mobs keep
     /// theirs in `Mob::glowing`.
     glowing: std::collections::HashSet<i32>,
@@ -218,6 +223,7 @@ pub(super) struct Remote {
     /// slot updates.
     synced: Vec<Option<ItemStack>>,
     decode_errors: u32,
+    protocol_gaps: Gaps,
     clock: Option<i32>,
     /// `ClientClockManager.ClientClockInstance`'s rate and partial tick for
     /// the level's clock (its total is `world.day_time`), and
@@ -345,6 +351,7 @@ impl Game<'_> {
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<horizon_client::net::Cookies>,
     ) -> Result<()> {
+        self.reset_tutorial();
         self.perf.world_opening();
         let root = self.options.resources.clone();
         let builtin = Builtin::find(&root)
@@ -469,6 +476,7 @@ impl Game<'_> {
             )),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
+            simulation_distance: 0,
             sequence: 0,
             position_sender: Default::default(),
             last_input: 0,
@@ -501,6 +509,7 @@ impl Game<'_> {
             listed: Default::default(),
             online_mode: false,
             level_players: HashMap::new(),
+            level_player_names: HashMap::new(),
             glowing: Default::default(),
             profile: 0,
             profile_name: String::new(),
@@ -517,6 +526,7 @@ impl Game<'_> {
             player_type,
             synced: vec![None; 37],
             decode_errors: 0,
+            protocol_gaps: Gaps::default(),
             clock: None,
             clock_rate: 1.0,
             clock_partial: 0.0,
@@ -550,11 +560,14 @@ impl Game<'_> {
         // Vanilla's Hud also ticks on the title and connect screens, so the
         // action bar has run out by the next world; Horizon's ticks in one.
         self.titles.overlay_time = 0;
+        // A world is leaving either way: its icon attempt goes with it.
+        self.world_icon = None;
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
         self.server_packs_disconnect();
         self.code_of_conduct = None;
+        self.reset_tutorial();
         self.close_dialogs();
         // Single player's server thread saves the world before the title shows.
         let single_player = match self.integrated.take() {
@@ -573,6 +586,9 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        // Out of the server's bed: InBedChatScreen goes with the level.
+        self.sleeping = None;
+        self.sleep_timer = 0;
         self.mobs.clear();
         self.clear_remote_objects();
         self.clear_remote_projectiles();
@@ -942,7 +958,8 @@ impl Game<'_> {
                 Event::ShowDialog(dialog) => self.show_dialog(&dialog),
                 Event::ClearDialog => self.clear_dialog(),
                 Event::CodeOfConduct(text) => self.handle_code_of_conduct(text),
-                Event::DecodeError(e) => {
+                Event::DecodeError { id, error: e } => {
+                    self.record_protocol_gap(Gap::UndecodablePlayPacket(id));
                     if let Some(r) = self.remote.as_mut() {
                         r.decode_errors += 1;
                         if r.decode_errors <= 20 {
@@ -950,6 +967,7 @@ impl Game<'_> {
                         }
                     }
                 }
+                Event::ProtocolGap(gap) => self.record_protocol_gap(gap),
                 Event::Disconnected {
                     reason,
                     from_server,
@@ -1118,6 +1136,7 @@ impl Game<'_> {
                 // The entity ids are the old world's; the new dimension's
                 // player entities re-map to their profiles on AddEntity.
                 r.level_players.clear();
+                r.level_player_names.clear();
                 // A new ClientLevel: a new chunk storage, centred on 0, 0.
                 r.chunk_center = (0, 0);
             }
@@ -1380,7 +1399,13 @@ impl Game<'_> {
     }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
-    fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
+    fn spawn_entity(
+        &mut self,
+        id: i32,
+        kind: &str,
+        position: [f64; 3],
+        rotation: [f32; 3],
+    ) -> bool {
         let [yaw, pitch, head] = rotation;
         let at = Vec3::new(position[0], position[1], position[2]);
         let mob_type = if kind == "minecraft:player" {
@@ -1406,6 +1431,7 @@ impl Game<'_> {
                 ticks: 0,
             });
         }
+        let modeled = mob_type.is_some();
         if let Some(t) = mob_type {
             let mut mob = Mob::new(id as u32, t, at, head);
             super::remote_mob_data::client_defaults(&mut mob);
@@ -1430,6 +1456,14 @@ impl Game<'_> {
                 },
             );
         }
+        modeled
+            || matches!(
+                kind,
+                "minecraft:item"
+                    | "minecraft:experience_orb"
+                    | "minecraft:interaction"
+                    | "minecraft:marker"
+            )
     }
     /// A move packet for entity `id`: to the end of `path` (None: a
     /// rotation alone), turned to `rotation` if it has one. `far_snaps`:
@@ -1815,6 +1849,7 @@ impl Game<'_> {
                     r.logged_in = true;
                     r.view_distance = p.chunk_radius;
                     r.show_death_screen = p.show_death_screen;
+                    r.simulation_distance = p.simulation_distance;
                 }
                 self.streaming.radius =
                     self.settings.render_distance.min(p.chunk_radius + 1).max(2);
@@ -1969,20 +2004,28 @@ impl Game<'_> {
                 if let Some(r) = self.remote.as_mut() {
                     if kind == "minecraft:player" {
                         r.level_players.insert(p.id, p.uuid);
+                        // createEntityFromPacket: the player takes the profile of its list entry.
+                        match r.players.get(&p.uuid) {
+                            Some(name) => r.level_player_names.insert(p.id, name.clone()),
+                            None => r.level_player_names.remove(&p.id),
+                        };
                     } else {
                         r.level_players.remove(&p.id);
+                        r.level_player_names.remove(&p.id);
                     }
                 }
-                // Entity.getTeam: a mob is on a team by its UUID.
+                // Entity.getTeam: a mob is on a team by its UUID, a player by
+                // its profile name (`Game::scoreboard_name`).
                 self.persist.uuids.insert(
                     p.id as u32,
                     horizon_client::lan::playerdata::uuid_ints(p.uuid),
                 );
-                self.spawn_entity(p.id, &kind, p.position, rotation);
+                let modeled = self.spawn_entity(p.id, &kind, p.position, rotation);
                 // Entity.recreateFromPacket: setDeltaMovement(packet.getMovement()).
                 self.remote_motion(p.id, p.velocity);
-                if !self.spawn_remote_object(p.id, &kind, p.position, rotation[0], p.data) {
-                    self.spawn_remote_projectile(
+                let object = self.spawn_remote_object(p.id, &kind, p.position, rotation[0], p.data);
+                let projectile = !object
+                    && self.spawn_remote_projectile(
                         p.id,
                         &kind,
                         p.position,
@@ -1990,6 +2033,8 @@ impl Game<'_> {
                         p.velocity,
                         p.data,
                     );
+                if !modeled && !object && !projectile {
+                    self.record_protocol_gap(Gap::Entity(p.kind));
                 }
                 self.move_remote_text_display(p.id, p.position, Some((rotation[0], rotation[1])));
             }
@@ -1997,6 +2042,7 @@ impl Game<'_> {
                 for id in p.ids {
                     if let Some(r) = self.remote.as_mut() {
                         r.level_players.remove(&id);
+                        r.level_player_names.remove(&id);
                     }
                     self.remove_entity(id);
                 }
@@ -2541,13 +2587,22 @@ impl Game<'_> {
             // The player's own instances: its maximum health (the hearts the
             // HUD draws and the health it may hold), reach, speed and so on.
             // Then the received health again, which the old maximum clamped.
-            C::UpdateAttributes(p) if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) => {
-                if let Some(pl) = self.player.as_mut() {
-                    horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
+            C::UpdateAttributes(p) => {
+                if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
+                    if let Some(pl) = self.player.as_mut() {
+                        horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
+                    }
+                    self.apply_remote_health();
+                } else if let Some(mob) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
+                    horizon_client::lan::attributes::apply_mob(
+                        mob,
+                        &self.motion.attributes,
+                        &p.values,
+                    );
+                    // Its maximum health also goes through finalize::set_base.
+                    self.remote_mob_attributes(p.id, &p.values);
                 }
-                self.apply_remote_health();
             }
-            C::UpdateAttributes(p) => self.remote_mob_attributes(p.id, &p.values),
             C::UpdateMobEffect(p) => self.remote_effect(&p),
             C::RemoveMobEffect(p) => {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)
@@ -2725,6 +2780,7 @@ impl Game<'_> {
                     r.state_id = p.state;
                 }
                 let stack = self.to_stack(&p.item);
+                self.tutorial_get_item(stack.as_ref());
                 // ClientPacketListener.handleContainerSetSlot: a hotbar slot that
                 // gains items squeezes for 5 ticks.
                 if p.container == 0
@@ -2742,9 +2798,14 @@ impl Game<'_> {
                 self.set_menu_slot(p.container, i32::from(p.slot), stack);
                 self.remote_synced();
             }
-            C::SetCursorItem(p) => self.carried = self.to_stack(&p.item),
+            C::SetCursorItem(p) => {
+                let stack = self.to_stack(&p.item);
+                self.tutorial_get_item(stack.as_ref());
+                self.carried = stack;
+            }
             C::SetPlayerInventory(p) => {
                 let stack = self.to_stack(&p.item);
+                self.tutorial_get_item(stack.as_ref());
                 match p.slot {
                     0..=35 => self.inventory[p.slot as usize] = stack,
                     36..=39 => self.armor[3 - (p.slot - 36) as usize] = stack,
@@ -2997,6 +3058,11 @@ impl Game<'_> {
                 // ClientChunkCache.updateViewRadius: a new storage of that size.
                 self.drop_remote_chunks_out_of_range();
             }
+            C::SetSimulationDistance(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    r.simulation_distance = p.distance;
+                }
+            }
             C::SetChunkCacheCenter(p) => {
                 if let Some(r) = self.remote.as_mut() {
                     r.chunk_center = (p.x, p.z);
@@ -3076,9 +3142,48 @@ impl Game<'_> {
                     self.titles.reset_times();
                 }
             }
-            _ => {}
+            C::Unknown(id, _) => self.record_protocol_gap(Gap::PlayPacket(id)),
+            C::ProjectilePower(_)
+            | C::SoundEntity(_)
+            | C::UpdateTags(_)
+            | C::SetEntityMotion(_)
+            | C::UpdateAttributes(_) => {
+                self.record_protocol_gap(Gap::UnhandledPlayPacket(packet.id()));
+            }
+            // Consumed by the network thread, not client-world updates.
+            C::BundleDelimiter(_)
+            | C::Disconnect(_)
+            | C::KeepAlive(_)
+            | C::ResourcePackPop(_)
+            | C::ResourcePackPush(_)
+            | C::StartConfiguration(_) => {}
+            // The end of the batch supplies the count used by our chunk-batch reply.
+            C::ChunkBatchStart(_) => {}
+            // Non-brand plugin channels are optional extensions, not vanilla features.
+            C::CustomPayload(_) => {}
         }
         Ok(())
+    }
+
+    fn record_protocol_gap(&mut self, gap: Gap) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if r.protocol_gaps.record(gap) {
+            let name = gap
+                .name()
+                .or_else(|| match gap {
+                    Gap::Entity(id) => r.builtin.get("minecraft:entity_type")?.name(id),
+                    _ => None,
+                })
+                .unwrap_or("unknown id");
+            log::warn!(
+                "Horizon: {} {} (id {}); see server.protocol_gaps in horizon-ctl status",
+                gap.category(),
+                name,
+                gap.id()
+            );
+        }
     }
     /// `handleAddObjective`: add, remove or change an objective.
     fn remote_objective(&mut self, p: play::SetObjective) {
@@ -4491,6 +4596,8 @@ impl Game<'_> {
     /// the attack strength again.
     pub(super) fn stop_remote_mining(&mut self) {
         if let Some((pos, _, _)) = self.remote.as_mut().and_then(|r| r.destroying.take()) {
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            self.tutorial_destroy(state, -1.0);
             self.send(S::PlayerAction(play::PlayerAction {
                 action: 2,
                 pos,
@@ -4561,6 +4668,8 @@ impl Game<'_> {
         }
         if !same {
             if let Some((old, _, _)) = self.remote.as_mut().and_then(|r| r.destroying.take()) {
+                let old_state = self.world.block(old[0], old[1], old[2]);
+                self.tutorial_destroy(old_state, -1.0);
                 self.send(S::PlayerAction(play::PlayerAction {
                     action: 2,
                     pos: old,
@@ -4575,6 +4684,7 @@ impl Game<'_> {
                 direction: face,
                 sequence: seq,
             }));
+            self.tutorial_destroy(state, 0.0);
             if progress >= 1.0 {
                 // startDestroyBlock: instant survival breaks have no destroy delay.
                 self.predict_break(hit.pos, state, seq);
@@ -4598,6 +4708,7 @@ impl Game<'_> {
             return;
         };
         let done = done + progress;
+        self.tutorial_destroy(state, done.clamp(0.0, 1.0));
         let ticks = self.mining.as_ref().map_or(0, |m| m.ticks) + 1;
         if done >= 1.0 {
             let seq = self.next_sequence();
@@ -4634,6 +4745,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
+        self.tutorial_destroy(state, 1.0);
         // BlockStatePredictionHandler.retainKnownServerState.
         if let Some(r) = self.remote.as_mut() {
             r.predictions
@@ -5560,6 +5672,9 @@ impl Game<'_> {
             }
             KeyCode::KeyE => {
                 // The inventory opens without telling the server.
+                if self.tutorial.open_inventory() {
+                    self.persist_tutorial_step();
+                }
                 self.recipe_ui.reset_screen();
                 if self.creative {
                     self.screen = Screen::Creative;
@@ -6148,9 +6263,18 @@ impl Game<'_> {
         let r = self.remote.as_ref()?;
         Some(r.glowing.contains(&(id as i32)))
     }
+    /// The profile name of another player the server sent, by entity id.
+    pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
+        let r = self.remote.as_ref()?;
+        let uuid = r.level_players.get(&(id as i32))?;
+        if *uuid == r.profile {
+            return None;
+        }
+        r.level_player_name(id as i32, uuid)
+    }
     /// Status for `horizon-ctl status`.
-    /// The other players' entities in the level and their names (from the
-    /// player list).
+    /// The other players' entities in the level and their names (their
+    /// profiles', which outlive the player list's entries).
     pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
         let Some(r) = self.remote.as_ref() else {
             return Vec::new();
@@ -6158,7 +6282,7 @@ impl Game<'_> {
         r.level_players
             .iter()
             .filter(|(_, uuid)| **uuid != r.profile)
-            .filter_map(|(id, uuid)| Some((*id as u32, r.players.get(uuid)?.clone())))
+            .filter_map(|(id, uuid)| Some((*id as u32, r.level_player_name(*id, uuid)?.to_owned())))
             .collect()
     }
     /// `ClientClockManager.tick`: the clock moves on by the game time that
@@ -6189,6 +6313,9 @@ impl Game<'_> {
             "dimension": r.dimension.name,
             "game_mode": r.game_mode,
             "chunks": self.world.chunks.len(),
+            "simulation_distance": r.simulation_distance,
+            "entity_attributes": self.mobs.iter().filter(|m| !m.extra.synced_attributes.is_empty())
+                .map(|m| (m.id.to_string(), &m.extra.synced_attributes)).collect::<std::collections::BTreeMap<_,_>>(),
             "entities": r.entities.values().fold(std::collections::BTreeMap::<&str, u32>::new(), |mut m, t| {
                 *m.entry(t.kind.as_str()).or_default() += 1;
                 m
@@ -6242,6 +6369,9 @@ impl Game<'_> {
             "health": r.health.0,
             "food": r.health.1,
             "decode_errors": r.decode_errors,
+            "protocol_gaps": r.protocol_gaps.report(|id| {
+                r.builtin.get("minecraft:entity_type")?.name(id).map(str::to_owned)
+            }),
             "chat": r.chat.iter().rev().take(10).rev().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
         }))
     }
@@ -6553,6 +6683,14 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// A player entity's profile name: the one it was created with, else its
+    /// player-list entry's (an entity the list named after it spawned).
+    fn level_player_name(&self, id: i32, uuid: &u128) -> Option<&str> {
+        self.level_player_names
+            .get(&id)
+            .or_else(|| self.players.get(uuid))
+            .map(String::as_str)
+    }
     /// Players in the server's player list, this one included.
     pub(super) fn player_count(&self) -> usize {
         self.players.len()

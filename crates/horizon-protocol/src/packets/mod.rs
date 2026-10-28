@@ -24,6 +24,11 @@ macro_rules! packet_enum {
             Unknown(i32, Vec<u8>),
         }
         impl $name {
+            /// Packet ids with typed decoders. This does not imply client handling or rendering.
+            pub fn modeled_ids() -> &'static [i32] {
+                use $ids as ids;
+                &[$(ids::$id),*]
+            }
             pub fn id(&self) -> i32 {
                 use $ids as ids;
                 match self {
@@ -84,4 +89,39 @@ pub(crate) fn round_trip<T: Clone + PartialEq + std::fmt::Debug>(
     let id = r.varint().unwrap();
     let back = decode(id, r.rest()).unwrap();
     assert_eq!(back, packet);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clientbound_decoder_inventory_has_only_unique_pinned_ids() {
+        for (modeled, names) in [
+            (
+                login::Clientbound::modeled_ids(),
+                crate::ids::login::clientbound::NAMES,
+            ),
+            (
+                configuration::Clientbound::modeled_ids(),
+                crate::ids::configuration::clientbound::NAMES,
+            ),
+            (
+                play::Clientbound::modeled_ids(),
+                crate::ids::play::clientbound::NAMES,
+            ),
+        ] {
+            let unique: std::collections::BTreeSet<_> = modeled.iter().collect();
+            assert_eq!(unique.len(), modeled.len());
+            assert!(
+                modeled
+                    .iter()
+                    .all(|id| *id >= 0 && (*id as usize) < names.len())
+            );
+        }
+        assert!(matches!(
+            play::Clientbound::decode(i32::MAX, &[1, 2, 3]).unwrap(),
+            play::Clientbound::Unknown(i32::MAX, _)
+        ));
+    }
 }
