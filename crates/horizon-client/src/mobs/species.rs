@@ -1454,7 +1454,7 @@ impl Def {
                     | S::Allay
                     | S::Breeze
             ),
-            flying: matches!(s, S::Ghast | S::Phantom | S::HappyGhast),
+            flying: matches!(s, S::Ghast | S::Phantom | S::HappyGhast | S::Allay),
             climber: matches!(s, S::Spider | S::CaveSpider),
             lava_walker: s == S::Strider,
             omnidirectional: matches!(s, S::Bee | S::Parrot),

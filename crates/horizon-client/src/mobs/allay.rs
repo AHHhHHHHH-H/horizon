@@ -206,3 +206,15 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     p.yrot("right_arm", 0.279_252_68 * hold);
     p.yrot("left_arm", -0.279_252_68 * hold);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::species::{Species, def};
+
+    /// `Allay.travel` flies (`travelFlying`): the allay is a flying mob, so
+    /// its travel does not apply the gravity and it hovers.
+    #[test]
+    fn the_allay_flies() {
+        assert!(def(Species::Allay).flags(false).flying);
+    }
+}
