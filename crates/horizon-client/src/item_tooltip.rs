@@ -533,6 +533,17 @@ pub fn detail_lines(
     let display = TooltipDisplay::for_stack(stack);
     lines.extend(bees_line(stack, &display, translate));
     lines.extend(honey_line(stack, &display, translate));
+    // InstrumentComponent.addToTooltip: the instrument's description.
+    if display.shows("minecraft:instrument") {
+        if let Some(id) = crate::items::instrument_id(stack) {
+            let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", &id));
+            lines.push(text(&format!("instrument.{namespace}.{name}")));
+        } else if let Some(description) =
+            crate::items::inline_instrument(stack).and_then(|tag| tag.get("description"))
+        {
+            lines.push(crate::entity_nbt::name_text(description).plain());
+        }
+    }
     let data = stack.data();
     // PotDecorations.addToTooltip.
     if let Some(sherds) = data
