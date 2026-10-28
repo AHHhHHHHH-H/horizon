@@ -4411,10 +4411,10 @@ mod tests {
             .write(ChunkPos::new(0, 0), &record)
             .unwrap();
         // A held Arc keeps its region open, even at a zero cap.
-        super::trim_region_cache(&mut *cache.lock().unwrap(), 0);
+        super::trim_region_cache(&mut cache.lock().unwrap(), 0);
         assert_eq!(cache.lock().unwrap().len(), 1);
         drop(region);
-        super::trim_region_cache(&mut *cache.lock().unwrap(), 0);
+        super::trim_region_cache(&mut cache.lock().unwrap(), 0);
         assert!(cache.lock().unwrap().is_empty());
         // The next access reopens the file and re-reads the header.
         let region = super::cached_region(&cache, (0, 0), &path, false)
