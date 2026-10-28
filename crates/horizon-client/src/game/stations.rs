@@ -1757,10 +1757,9 @@ impl Game<'_> {
         if !nested && display.name_visible(self.screen == Screen::Creative) {
             // `getStyledHoverName`: a custom name keeps its own styles and is
             // italic where it does not say otherwise.
-            let name = horizon_client::item_tooltip::custom_name_text(stack)
-                .unwrap_or_else(|| {
-                    horizon_client::text::Text::legacy(&self.stack_hover_name(stack))
-                });
+            let name = horizon_client::item_tooltip::custom_name_text(stack).unwrap_or_else(|| {
+                horizon_client::text::Text::legacy(&self.stack_hover_name(stack))
+            });
             lines.push((name, color));
         }
         let translate = |k: &str| self.pack.names.display_get(k);

@@ -204,11 +204,7 @@ fn first_person_attack(m: &mut glam::Mat4, invert: f32, attack: f32) {
         0.65 * (starting - middle),
     ));
     *m *= glam::Mat4::from_rotation_x((-70.0 * (starting - ending)).to_radians());
-    *m *= glam::Mat4::from_translation(glam::Vec3::new(
-        0.0,
-        0.0,
-        -0.25 * (ending - middle),
-    ));
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25 * (ending - middle)));
 }
 
 /// How `submitArmWithItem` holds a stack with a `minecraft:map_id`: in both

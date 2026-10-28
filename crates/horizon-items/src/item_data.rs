@@ -1158,9 +1158,8 @@ mod tests {
                 .get("minecraft:custom_name"),
             Some(&original)
         );
-        let text = horizon_client_core::component::name_text(
-            stack.custom_name_component().unwrap(),
-        );
+        let text =
+            horizon_client_core::component::name_text(stack.custom_name_component().unwrap());
         assert!(text.spans[0].style.is_bold());
         assert!(!text.spans[0].style.is_italic());
         assert_eq!(text.spans[0].style.font.as_deref(), Some("minecraft:alt"));
