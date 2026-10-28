@@ -11,7 +11,7 @@ pub use horizon_client_render::{
     collisions, command_block, containers, crash, dynamic_light, effects, environment, extras,
     fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui, hud, hud_layout,
     hud_overlays, inventory_effects, java_text, level_loading, light, lod, logging, menu_blur,
-    mesher, minimap, mipmap, mod_list, model_library, models, options_file, options_fixes,
+    mesher, minimap, mipmap, mod_emissive, mod_list, model_library, models, options_file, options_fixes,
     options_ui, overlay, pack_screen, packs, par, particles, poi_sections, providers, screen_draw,
     screen_effects, sculk, settings, shader_pack_list, signs, skins, sound_events, spans, sprites,
     streaming, tab_list, telemetry, testgen, title_edition, trims, ui, vault, weather, widgets,

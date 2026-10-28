@@ -74,9 +74,11 @@ mod flat;
 mod hdr;
 pub mod lightning;
 mod lod;
+mod mod_post;
 mod native_material;
 mod native_pack;
 mod native_post;
+pub use mod_post::Effect as ModPostEffect;
 mod native_sky;
 mod occlusion;
 mod pack_atlas;
@@ -188,6 +190,10 @@ struct Globals {
     outline_params: [f32; 4],
     /// Horizon Extras' dynamic lights: camera-relative position and level (`dynamic_light`).
     dynamic_lights: [[f32; 4]; crate::dynamic_light::MAX],
+    colored_lights: [crate::dynamic_light::Colored; crate::dynamic_light::MAX],
+    colored_count: [u32; 4],
+    emissive_materials: [[u32; 4]; crate::mod_emissive::MAX],
+    emissive_count: [u32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -235,6 +241,7 @@ pub struct Frame<'a> {
     pub cave_culling: bool,
     /// Title screen: only the dedicated panorama cube map and the HUD.
     pub title: bool,
+    pub mod_post_effects: &'a [ModPostEffect],
     /// Lava, powder snow, blindness or darkness blocks the sky pass.
     pub sky_blocked: bool,
     /// Dimensions without a skybox (the Nether) clear to the fog colour.
@@ -284,6 +291,8 @@ pub struct Frame<'a> {
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
+    pub colored_lights: &'a [crate::dynamic_light::Colored],
+    pub emissive_materials: &'a [[u32; 4]],
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
     pub clouds: Option<crate::clouds::Input<'a>>,
     /// Retained lightning bolts, drawn before the other additive entities.
@@ -535,6 +544,7 @@ pub struct Renderer {
     occlusion: occlusion::Occlusion,
     /// Resolution scale and FXAA (Horizon settings).
     world_post: world_post::Post,
+    mod_post: mod_post::ModPost,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
@@ -2496,6 +2506,7 @@ impl Renderer {
             });
         let depth = Self::depth(&device, &config, cull.as_ref());
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
+        let mod_post = mod_post::ModPost::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, config.format.remove_srgb_suffix());
@@ -2647,6 +2658,7 @@ impl Renderer {
             block_entity_revision: next_block_entity_revision(),
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             world_post,
+            mod_post,
             hdr: None,
             hdr_output,
             hdr_marker: None,
@@ -3404,6 +3416,10 @@ impl Renderer {
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         self.pack_post.as_ref().map(|p| p.0)
     }
+    /// Integration diagnostics; zero once sandbox post targets are released.
+    pub fn mod_post_target_bytes(&self) -> u64 {
+        self.mod_post.target_bytes()
+    }
     /// The Mipmap Levels option: block textures sample at most `levels`
     /// reduced copies (0: none).
     pub fn set_mipmap_levels(&mut self, levels: u32) {
@@ -3699,6 +3715,32 @@ impl Renderer {
                 frame.glint_ticks,
             ],
             outline_params: outline_params(self.config.width, self.config.height),
+            emissive_materials: {
+                let mut maps = [[0; 4]; crate::mod_emissive::MAX];
+                for (to, from) in maps.iter_mut().zip(frame.emissive_materials) {
+                    *to = *from;
+                }
+                maps
+            },
+            emissive_count: [
+                frame.emissive_materials.len().min(crate::mod_emissive::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
+            colored_lights: {
+                let mut lights = [[[0.0; 4]; 2]; crate::dynamic_light::MAX];
+                for (to, from) in lights.iter_mut().zip(frame.colored_lights) {
+                    *to = *from;
+                }
+                lights
+            },
+            colored_count: [
+                frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
             dynamic_lights: {
                 let mut lights = [[0.0; 4]; crate::dynamic_light::MAX];
                 for (to, from) in lights.iter_mut().zip(frame.dynamic_lights) {
@@ -4470,7 +4512,12 @@ impl Renderer {
                 .then(|| pack_timing::PassTiming::new(&self.device, &self.queue))
                 .flatten();
         }
-        let pack_reads_world = pack_post || native_post;
+        let mod_effects =
+            !frame.title && !pack_post && !native_post && !frame.mod_post_effects.is_empty();
+        if !mod_effects {
+            self.mod_post.clear();
+        }
+        let pack_reads_world = pack_post || native_post || mod_effects;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -5040,6 +5087,19 @@ impl Renderer {
                 size,
                 native.timing.as_mut(),
             );
+        } else if mod_effects && let Some((color, depth)) = &scaled {
+            let effected = self.mod_post.run(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                color,
+                depth,
+                self.world_post.size().unwrap_or([1, 1]),
+                frame.mod_post_effects,
+            );
+            let group = self.world_post.bind(&self.device, &effected);
+            self.world_post
+                .finish_with(&mut encoder, &view_target, &group);
         } else if scaled.is_some() {
             self.world_post.finish(&mut encoder, &view_target);
         }

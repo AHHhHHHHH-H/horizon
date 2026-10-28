@@ -1324,11 +1324,17 @@ impl Game<'_> {
         }
     }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
+        #[cfg(feature = "mods")]
+        let before = self.world.block(pos[0], pos[1], pos[2]);
         let state = BlockStateId(state.max(0) as u32);
         if self.world.loaded(pos[0], pos[2])
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
         {
             self.sync_block_entity((pos[0], pos[1], pos[2]), state);
+            #[cfg(feature = "mods")]
+            if before != state {
+                self.mod_block_change(pos);
+            }
         }
         // A block we just placed: play its place sound (the server skips the placer).
         if let Some((target, _)) = self.remote.as_ref().and_then(|r| r.placing)
@@ -4719,6 +4725,8 @@ impl Game<'_> {
             .and_then(|h| self.res.items().get(&h.item))
             .is_some_and(|i| i.block.is_some());
         if let Some(hit) = self.pick() {
+            #[cfg(feature = "mods")]
+            self.mod_block_interaction(hit.pos);
             let (reacts, changes) = if hand == Hand::Main {
                 self.remote_block_reacts(&hit, held.as_ref())
             } else {

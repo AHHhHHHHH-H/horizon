@@ -45,6 +45,7 @@ pub mod menu_blur;
 pub mod mesher;
 pub mod minimap;
 pub mod mipmap;
+pub mod mod_emissive;
 pub mod mod_list;
 pub mod model_library;
 pub mod models;

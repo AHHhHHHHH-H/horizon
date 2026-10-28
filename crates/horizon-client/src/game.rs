@@ -115,6 +115,8 @@ mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_recipes;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_world;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -2975,6 +2977,8 @@ impl Game<'_> {
     }
     /// Level.setBlock(pos, state, UPDATE_ALL) with neighbour/shape updates.
     fn level_set(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
+        #[cfg(feature = "mods")]
+        let before = self.world.block(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| {
             b.set_block(
                 level,
@@ -2984,6 +2988,10 @@ impl Game<'_> {
                 level_flags::UPDATE_ALL,
             );
         });
+        #[cfg(feature = "mods")]
+        if before != self.world.block(pos[0], pos[1], pos[2]) {
+            self.mod_block_change(pos);
+        }
         self.process_level_events()
     }
     fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
@@ -3993,7 +4001,14 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        self.with_player_actor(|game| game.break_block_as_player(pos))
+        #[cfg(feature = "mods")]
+        let before = self.world.block(pos[0], pos[1], pos[2]);
+        let result = self.with_player_actor(|game| game.break_block_as_player(pos));
+        #[cfg(feature = "mods")]
+        if before != self.world.block(pos[0], pos[1], pos[2]) {
+            self.mod_block_change(pos);
+        }
+        result
     }
     fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
         if !self
@@ -4233,6 +4248,10 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        #[cfg(feature = "mods")]
+        if let Some(hit) = block_hit {
+            self.mod_block_interaction(hit.pos);
+        }
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -11741,6 +11760,8 @@ impl Game<'_> {
             (0.0, 0.0)
         };
         horizon_client::environment::apply_weather(&mut sky, rain, thunder);
+        #[cfg(feature = "mods")]
+        self.mod_atmosphere(&mut sky);
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -12018,6 +12039,9 @@ impl Game<'_> {
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
+            mod_post_effects: &self.mod_post_effects(),
+            colored_lights: &self.mod_colored_lights(camera),
+            emissive_materials: &self.mod_emissive_materials(),
             lightning: horizon_client::gfx::lightning::Input {
                 bolts: &bolts,
                 uv: [
@@ -14918,6 +14942,9 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
+        mod_post_effects: &[],
+        colored_lights: &[],
+        emissive_materials: &[],
         clouds: None,
         lightning: Default::default(),
         additive: &[],

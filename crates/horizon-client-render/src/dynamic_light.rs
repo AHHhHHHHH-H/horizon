@@ -13,6 +13,62 @@ use std::collections::HashMap;
 
 /// Lights the shaders read: `Globals.dynamic_lights` in gfx.rs, terrain.wgsl and entity.wgsl.
 pub const MAX: usize = 16;
+/// Position/radius and RGB/intensity, as the shader reads them.
+pub type Colored = [[f32; 4]; 2];
+
+/// Select nearest sandbox lights without retaining an unbounded candidate list.
+/// Inputs are world position, RGB, radius, intensity. Validation is repeated at
+/// this renderer boundary; the sandbox additionally checks player distance.
+pub fn select_colored(
+    sources: impl Iterator<Item = ([f64; 3], u32, f32, f32)>,
+    camera: DVec3,
+) -> Vec<Colored> {
+    let mut near: Vec<(f64, Colored)> = Vec::with_capacity(MAX + 1);
+    for (at, rgb, radius, intensity) in sources {
+        let at = DVec3::from(at);
+        let d2 = at.distance_squared(camera);
+        if !d2.is_finite()
+            || d2 > 96.0 * 96.0
+            || rgb > 0xFFFFFF
+            || !radius.is_finite()
+            || !(0.25..=16.0).contains(&radius)
+            || !intensity.is_finite()
+            || !(0.0..=1.0).contains(&intensity)
+        {
+            continue;
+        }
+        let p = (at - camera).as_vec3();
+        let value = [
+            [p.x, p.y, p.z, radius],
+            [
+                ((rgb >> 16) & 255) as f32 / 255.0,
+                ((rgb >> 8) & 255) as f32 / 255.0,
+                (rgb & 255) as f32 / 255.0,
+                intensity,
+            ],
+        ];
+        let i = near.partition_point(|(d, _)| *d <= d2);
+        if i < MAX {
+            near.insert(i, (d2, value));
+            near.truncate(MAX);
+        }
+    }
+    near.into_iter().map(|(_, l)| l).collect()
+}
+
+/// The shader's additive illumination, clamped per channel, with linear falloff.
+pub fn colored_at(pos: [f32; 3], lights: &[Colored]) -> [f32; 3] {
+    let mut rgb = [0.0f32; 3];
+    for [at, color] in lights.iter().take(MAX) {
+        let distance =
+            ((pos[0] - at[0]).powi(2) + (pos[1] - at[1]).powi(2) + (pos[2] - at[2]).powi(2)).sqrt();
+        let weight = (1.0 - distance / at[3]).max(0.0) * color[3];
+        for i in 0..3 {
+            rgb[i] = (rgb[i] + color[i] * weight).min(1.0);
+        }
+    }
+    rgb
+}
 /// What an entity on fire gives off, as a lit campfire or fire block does.
 pub const BURNING: u8 = 15;
 /// Sources farther than this from the camera light nothing it can see well.
@@ -86,6 +142,25 @@ pub fn level_at(pos: [f32; 3], lights: &[[f32; 4]]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colored_sources_are_bounded_and_fall_off_without_changing_white_light() {
+        let lights = select_colored(
+            (0..100)
+                .rev()
+                .map(|i| ([f64::from(i), 0.0, 0.0], 0xFF0000, 4.0, 1.0)),
+            DVec3::ZERO,
+        );
+        assert_eq!(lights.len(), MAX);
+        assert_eq!(lights[0][0], [0.0, 0.0, 0.0, 4.0]);
+        assert_eq!(colored_at([0.0; 3], &lights[..1]), [1.0, 0.0, 0.0]);
+        assert_eq!(colored_at([2.0, 0.0, 0.0], &lights[..1]), [0.5, 0.0, 0.0]);
+        assert_eq!(colored_at([4.0, 0.0, 0.0], &lights[..1]), [0.0; 3]);
+        assert_eq!(colored_at([0.0; 3], &[]), [0.0; 3]);
+        assert!(
+            select_colored(std::iter::once(([f64::NAN; 3], 0, 4.0, 1.0)), DVec3::ZERO).is_empty()
+        );
+    }
 
     #[test]
     fn nearest_sources_win() {

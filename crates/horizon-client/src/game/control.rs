@@ -594,7 +594,7 @@ impl Game<'_> {
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();
                 if self.remote.is_some() {
-                    self.send_chat(text);
+                    self.handle_chat_input(text);
                     return ok();
                 }
                 self.require_world()?;
@@ -1094,6 +1094,17 @@ impl Game<'_> {
         status["maps"] = json!(self.maps_status());
         // The particles made so far, by type.
         status["particles"] = json!(self.particles.made());
+        #[cfg(feature = "mods")]
+        {
+            status["mod_visuals"] = json!({
+                "particles": self.particles.mod_particle_count(),
+                "colored_lights": self.mods.mods.colored_lights().count(),
+                "emissive_suffixes": self.mods.mods.emissive_suffixes(),
+                "emissive_mappings": self.mod_emissive_materials().len(),
+                "post_effects": self.mods.mods.post_effects().count(),
+                "post_target_bytes": self.renderer.as_ref().map_or(0, |r| r.mod_post_target_bytes()),
+            });
+        }
         // The world border this side knows of.
         status["border"] = json!({ "center": self.border.center(), "size": self.border.size() });
         // The scoreboard sidebar the HUD shows.

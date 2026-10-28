@@ -65,6 +65,81 @@ interface game {
     /// distant terrain when LOD Distance is on), as of this tick. None when
     /// nothing is hit, and on the title screen.
     raycast: func(distance: f32) -> option<hit>;
+    record block-sample {
+        /// State string, e.g. minecraft:oak_log[axis=y].
+        state: string,
+        biome: string,
+        /// minecraft:empty, minecraft:water or minecraft:lava (including waterlogged blocks).
+        fluid: string,
+        block-light: u8,
+        sky-light: u8,
+    }
+    /// Reads a loaded block within 32 blocks of the player, at most 64 times
+    /// per mod per tick, shared by all hooks. None outside the world, beyond
+    /// that radius, without a player, or when the query budget is exhausted.
+    /// This never requests or generates chunks. API level 9.
+    sample-block: func(x: s32, y: s32, z: s32) -> option<block-sample>;
+
+    record nearby-entity {
+        id: u32,
+        kind: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        velocity-x: f64,
+        velocity-y: f64,
+        velocity-z: f64,
+        width: f32,
+        height: f32,
+        on-ground: bool,
+        burning: bool,
+    }
+    /// Up to 128 nearest loaded living entities, dropped items, experience
+    /// orbs, boats and minecarts (the local player is get-player). Radius is
+    /// finite, 0..32 blocks. Uses the shared 64-query per-tick budget.
+    /// No server-only or unloaded entities are exposed. API level 12.
+    nearby-entities: func(radius: f32) -> list<nearby-entity>;
+
+    enum world-event-kind { landed, entered-water, entered-lava, block-interacted, block-changed, container-opened, eating }
+    record world-event {
+        kind: world-event-kind,
+        /// None means the local player; otherwise a client entity ID.
+        entity: option<u32>,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Item/block ID or container label; at most 256 characters.
+        detail: string,
+        /// Prior movement speed for landings/fluid entry, 0..4 blocks/tick.
+        speed: f32,
+        tick: u64,
+    }
+    /// Drains up to 128 locally observed events, oldest first. Overflow drops
+    /// oldest events. Initial entity sightings do not synthesize a landing.
+    /// Events never reveal unloaded/server-only state. API level 13.
+    poll-world-events: func() -> list<world-event>;
+
+}
+
+/// Capability `audio` (experimental): bounded local positional sounds.
+interface audio {
+    record sound {
+        /// A namespaced sound event from the active vanilla/mod resource packs.
+        id: string,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Finite, 0..1.
+        volume: f32,
+        /// Finite, 0.5..2.
+        pitch: f32,
+    }
+    /// Queues a local sound within 32 blocks of the player. Returns false for
+    /// invalid input, no player, or more than 8 requests per mod per tick.
+    /// Across all mods at most 64 requests are delivered per tick. Missing
+    /// sound events are silent; nothing is downloaded or sent to a server.
+    /// Disabling/crashing the owner drops pending requests. API level 10.
+    play: func(sound: sound) -> bool;
 }
 
 /// Capability `chat`: messages only the local player sees.
@@ -349,6 +424,135 @@ interface render {
     /// order over the HUD (after the hotbar, under chat and screens), hidden
     /// with the HUD (F1). An empty list removes them.
     set-hud: func(shapes: list<shape>);
+    /// Existing vanilla particles with no block/item payload. Client-local only.
+    enum ambient-particle {
+        smoke,
+        flame,
+        bubble,
+        splash,
+        end-rod,
+        cherry-leaves,
+        white-ash,
+        spore-blossom-air,
+    }
+    record world-particle {
+        kind: ambient-particle,
+        x: f64,
+        y: f64,
+        z: f64,
+        /// Initial velocity in blocks per tick; each component must be within -1..1.
+        velocity-x: f64,
+        velocity-y: f64,
+        velocity-z: f64,
+    }
+    /// Queues at most 32 particles per mod per game tick, shared by all hooks.
+    /// Returns the accepted count. Only the first 32 entries are examined.
+    /// Non-finite values, velocity components outside -1..1, positions beyond
+    /// 32 blocks from the player, and calls without a player are ignored.
+    /// The client drops requests outside loaded chunks and draws at most 256
+    /// mod particles per tick across all mods. No server packets are sent.
+    /// Disabling or crashing a mod discards its queued requests; particles
+    /// already spawned expire normally. Requires Mod API level 8.
+    emit-particles: func(particles: list<world-particle>) -> u32;
+    /// Explicit physics with a vanilla sprite set, not that type's behaviour.
+    /// Custom image assets are not supported by this function.
+    record configured-particle {
+        particle: world-particle,
+        /// RGB tint, 0xRRGGBB, and alpha 0..1.
+        color: u32,
+        alpha: f32,
+        /// Quad half-size in blocks, 0.005..1; constant over its lifetime.
+        size: f32,
+        /// 1..200 game ticks.
+        lifetime: u32,
+        /// -1..1; acceleration is -0.04 * gravity blocks/tick squared.
+        gravity: f32,
+        /// Velocity multiplier after each move, 0..1.
+        friction: f32,
+        collision: bool,
+        full-bright: bool,
+    }
+    /// Shares emit-particles' per-mod and global request quotas, distance and
+    /// loaded-chunk limits. Invalid records are ignored. Returns the queued
+    /// count, not a guarantee of display: player settings and live caps apply.
+    /// At most 256 live configured particles per owner and 1024 across mods.
+    /// Disabling, reloading or crashing removes these particles immediately;
+    /// dimension changes clear them too. Does not emit light into the world.
+    /// Requires Mod API level 14 and capability render.
+    emit-configured-particles: func(particles: list<configured-particle>) -> u32;
+    record colored-light {
+        x: f64,
+        y: f64,
+        z: f64,
+        /// RGB, 0xRRGGBB.
+        color: u32,
+        /// Radius in blocks, 0.25..16; linear falloff to zero at the edge.
+        radius: f32,
+        /// 0..1. Adds local visual illumination; never changes gameplay light.
+        intensity: f32,
+    }
+    /// Replaces this owner's lights (up to 8). Requires a player, positions
+    /// within 32 blocks, finite values and valid bounds; invalid lists leave
+    /// the previous list unchanged. Empty clears. Renderer selects at most 16
+    /// nearest sources globally in loaded chunks. Lights do not cast shadows
+    /// or modify world light propagation. Terrain and entities use the normal
+    /// renderer only; material-replacing shader packs may override the result.
+    /// Cleared on owner stop/reload and world/dimension changes. API level 15.
+    set-colored-lights: func(lights: list<colored-light>) -> result<_, string>;
+    record sprite-particle {
+        particle: configured-particle,
+        /// Owned namespace:particle/path, from assets/<namespace>/textures/
+        /// particle/path.png in the mod's registries content. Static PNG only.
+        sprite: string,
+    }
+    /// Configured physics with a static packaged sprite instead of the kind's
+    /// vanilla sprite set. Only this mod's content namespaces may be used.
+    /// Shares all particle quotas. Missing or oversized images are not drawn.
+    /// Atlas admits at most 64 custom particle images per namespace, 256 total,
+    /// each at most 64x64. Assets follow the content reload/restart lifecycle;
+    /// live particles follow their owner's lifecycle. API level 16.
+    emit-sprite-particles: func(particles: list<sprite-particle>) -> u32;
+    record emissive-material { base: string, overlay: string }
+    /// Replaces up to 32 block-texture overlays owned by this mod. Base is a
+    /// texture id; overlay must be in an owned namespace under emissive/.
+    /// Optional pack suffix mode recognizes _e, _emissive and a safe
+    /// optifine/emissive.properties suffix.emissive value. Global maximum 128
+    /// resolved mappings, explicit entries first, first owner wins. Overlays
+    /// are full-bright but fogged, do not cast light, and affect normal terrain
+    /// rendering only (not items/entities or replacing material shader packs).
+    /// Invalid lists preserve prior state; empty/false clears. Assets use the
+    /// content reload lifecycle; disabling owners removes mappings. API 17.
+    set-emissive-materials: func(materials: list<emissive-material>, pack-suffixes: bool) -> result<_, string>;
+    record bloom { strength: f32, threshold: f32, radius: f32 }
+    record godrays { strength: f32, light-x: f32, light-y: f32, color: u32 }
+    variant post-effect { bloom(bloom), godrays(godrays) }
+    /// Replaces up to 2 owned effects; empty clears. Strength and threshold
+    /// are 0..1, bloom radius 0.5..8 target pixels, godray light coordinates
+    /// 0..1 in the viewport. Finite values and RGB colors only. First 4 effects
+    /// globally in stable mod/list order. Bounded built-in filters read world
+    /// color/depth and compose additive contributions before hand/HUD. Not
+    /// arbitrary WGSL or general shader chaining. Paused while a shader pack
+    /// owns post-processing; never on the title screen. Cleared on stop/reload
+    /// and world/dimension changes. API level 18.
+    set-post-effects: func(effects: list<post-effect>) -> result<_, string>;
+    record atmosphere {
+        /// Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values.
+        sky-color: option<u32>,
+        fog-color: option<u32>,
+        cloud-color: option<u32>,
+        /// Distances in blocks, 0..4096. End must be greater than start.
+        fog-start: option<f32>,
+        fog-end: option<f32>,
+        star-brightness: option<f32>,
+        cloud-opacity: option<f32>,
+        /// Smoothly interpolate from the last drawn values, 0..10 seconds.
+        transition-seconds: f32,
+    }
+    /// Sets this mod's visual atmosphere for the current dimension. None clears
+    /// it. The first running mod with an override wins; it disappears on disable,
+    /// failure or dimension change. Does not change gameplay lighting or weather.
+    /// Invalid values leave the previous override intact. API level 11.
+    set-atmosphere: func(value: option<atmosphere>) -> result<_, string>;
     /// The screen's size in GUI pixels (width, height), as of this tick.
     gui-size: func() -> tuple<f32, f32>;
     /// Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that
@@ -786,6 +990,7 @@ interface server-events {
 /// A client mod: runs in the player's game.
 world horizon-mod {
     import log;
+    import audio;
     import game;
     import chat;
     import hud;
