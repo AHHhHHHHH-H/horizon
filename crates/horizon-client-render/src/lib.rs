@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 pub mod assets;
 pub mod atlas_sources;
+pub mod audio;
 pub mod auth;
 pub mod bidi;
 pub mod biome;
@@ -65,6 +66,7 @@ pub mod settings;
 pub mod shader_pack_list;
 pub mod signs;
 pub mod skins;
+pub mod sound_engine;
 pub mod sound_events;
 pub mod spans;
 pub mod sprites;
