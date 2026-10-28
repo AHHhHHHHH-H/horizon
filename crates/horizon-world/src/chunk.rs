@@ -421,6 +421,14 @@ impl<'r> BlockSection<'r> {
     pub fn bits(&self) -> u8 {
         self.storage.as_ref().map_or(0, PackedStorage::bits)
     }
+    /// The palette in storage order (unused slots included).
+    pub fn palette(&self) -> &[BlockStateId] {
+        &self.palette
+    }
+    /// The packed indices, when the section is not uniform.
+    pub fn words(&self) -> Option<&[u64]> {
+        self.storage.as_ref().map(PackedStorage::words)
+    }
     pub fn get(&self, index: usize) -> io::Result<BlockStateId> {
         if index >= 4096 {
             return Err(invalid("section index out of bounds"));
