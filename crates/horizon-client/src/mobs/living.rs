@@ -25,6 +25,8 @@ pub struct Steps {
     pub move_dist: f32,
     pub fly_dist: f32,
     pub next_step: f32,
+    /// `AbstractHorse.gallopSoundCounter`.
+    pub gallop: i32,
 }
 impl Default for Steps {
     fn default() -> Self {
@@ -32,6 +34,7 @@ impl Default for Steps {
             move_dist: 0.0,
             fly_dist: 0.0,
             next_step: 1.0,
+            gallop: 0,
         }
     }
 }
@@ -385,6 +388,12 @@ impl Mob {
         if super::villager::sleeping(self) {
             return (f64::from(0.2_f32), f64::from(0.2_f32), f64::from(0.2_f32));
         }
+        self.awake_dims()
+    }
+    /// `dims` without the sleeping box: a sleeping villager's
+    /// `getDimensions(Pose.STANDING)`, whose eye height lays it in the bed
+    /// (`LivingEntityRenderer.submit`).
+    pub fn awake_dims(&self) -> (f64, f64, f64) {
         let k = &self.kind;
         // Avatar.POSES: a player's or mannequin's box follows its pose.
         if matches!(&*k.id, "minecraft:player" | "minecraft:mannequin") {
@@ -424,7 +433,17 @@ impl Mob {
             let s = self.extra.size as f32;
             (w, h, e) = (w * s, h * s, e * s);
         }
-        (f64::from(w), f64::from(h), f64::from(e))
+        let scale = self
+            .extra
+            .synced_attributes
+            .get("minecraft:scale")
+            .copied()
+            .unwrap_or(1.0) as f32;
+        (
+            f64::from(w * scale),
+            f64::from(h * scale),
+            f64::from(e * scale),
+        )
     }
     pub fn eye_height(&self) -> f64 {
         self.dims().2
@@ -513,7 +532,7 @@ impl Mob {
             self.stuck_multiplier = Vec3::ZERO;
             self.velocity = Vec3::ZERO;
         }
-        let step = self.kind.step_height as f32;
+        let step = self.synced_attribute("minecraft:step_height", self.kind.step_height) as f32;
         let mut scene = SceneCollisions {
             world: w.world,
             binding: w.collision,
@@ -706,7 +725,11 @@ impl Mob {
                 && (self.on_ground || climbable)
                 && !self.fluids_swimming();
             if produced {
-                if let Some((sound, volume, pitch)) =
+                if super::equine::hoof_steps(self.species()) {
+                    if !self.silent {
+                        super::equine::play_step(self, w, legacy, legacy_state, events);
+                    }
+                } else if let Some((sound, volume, pitch)) =
                     super::ai::step_sound(self, w, legacy, legacy_state)
                     && !self.silent
                 {
@@ -855,18 +878,27 @@ impl Mob {
         if self.kind.flags.fall_immune {
             return;
         }
-        let power = self.fall_distance + 1.0e-6 - self.kind.safe_fall_distance;
-        let mut damage = (power * self.kind.fall_damage_multiplier).floor();
+        let power = self.fall_distance + 1.0e-6
+            - self.synced_attribute("minecraft:safe_fall_distance", self.kind.safe_fall_distance);
+        let mut damage = (power
+            * self.synced_attribute(
+                "minecraft:fall_damage_multiplier",
+                self.kind.fall_damage_multiplier,
+            ))
+        .floor();
         // Frog.calculateFallDamage: five points less than the base damage.
         if self.species() == super::Species::Frog {
             damage -= 5.0;
         }
         if damage > 0.0 {
             let at = [self.position.x, self.position.y, self.position.z];
-            let sound = if damage > 4.0 {
-                "entity.generic.big_fall"
-            } else {
-                "entity.generic.small_fall"
+            // Monster.getFallSounds: the hostile pair.
+            let monster = super::ai::is_monster(self.species());
+            let sound = match (monster, damage > 4.0) {
+                (true, true) => "entity.hostile.big_fall",
+                (true, false) => "entity.hostile.small_fall",
+                (false, true) => "entity.generic.big_fall",
+                (false, false) => "entity.generic.small_fall",
             };
             events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
             self.damage(damage as f32, super::Damage::fall());
@@ -892,7 +924,7 @@ impl Mob {
         if self.no_gravity {
             0.0
         } else {
-            self.kind.gravity
+            self.synced_attribute("minecraft:gravity", self.kind.gravity)
         }
     }
     /// LivingEntity.travel.
@@ -925,12 +957,33 @@ impl Mob {
         } else {
             0.02
         };
+        self.travel_flying_speeds(
+            w,
+            input,
+            events,
+            fluid_speed,
+            fluid_speed,
+            self.kind.air_speed,
+        );
+    }
+    /// `LivingEntity.travelFlying(input, waterSpeed, lavaSpeed, airSpeed)`:
+    /// the speeds vary per mob (an allay flies at the speed its move control
+    /// set, `Allay.travel`).
+    pub fn travel_flying_speeds(
+        &mut self,
+        w: &MobWorld,
+        input: Vec3,
+        events: &mut Vec<MobEvent>,
+        water_speed: f32,
+        lava_speed: f32,
+        air_speed: f32,
+    ) {
         let (speed, drag) = if self.fluids.in_water {
-            (fluid_speed, f64::from(0.8_f32))
+            (water_speed, f64::from(0.8_f32))
         } else if self.fluids.in_lava {
-            (fluid_speed, 0.5)
+            (lava_speed, 0.5)
         } else {
-            (self.kind.air_speed, f64::from(0.91_f32))
+            (air_speed, f64::from(0.91_f32))
         };
         self.move_relative(speed, input);
         self.do_move(w, events);
@@ -1034,7 +1087,10 @@ impl Mob {
         if self.fluids.in_water {
             let mut slow = self.kind.water_slowdown;
             let mut speed = 0.02f32;
-            let mut efficiency = self.kind.water_efficiency as f32;
+            let mut efficiency = self.synced_attribute(
+                "minecraft:water_movement_efficiency",
+                self.kind.water_efficiency,
+            ) as f32;
             if !self.on_ground {
                 efficiency *= 0.5;
             }

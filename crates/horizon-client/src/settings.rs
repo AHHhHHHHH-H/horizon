@@ -3,6 +3,7 @@
 //! The option screens live in `options_ui`.
 use crate::keybinds::KeyBinds;
 use crate::options_file::{OptionsFile, V};
+use horizon_protocol::packets::configuration::ClientInformation;
 use std::{fs, path::Path};
 
 pub use horizon_client_core::sound_source::SOUND_SOURCES;
@@ -48,6 +49,9 @@ pub fn sound_source(event: &str) -> usize {
         // PotentSulfurBlock.animateTick, its only caller, plays it as AMBIENT.
         index("ambient")
     } else if e.starts_with("music_disc.") {
+        index("record")
+    } else if e.starts_with("item.goat_horn.") {
+        // InstrumentItem.play: SoundSource.RECORDS.
         index("record")
     } else if e.starts_with("music.") {
         index("music")
@@ -173,6 +177,12 @@ pub struct Settings {
     pub toggle_use: bool,
     /// Taps of the sprint key counted as double taps (sprintWindow).
     pub sprint_window: i32,
+    /// Show the operator items tab in a creative inventory.
+    pub operator_items_tab: bool,
+    /// Allow platform quit shortcuts to close the game window.
+    pub quit_shortcuts: bool,
+    /// On macOS, turn Control-click into a right click.
+    pub ctrl_click_emulates_right_click: bool,
     /// Horizon's own graphics settings (`horizon-graphics.txt`, not options.txt).
     pub horizon: crate::graphics::Graphics,
     /// Controller settings (`horizon-controller.txt`, Horizon's own).
@@ -255,6 +265,9 @@ impl Default for Settings {
             toggle_attack: false,
             toggle_use: false,
             sprint_window: 7,
+            operator_items_tab: false,
+            quit_shortcuts: true,
+            ctrl_click_emulates_right_click: false,
             horizon: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
@@ -417,6 +430,9 @@ impl Settings {
             toggle_attack: f.bool("toggleAttack"),
             toggle_use: f.bool("toggleUse"),
             sprint_window: f.int("sprintWindow"),
+            operator_items_tab: f.bool("operatorItemsTab"),
+            quit_shortcuts: f.bool("quitShortcuts"),
+            ctrl_click_emulates_right_click: f.bool("ctrlClickEmulatesRightClick"),
             horizon: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
@@ -446,6 +462,16 @@ impl Settings {
             resource_packs: f.list("resourcePacks"),
             keys,
             file: f,
+        }
+    }
+    /// `Options.createInformation`: what the server learns about this player.
+    pub fn client_information(&self, view_distance: i8) -> ClientInformation {
+        ClientInformation {
+            chat_visibility: self.chat_visibility as i32,
+            model_customisation: self.file.model_customisation(),
+            main_hand: i32::from(!self.main_hand_left),
+            allows_listing: self.file.bool("allowServerListing"),
+            ..ClientInformation::new(view_distance)
         }
     }
     /// The options file reflecting the typed fields; values the game did not
@@ -507,6 +533,13 @@ impl Settings {
         put_b(&mut f, "toggleAttack", self.toggle_attack);
         put_b(&mut f, "toggleUse", self.toggle_use);
         put_i(&mut f, "sprintWindow", self.sprint_window);
+        put_b(&mut f, "operatorItemsTab", self.operator_items_tab);
+        put_b(&mut f, "quitShortcuts", self.quit_shortcuts);
+        put_b(
+            &mut f,
+            "ctrlClickEmulatesRightClick",
+            self.ctrl_click_emulates_right_click,
+        );
         put_b(&mut f, "autoJump", self.auto_jump);
         put_s(&mut f, "lang", &self.language);
         put_b(&mut f, "forceUnicodeFont", self.force_unicode);
@@ -653,7 +686,13 @@ pub enum Opt {
     MenuBlur,
     ToggleCrouch,
     ToggleSprint,
+    ToggleAttack,
+    ToggleUse,
     AutoJump,
+    SprintWindow,
+    QuitShortcuts,
+    CtrlClickEmulatesRightClick,
+    OperatorItemsTab,
     ChatVisibility,
     ChatColors,
     ChatLinks,
@@ -706,6 +745,15 @@ pub enum Opt {
     PadGlyphs,
     PadMenuNav,
     PadKeyboard,
+    /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
+    ModelPart(usize),
+    MainHand,
+    AllowServerListing,
+    RealmsNotifications,
+    InGameNotification,
+    SharePresence,
+    DirectionalAudio,
+    MusicToast,
 }
 
 #[cfg(test)]

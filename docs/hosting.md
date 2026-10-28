@@ -180,6 +180,10 @@ keep = 12                    # automatic backups kept; backups made by hand are 
 [panel]
 bind = "127.0.0.1:8130"      # this computer only, or a tailnet address (100.x); "" turns it off
 allow_public = false
+
+[mods]
+storage_mib = 16             # what each server mod may save (capability storage), 1 to 1024
+storage_files = 256          # files each server mod may save, 1 to 65536
 ```
 
 The defaults are vanilla 26.3's. Unknown keys and values vanilla would refuse are errors, so a typo stops the

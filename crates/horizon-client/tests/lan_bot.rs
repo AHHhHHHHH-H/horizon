@@ -326,7 +326,7 @@ fn recipe_settings_packets_update_only_the_players_book_and_survive_save() {
                 );
             }
             let mut saved = horizon_client::save::Level::default();
-            horizon_client::lan::playerdata::store(&s.hub.guests[0], &mut saved);
+            horizon_client::lan::playerdata::store(&s.hub.guests[0], &mut saved, None);
             let mut reopened = horizon_client::save::Level::default();
             reopened.read_player(&saved.player_tag());
             assert_eq!(reopened.recipe_book.open, settings.open);
@@ -404,6 +404,54 @@ fn sprint_commands_survive_keyboard_input_changes() {
     assert!(
         !s.hub.guests[0].sprinting,
         "keyboard input started a sprint"
+    );
+}
+
+#[test]
+fn a_move_behind_a_dig_and_its_swing_waits_for_the_next_tick() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Digger", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    s.hub.guests[0].loaded = true;
+    let at = s.hub.guests[0].position;
+    let below = [
+        at[0].floor() as i32,
+        at[1].floor() as i32 - 1,
+        at[2].floor() as i32,
+    ];
+    // A creative break as the client sends it in one tick: the dig, the arm swing,
+    // then the move into the block it predicted gone.
+    let inbox = &mut s.hub.guests[0].inbox;
+    inbox.push_back(S::PlayerAction(play::PlayerAction {
+        action: 0,
+        pos: below,
+        direction: 1,
+        sequence: 1,
+    }));
+    inbox.push_back(S::Punch(Empty));
+    inbox.push_back(S::MovePlayerPos(play::MovePlayerPos {
+        x: at[0],
+        y: at[1] - 0.0784,
+        z: at[2],
+        flags: 0,
+    }));
+    s.tick(&[]);
+    // The game breaks the block after the hub's pass: the move waits, or it would be
+    // checked against the block and sent back.
+    let g = &s.hub.guests[0];
+    assert_eq!(g.position, at, "the move was handled before the dig");
+    assert!(
+        matches!(g.inbox.back(), Some(S::MovePlayerPos(_))),
+        "the move left the queue"
     );
 }
 
