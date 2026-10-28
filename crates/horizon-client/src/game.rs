@@ -13642,9 +13642,11 @@ impl<'a> Game<'a> {
                 .join("saves")
                 .join(".horizon-title"),
         ));
-        let prepared = prepared
-            .map(Ok)
-            .unwrap_or_else(|| GameCpuResources::load(&root))?;
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None if options.execution_role.is_client() => GameCpuResources::load(&root)?,
+            None => GameCpuResources::server(&root)?,
+        };
         let world = World::new(res.facts().air, 0);
         let creative = options.creative;
         let inventory = vec![None; 36];
@@ -14055,6 +14057,37 @@ impl GameCpuResources {
             dragon_model: model("minecraft:ender_dragon#main"),
             arrow_model: model("minecraft:arrow#main"),
             trident_model: model("minecraft:trident#main"),
+            creative_screen: Creative::load(root)?,
+        })
+    }
+    /// A game that draws nothing: the painting variants and boat models its
+    /// gameplay asks for and the creative tab list, without the render models.
+    fn server(root: &std::path::Path) -> Result<Self> {
+        let document = horizon_client::mobs::EntityModelDocument::load(root).ok();
+        Ok(Self {
+            painting_variants: paintings::PaintingVariants::load(root),
+            frame_model: Vec::new(),
+            glow_frame_model: Vec::new(),
+            map_frame_model: Vec::new(),
+            glow_map_frame_model: Vec::new(),
+            armor_stand_assets: armor_stands::ArmorStandAssets {
+                main: None,
+                small: None,
+                layers: HashMap::new(),
+                player: HashMap::new(),
+                equipment: HashMap::new(),
+                trim_overrides: HashMap::new(),
+                trims: Default::default(),
+                root: root.to_path_buf(),
+            },
+            waypoint_styles: Default::default(),
+            boat_models: boats::BoatModels::load(document.as_ref()),
+            cart_models: minecarts::CartModels::load(None),
+            crystal_model: None,
+            cushion_model: None,
+            dragon_model: None,
+            arrow_model: None,
+            trident_model: None,
             creative_screen: Creative::load(root)?,
         })
     }
@@ -14501,6 +14534,7 @@ fn load_resources(
                     &assets,
                     &behaviour_json,
                     &gameplay_projection,
+                    visuals,
                     &progress,
                     started,
                 )
@@ -14528,6 +14562,7 @@ fn load_resources(
             &assets,
             &behaviour_json,
             &gameplay_projection,
+            visuals,
             progress,
             started,
         )?;
@@ -14555,6 +14590,7 @@ fn load_world_rest(
     assets: &Assets,
     behaviour_json: &serde_json::Value,
     gameplay_projection: &[horizon_client::blocks::GameplayProjection],
+    visuals: bool,
     progress: &Progress,
     started: Instant,
 ) -> Result<WorldRest> {
@@ -14612,12 +14648,22 @@ fn load_world_rest(
             .map(|(k, v)| (k, Arc::new(v)))
             .collect(),
         mob_data,
-        player_type: perspective::player_type(root),
-        player_arm: horizon_client::mobs::load_model(root, "minecraft:player#main")
-            .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm")),
-        player_arm_slim: horizon_client::mobs::load_model(root, "minecraft:player_slim#main")
-            .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm")),
-        spin_attack: horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"),
+        player_type: visuals.then(|| perspective::player_type(root)).flatten(),
+        player_arm: visuals
+            .then(|| {
+                horizon_client::mobs::load_model(root, "minecraft:player#main")
+                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
+            })
+            .flatten(),
+        player_arm_slim: visuals
+            .then(|| {
+                horizon_client::mobs::load_model(root, "minecraft:player_slim#main")
+                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
+            })
+            .flatten(),
+        spin_attack: visuals
+            .then(|| horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"))
+            .flatten(),
     })
 }
 
@@ -15473,6 +15519,29 @@ mod server_ui_tests {
         assert!(ui.atlas.pixels.is_empty());
         assert_eq!(ui.panorama.size, 1);
         assert!(ui.atlas.font.width("Horizon") > 0.0);
+    }
+
+    #[test]
+    fn server_bundle_keeps_gameplay_data_and_skips_render_models() {
+        let root = std::env::temp_dir().join(format!("horizon-server-cpu-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("creative-tabs.json"), "[]").unwrap();
+        std::fs::write(
+            root.join("entity-models.json"),
+            r#"{"minecraft:boat/oak#main": {}, "minecraft:chest_boat/oak#main": {},
+                "minecraft:ender_dragon#main": {}}"#,
+        )
+        .unwrap();
+        let prepared = GameCpuResources::server(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        // Placement and save loading ask which boats exist.
+        assert!(prepared.boat_models.has("oak", false));
+        assert!(prepared.boat_models.has("oak", true));
+        assert!(prepared.crystal_model.is_none());
+        assert!(prepared.dragon_model.is_none());
+        assert!(prepared.frame_model.is_empty());
+        assert!(prepared.armor_stand_assets.main.is_none());
+        assert!(prepared.cart_models.models.is_empty());
     }
 }
 
