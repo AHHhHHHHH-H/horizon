@@ -2,8 +2,8 @@
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 pub use crate::chunk::block_entity::{
-    Banner, Beacon, BlockEntity, Campfire, ChiseledBookshelf, Crafter, CreakingHeart, EndGateway,
-    Furnace, FurnaceKind, Jukebox, Lectern, Skull, SkullSkin,
+    Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
+    EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, Skull, SkullSkin,
 };
 use crate::{
     crafting::Recipes,
@@ -194,6 +194,14 @@ impl BlockEntity {
                 recipes_used: HashMap::new(),
             }));
         }
+        if matches!(
+            name,
+            "minecraft:suspicious_sand"
+                | "minecraft:suspicious_gravel"
+                | "minecraft:brushable_block"
+        ) {
+            return Some(Self::Brushable(Box::default()));
+        }
         if name == "minecraft:creaking_heart" {
             return Some(Self::CreakingHeart(Box::default()));
         }
@@ -298,6 +306,7 @@ impl BlockEntity {
             Self::Skull(_) => "minecraft:skull",
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
         }
@@ -318,7 +327,8 @@ impl BlockEntity {
             | Self::CommandBlock(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => Vec::new(),
+            | Self::DaylightDetector
+            | Self::Brushable(_) => Vec::new(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
             Self::Banner(_) => Vec::new(),
@@ -340,7 +350,8 @@ impl BlockEntity {
             | Self::Banner(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => &[],
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &[],
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
             Self::CreakingHeart(_)
@@ -366,7 +377,8 @@ impl BlockEntity {
             | Self::Banner(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => &mut [],
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &mut [],
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
             Self::CreakingHeart(_)

@@ -1002,6 +1002,16 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
             .next_spawn_data
             .as_ref()
             .map(|d| Tag::compound([("spawn_data", d.encode())])),
+        BlockEntity::Brushable(b) => {
+            let mut entries = Vec::new();
+            if let Some(face) = b.hit_direction {
+                entries.push(("hit_direction", Tag::Byte(face as i8)));
+            }
+            if let Some(item) = &b.item {
+                entries.push(("item", crate::save::item_to_nbt(item)));
+            }
+            Some(Tag::compound(entries))
+        }
         // SkullBlockEntity: the profile is the whole reason a head differs.
         BlockEntity::Skull(s) => {
             let mut entries = Vec::new();
