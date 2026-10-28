@@ -361,7 +361,7 @@ fn squid_step(m: &mut Mob, client: bool) {
     } else {
         v[TENTACLE_ANGLE] = v[TENTACLE_MOVEMENT].msin().abs() * PI * 0.25;
         if !client {
-            let yd = m.velocity.y - m.kind.gravity;
+            let yd = m.velocity.y - m.synced_attribute("minecraft:gravity", m.kind.gravity);
             m.velocity = Vec3::new(0.0, yd * 0.98, 0.0);
         }
         let v = &mut m.anim.v;

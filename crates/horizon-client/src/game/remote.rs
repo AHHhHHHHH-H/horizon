@@ -132,6 +132,7 @@ pub(super) struct Remote {
     /// Options.serverRenderDistance: the server's view distance from the
     /// login or the last chunk-cache-radius packet.
     pub(super) view_distance: i32,
+    simulation_distance: i32,
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
@@ -477,6 +478,7 @@ impl Game<'_> {
             )),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
+            simulation_distance: 0,
             sequence: 0,
             position_sender: Default::default(),
             last_input: 0,
@@ -1850,6 +1852,7 @@ impl Game<'_> {
                     r.logged_in = true;
                     r.view_distance = p.chunk_radius;
                     r.show_death_screen = p.show_death_screen;
+                    r.simulation_distance = p.simulation_distance;
                 }
                 self.streaming.radius =
                     self.settings.render_distance.min(p.chunk_radius + 1).max(2);
@@ -2581,13 +2584,22 @@ impl Game<'_> {
             // The player's own instances: its maximum health (the hearts the
             // HUD draws and the health it may hold), reach, speed and so on.
             // Then the received health again, which the old maximum clamped.
-            C::UpdateAttributes(p) if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) => {
-                if let Some(pl) = self.player.as_mut() {
-                    horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
+            C::UpdateAttributes(p) => {
+                if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
+                    if let Some(pl) = self.player.as_mut() {
+                        horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
+                    }
+                    self.apply_remote_health();
+                } else if let Some(mob) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
+                    horizon_client::lan::attributes::apply_mob(
+                        mob,
+                        &self.motion.attributes,
+                        &p.values,
+                    );
+                    // Its maximum health also goes through finalize::set_base.
+                    self.remote_mob_attributes(p.id, &p.values);
                 }
-                self.apply_remote_health();
             }
-            C::UpdateAttributes(p) => self.remote_mob_attributes(p.id, &p.values),
             C::UpdateMobEffect(p) => self.remote_effect(&p),
             C::RemoveMobEffect(p) => {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)
@@ -3043,6 +3055,11 @@ impl Game<'_> {
                 // ClientChunkCache.updateViewRadius: a new storage of that size.
                 self.drop_remote_chunks_out_of_range();
             }
+            C::SetSimulationDistance(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    r.simulation_distance = p.distance;
+                }
+            }
             C::SetChunkCacheCenter(p) => {
                 if let Some(r) = self.remote.as_mut() {
                     r.chunk_center = (p.x, p.z);
@@ -3124,7 +3141,6 @@ impl Game<'_> {
             }
             C::Unknown(id, _) => self.record_protocol_gap(Gap::PlayPacket(id)),
             C::ProjectilePower(_)
-            | C::SetSimulationDistance(_)
             | C::SoundEntity(_)
             | C::UpdateTags(_)
             | C::SetEntityMotion(_)
@@ -6296,6 +6312,9 @@ impl Game<'_> {
             "dimension": r.dimension.name,
             "game_mode": r.game_mode,
             "chunks": self.world.chunks.len(),
+            "simulation_distance": r.simulation_distance,
+            "entity_attributes": self.mobs.iter().filter(|m| !m.extra.synced_attributes.is_empty())
+                .map(|m| (m.id.to_string(), &m.extra.synced_attributes)).collect::<std::collections::BTreeMap<_,_>>(),
             "entities": r.entities.values().fold(std::collections::BTreeMap::<&str, u32>::new(), |mut m, t| {
                 *m.entry(t.kind.as_str()).or_default() += 1;
                 m

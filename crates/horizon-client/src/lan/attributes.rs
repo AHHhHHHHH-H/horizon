@@ -112,6 +112,58 @@ fn operation(id: i32) -> Operation {
     }
 }
 
+/// Apply snapshots to a displayed living entity, including other players.
+/// Use the shared native-exact Instance evaluator rather than reimplementing
+/// modifier ordering, replacement or ranged-value sanitization in the client.
+pub fn apply_mob(
+    m: &mut crate::mobs::Mob,
+    catalog: &horizon_world::attributes::entity::Catalog,
+    values: &[AttributeSnapshot],
+) {
+    for snapshot in values {
+        let Some((name, value)) = received_value(catalog, &m.kind.id, snapshot) else {
+            continue;
+        };
+        m.extra.synced_attributes.insert(name.to_owned(), value);
+        match name {
+            "minecraft:max_health" => m.attrs.max_health = value as f32,
+            "minecraft:movement_speed" => m.attrs.speed = value,
+            "minecraft:attack_damage" => m.attrs.attack_damage = value as f32,
+            "minecraft:follow_range" => m.attrs.follow_range = value,
+            "minecraft:knockback_resistance" => m.attrs.knockback_resistance = value,
+            "minecraft:spawn_reinforcements" => m.attrs.spawn_reinforcements = value,
+            "minecraft:jump_strength" => m.attrs.jump_strength = value,
+            _ => {}
+        }
+    }
+}
+
+fn received_value<'a>(
+    catalog: &'a horizon_world::attributes::entity::Catalog,
+    entity: &str,
+    snapshot: &AttributeSnapshot,
+) -> Option<(&'a str, f64)> {
+    struct Quiet;
+    impl horizon_world::attributes::Observer for Quiet {
+        type Error = std::convert::Infallible;
+        fn dirty(&mut self, _: &mut Instance) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    let (id, definition) = catalog
+        .attributes()
+        .find(|(id, _)| id.registry_id() == snapshot.attribute)?;
+    catalog.default_base(entity, id)?;
+    let mut instance = Instance::new(definition.definition);
+    instance.set_base_value(snapshot.base, &mut Quiet).ok()?;
+    for modifier in &snapshot.modifiers {
+        let value =
+            Modifier::new(&modifier.id, modifier.amount, operation(modifier.operation)).ok()?;
+        instance.add_transient(value, &mut Quiet).ok()?;
+    }
+    Some((&definition.name, instance.value()))
+}
+
 /// The client-syncable instances of a generic attribute map.
 pub fn generic_syncable(map: &EntityAttributes) -> impl Iterator<Item = AttributeSnapshot> + '_ {
     let catalog = map.catalog();
@@ -158,6 +210,58 @@ pub fn instance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn received_snapshots_replace_modifiers_and_sanitize_with_the_registered_definition() {
+        use horizon_world::attributes::entity::Catalog;
+        let bits = |v: f64| format!("{:016x}", v.to_bits());
+        let catalog = Catalog::from_json(&serde_json::json!({
+            "data_version": horizon_world::DATA_VERSION,
+            "attributes": [{"id":"example:power", "default":bits(1.0),
+                "min":bits(0.0), "max":bits(16.0), "syncable":true}],
+            "entities":{"example:mob":{"example:power":bits(1.0)}}
+        }))
+        .unwrap();
+        let mut snapshot = AttributeSnapshot {
+            attribute: 0,
+            base: 2.0,
+            modifiers: vec![
+                AttributeModifier {
+                    id: "example:add".into(),
+                    amount: 2.0,
+                    operation: 0,
+                },
+                AttributeModifier {
+                    id: "example:base".into(),
+                    amount: 0.5,
+                    operation: 1,
+                },
+                AttributeModifier {
+                    id: "example:total".into(),
+                    amount: 0.5,
+                    operation: 2,
+                },
+            ],
+        };
+        assert_eq!(
+            received_value(&catalog, "example:mob", &snapshot),
+            Some(("example:power", 9.0))
+        );
+        snapshot.modifiers.clear();
+        snapshot.base = 3.0;
+        assert_eq!(
+            received_value(&catalog, "example:mob", &snapshot),
+            Some(("example:power", 3.0))
+        );
+        snapshot.base = f64::NAN;
+        assert_eq!(
+            received_value(&catalog, "example:mob", &snapshot),
+            Some(("example:power", 0.0))
+        );
+        assert!(received_value(&catalog, "example:absent", &snapshot).is_none());
+        snapshot.attribute = i32::MAX;
+        assert!(received_value(&catalog, "example:mob", &snapshot).is_none());
+    }
 
     #[test]
     fn modifiers_replace_by_id_and_instances_are_created_once() {

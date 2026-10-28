@@ -322,6 +322,12 @@ impl Game<'_> {
             self.player_model = Some(Mob::new(0, kind, p.position, self.yaw));
         }
         let crouching = p.pose == Pose::Crouching;
+        let scale_id = p.attributes.catalog().id("minecraft:scale");
+        let player_scale = p
+            .attributes
+            .instances()
+            .find(|(_, key, _)| Some(key.attribute()) == scale_id)
+            .map_or(1.0, |(_, _, value)| value.clone().value()) as f32;
         let (position, flying) = (p.position, p.flying || p.fall_flying);
         let (fall_flying, fly_ticks, velocity) = (p.fall_flying, p.fall_fly_ticks, p.velocity);
         let spinning = p.auto_spin_attack_ticks > 0;
@@ -364,6 +370,9 @@ impl Game<'_> {
             return;
         };
         m.extra.ints[1] = bed;
+        m.extra
+            .synced_attributes
+            .insert("minecraft:scale".into(), f64::from(player_scale));
         let at = Vec3::new(
             position.x,
             position.y - if crouching { 0.125 } else { 0.0 },
