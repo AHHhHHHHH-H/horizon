@@ -407,6 +407,7 @@ pub struct Renderer {
     crosshair_group: wgpu::BindGroup,
     crosshair_globals: wgpu::Buffer,
     entity_pipeline: wgpu::RenderPipeline,
+    hdr_mark_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
     crumbling_pipeline: wgpu::RenderPipeline,
     shadow_blob_pipeline: wgpu::RenderPipeline,
@@ -539,6 +540,9 @@ pub struct Renderer {
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// The marker file of an HDR output that has not presented a frame yet
+    /// (`graphics::HDR_MARKER`).
+    hdr_marker: Option<std::path::PathBuf>,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -762,8 +766,14 @@ fn mip_chain(
 /// pass is also what passes each draw's first instance to shaders reading
 /// `instance_index`, and DirectX 12 is the fallback, where working matters
 /// more than CPU time.
-fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
+fn instance_descriptor(
+    backends: wgpu::Backends,
+    window: Option<&Arc<Window>>,
+) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if let Some(window) = window {
+        descriptor = descriptor.with_display_handle(Box::new(WindowDisplay(window.clone())));
+    }
     descriptor.backends = backends.with_env();
     let dx12 = cfg!(windows) && descriptor.backends.contains(wgpu::Backends::DX12);
     if !cfg!(debug_assertions) && !dx12 {
@@ -772,6 +782,21 @@ fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
             .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
     descriptor.with_env()
+}
+/// The window's display connection, so the OpenGL backend creates its EGL
+/// display from the X11 or Wayland connection the window lives on. Without
+/// one, wgpu-hal falls back to `EGL_MESA_platform_surfaceless`, whose configs
+/// cannot present to a window; the backend then reports the surface as
+/// incompatible and the game has no OpenGL to fall back to (`gl not
+/// compatible with provided surface`).
+#[derive(Debug, Clone)]
+struct WindowDisplay(Arc<Window>);
+impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+        wgpu::rwh::HasDisplayHandle::display_handle(&*self.0)
+    }
 }
 /// The backends to open a device on, each tried in turn until one gives a
 /// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
@@ -887,7 +912,7 @@ async fn open_device(
         if attempt > 0 {
             log::warn!("Horizon renderer: trying {name} ({})", failures.join("; "));
         }
-        let instance = wgpu::Instance::new(instance_descriptor(backends));
+        let instance = wgpu::Instance::new(instance_descriptor(backends, Some(window)));
         let surface = if offscreen {
             None
         } else {
@@ -1125,7 +1150,14 @@ impl Renderer {
                 ));
             }
             surface.configure(&device, &config);
-            (config, caps.present_modes.clone(), hdr::output(&caps))
+            let hdr_output = hdr::output(&caps);
+            if previous.is_none() {
+                log::info!(
+                    "Horizon renderer: HDR output {}",
+                    hdr_output.map_or("not offered by this display", hdr::Output::name)
+                );
+            }
+            (config, caps.present_modes.clone(), hdr_output)
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
@@ -2041,6 +2073,18 @@ impl Renderer {
             "fs_energy_swirl",
             wgpu::ColorWrites::ALL,
         );
+        // HDR output's mark on light-giving particles (entity.wgsl fs_hdr_mark).
+        let hdr_mark_pipeline = entity_pipeline_with(
+            "HDR particle mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
+        );
         // Attribute 7: 6 is the entity vertex buffer's glint UV.
         let lightning_attributes = wgpu::vertex_attr_array![7=>Float32x3];
         let lightning_vertex = [
@@ -2552,6 +2596,7 @@ impl Renderer {
             crosshair_group,
             crosshair_globals,
             entity_pipeline,
+            hdr_mark_pipeline,
             weather,
             crumbling_pipeline,
             shadow_blob_pipeline,
@@ -2644,6 +2689,7 @@ impl Renderer {
             world_post,
             hdr: None,
             hdr_output,
+            hdr_marker: None,
             pack_post: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
@@ -3200,14 +3246,43 @@ impl Renderer {
         }
         config
     }
+    /// The F3 screen's HDR line while the setting is on: the swapchain HDR presents to with
+    /// its paper white and peak, or that the surface offers none.
+    pub fn hdr_line(&self) -> String {
+        match &self.hdr {
+            Some(hdr) => format!(
+                "HDR: {}, {}/{} nits",
+                hdr.output.name(),
+                hdr.paper_white.round(),
+                hdr.peak.round()
+            ),
+            None => "HDR: not offered by this display".into(),
+        }
+    }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
-    pub fn set_hdr(&mut self, on: bool, paper_white: f32, peak: f32) {
+    pub fn set_hdr(&mut self, on: bool, paper_white: f32, peak: f32, marker: &std::path::Path) {
         let output = self.hdr_output.filter(|_| on && self.surface.is_some());
         if output.is_some() != self.hdr.is_some() {
+            // If the game dies before HDR output shows a frame, the marker is still there at
+            // the next start, which then comes up with HDR off.
+            if output.is_some() {
+                let _ = std::fs::write(marker, "HDR output was being switched on\n");
+                self.hdr_marker = Some(marker.to_owned());
+            } else if let Some(marker) = self.hdr_marker.take() {
+                let _ = std::fs::remove_file(marker);
+            }
             let format = self.config.format.remove_srgb_suffix();
             self.hdr = output.map(|output| hdr::Hdr::new(&self.device, format, output));
             self.configure_surface();
+            match output {
+                Some(output) => log::info!(
+                    "Horizon renderer: HDR on: {} ({:?}), {paper_white}/{peak} nits",
+                    output.name(),
+                    output.format()
+                ),
+                None => log::info!("Horizon renderer: HDR off"),
+            }
         }
         if let Some(hdr) = &mut self.hdr
             && (hdr.paper_white, hdr.peak) != (paper_white, peak)
@@ -4741,6 +4816,10 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                if self.hdr.is_some() {
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                }
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if translucent_item_quads > 0 {
@@ -5231,6 +5310,12 @@ impl Renderer {
                 startup_step(format_args!("presenting the first frame"));
             }
             self.queue.present(surface_frame);
+            if self.hdr.is_some()
+                && let Some(marker) = self.hdr_marker.take()
+            {
+                let _ = std::fs::remove_file(marker);
+                log::info!("Horizon renderer: HDR output presented its first frame");
+            }
             if reconfigure && let Some(surface) = &self.surface {
                 Self::configure(
                     &self.device,
@@ -5684,7 +5769,7 @@ mod tests {
     #[test]
     fn indirect_draws_are_validated_only_in_debug_builds_and_on_directx_12() {
         let validated = |backends| {
-            super::instance_descriptor(backends)
+            super::instance_descriptor(backends, None)
                 .flags
                 .contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
         };

@@ -294,6 +294,47 @@ impl SectionCoder {
 /// Sections kept before the ones no longer resident are dropped.
 const CACHE_SWEEP: usize = 1 << 15;
 
+/// Columns below which the bodies are assembled on the tick's thread alone.
+const PARALLEL_BODIES_MIN: usize = 4;
+
+/// The body of each column, in the order given. A batch of new columns costs
+/// one copy of its sections and light layers each; with enough of them the
+/// copies run on the helper threads, one group each, while this thread takes
+/// the last group. Every body only reads the encoder and the level.
+pub fn bodies(
+    encoder: &ChunkEncoder,
+    columns: &[&Chunk],
+    world: &crate::world::World,
+) -> Vec<Vec<u8>> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .saturating_sub(1)
+        .clamp(1, columns.len().max(1));
+    if workers == 1 || columns.len() < PARALLEL_BODIES_MIN {
+        return columns
+            .iter()
+            .map(|column| encoder.body_in(column, world))
+            .collect();
+    }
+    let per = columns.len().div_ceil(workers);
+    let mut bodies: Vec<Vec<u8>> = vec![Vec::new(); columns.len()];
+    std::thread::scope(|scope| {
+        let mut groups: Vec<_> = columns.chunks(per).zip(bodies.chunks_mut(per)).collect();
+        let last = groups.pop().expect("columns is not empty");
+        for (group, out) in groups {
+            scope.spawn(move || {
+                for (column, body) in group.iter().zip(out) {
+                    *body = encoder.body_in(column, world);
+                }
+            });
+        }
+        for (column, body) in last.0.iter().zip(last.1) {
+            *body = encoder.body_in(column, world);
+        }
+    });
+    bodies
+}
+
 /// Uncached sections below which a batch is encoded on the tick's thread
 /// alone: waking the warm-up threads costs more than a few sections.
 const WARM_MIN: usize = 16;
@@ -824,6 +865,7 @@ impl ChunkEncoder {
                     tag: block_entities
                         .get(&pos)
                         .and_then(entity_tag)
+                        .or_else(|| pot_tag(chunk, pos))
                         .unwrap_or(Tag::End),
                 });
             }
@@ -938,6 +980,45 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
     match entity {
         BlockEntity::Sign(sign) => Some(Tag::compound(sign.encode())),
         BlockEntity::Spawner(s) => Some(s.update_tag()),
+        // BannerBlockEntity.getUpdateTag: saveWithoutMetadata, so the patterns,
+        // the custom name and the components.
+        BlockEntity::Banner(b) => {
+            let mut entries = Vec::new();
+            if !b.layers.is_empty() {
+                entries.push(("patterns", crate::banner::layers_to_nbt(&b.layers)));
+            }
+            if let Some(name) = &b.name {
+                entries.push(("CustomName", Tag::String(name.as_str().into())));
+            }
+            entries.push(("components", Tag::Compound(b.components.clone())));
+            Some(Tag::compound(entries))
+        }
+        // VaultBlockEntity.getUpdateTag: the shared data, which holds the display item.
+        BlockEntity::Vault(v) => Some(v.update_tag()),
+        // TrialSpawnerStateData.getUpdateTag: the spawn data the mob is drawn from.
+        // next_mob_spawns_at (ACTIVE only) is left out: nothing in the client
+        // reads it, and the block state it depends on is not known here.
+        BlockEntity::TrialSpawner(t) => t
+            .next_spawn_data
+            .as_ref()
+            .map(|d| Tag::compound([("spawn_data", d.encode())])),
+        BlockEntity::Brushable(b) => {
+            let mut entries = Vec::new();
+            if let Some(face) = b.hit_direction {
+                entries.push(("hit_direction", Tag::Byte(face as i8)));
+            }
+            if let Some(item) = &b.item {
+                entries.push(("item", crate::save::item_to_nbt(item)));
+            }
+            Some(Tag::compound(entries))
+        }
+        BlockEntity::Shelf(s) => Some(Tag::compound([
+            ("Items", crate::save::encode_items(&s.items)),
+            (
+                "align_items_to_bottom",
+                Tag::Byte(i8::from(s.align_to_bottom)),
+            ),
+        ])),
         // SkullBlockEntity: the profile is the whole reason a head differs.
         BlockEntity::Skull(s) => {
             let mut entries = Vec::new();
@@ -960,6 +1041,22 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
         )])),
         _ => None,
     }
+}
+
+/// The update tag of the decorated pot at `pos` (DecoratedPotBlockEntity.getUpdateTag,
+/// saveCustomOnly). A pot is not a block entity here: its tag is the chunk's saved one.
+pub fn pot_tag(chunk: &Chunk, pos: (i32, i32, i32)) -> Option<Tag> {
+    let at = chunk.saved.as_ref()?.block_entities.iter().find(|t| {
+        t.get("id") == Some(&Tag::String("minecraft:decorated_pot".into()))
+            && t.get("x") == Some(&Tag::Int(pos.0))
+            && t.get("y") == Some(&Tag::Int(pos.1))
+            && t.get("z") == Some(&Tag::Int(pos.2))
+    })?;
+    let entries: Vec<_> = ["sherds", "LootTable", "LootTableSeed", "item"]
+        .into_iter()
+        .filter_map(|k| Some((k, at.get(k)?.clone())))
+        .collect();
+    (!entries.is_empty()).then(|| Tag::compound(entries))
 }
 
 /// Light sections run from one below the world to one above it. A layer
@@ -1398,6 +1495,7 @@ mod tests {
         assert!(chunks.len() * SECTIONS >= WARM_MIN);
         warmed.warm(&chunks);
         assert_eq!(bodies(&warmed), expected);
+        assert_eq!(super::bodies(&warmed, &chunks, &world), expected);
         // Run on this thread alone, the job makes every column's heightmaps
         // (once for the column there twice) and sections.
         let mut cold = ChunkEncoder::new(states, &builtin, &[], &[]);

@@ -42,7 +42,7 @@ The step-by-step guide, from installing the tools to publishing on the registry,
 
 [mods-reference.md](mods-reference.md), generated from `crates/horizon-mod-sdk/wit/horizon.wit`: every capability,
 interface, type, function and hook, with the limits the guide lists (16 HUD lines of 256 characters, 8 chat lines per
-call, 4 MiB of storage, fuel per call).
+call, 16 MiB and 256 files of storage, fuel per call).
 
 ## Examples
 

@@ -318,7 +318,11 @@ pub fn work_sound(profession: u8) -> Option<&'static str> {
 pub fn crop(w: &MobWorld, p: [i32; 3]) -> bool {
     matches!(
         w.block_name(p[0], p[1], p[2]),
-        "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" | "minecraft:beetroots"
+        "minecraft:wheat"
+            | "minecraft:carrots"
+            | "minecraft:potatoes"
+            | "minecraft:beetroots"
+            | "minecraft:torchflower_crop"
     )
 }
 /// `CropBlock.isMaxAge` for the block at `p`.
@@ -326,6 +330,8 @@ pub fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
     let max = match w.block_name(p[0], p[1], p[2]) {
         "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" => "7",
         "minecraft:beetroots" => "3",
+        // TorchflowerCropBlock.getMaxAge is 2, past its age property (0-1):
+        // the crop is never at max age (age 2 is the torchflower itself).
         _ => return false,
     };
     w.prop(p[0], p[1], p[2], "age") == Some(max)
@@ -883,6 +889,17 @@ mod tests {
             tempt: Arc::default(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+    /// A sleeper's box is 0.2 high, but `LivingEntityRenderer` moves it
+    /// toward the foot of the bed by its standing eye height, so its head
+    /// lies on the pillow.
+    #[test]
+    fn a_sleeper_lies_by_its_standing_eye_height() {
+        let mut m = villager();
+        m.extra.ints[1] = bed_facing_code(Some("east"));
+        assert!(sleeping(&m));
+        assert_eq!(m.eye_height(), f64::from(0.2_f32));
+        assert_eq!(m.awake_dims().2, f64::from(1.62_f32));
     }
     #[test]
     fn a_new_profession_rolls_new_offers() {

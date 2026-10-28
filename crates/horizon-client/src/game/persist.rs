@@ -374,6 +374,12 @@ impl Game<'_> {
         }
         let riders = self.take_mob_passengers(&mut tag);
         let mut m = entity_nbt::mob_from_nbt(&tag, self.res.mob_types(), self.next_entity)?;
+        // `NeutralMob.readPersistentAngerSaveData`: the anger runs until its
+        // end time, and the mob is angry at the target again.
+        m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
+        if m.extra.anger > 0 && m.extra.angry_at.is_some() {
+            m.ai.target = Some(horizon_client::mobs::Who::Player);
+        }
         m.extra.mount = mount;
         m.extra.passenger = mount.is_some();
         if finalize {
@@ -531,6 +537,20 @@ impl Game<'_> {
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
         let id = self.mobs[i].id;
         let uuid = self.uuid_for(id);
+        // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
+        // absolute game time, so it goes on while the chunk is unloaded, and
+        // the target is the entity the mob is angry at.
+        let anger = self.mobs[i].extra.anger;
+        self.mobs[i].extra.anger_end = if anger > 0 {
+            self.world.game_time + i64::from(anger)
+        } else {
+            -1
+        };
+        self.mobs[i].extra.angry_at = if anger > 0 {
+            self.mobs[i].ai.target
+        } else {
+            None
+        };
         let mut tag = entity_nbt::mob_to_nbt(&self.mobs[i], uuid, self.persist.raw.get(&id));
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
@@ -600,7 +620,7 @@ impl Game<'_> {
         *self.persist.uuids.entry(id).or_insert_with(random_uuid)
     }
     /// `BlockState.CODEC`: a block name or `{id, properties}` (or legacy `{Name, Properties}`).
-    fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
+    pub(super) fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
         let registry = self.pack.assets.registry;
         let state = match tag.get("Name") {
             Some(Tag::String(name)) => BlockState {

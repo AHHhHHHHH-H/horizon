@@ -299,13 +299,14 @@ impl Lists {
 }
 
 /// The world presets of 26.3's `worldgen/world_preset`.
-const WORLD_PRESETS: [&str; 6] = [
+const WORLD_PRESETS: [&str; 7] = [
     "minecraft:normal",
     "minecraft:flat",
     "minecraft:large_biomes",
     "minecraft:amplified",
     "minecraft:single_biome_surface",
     "minecraft:debug_all_block_states",
+    "minecraft:flat_all_dimensions",
 ];
 
 /// Identifier.tryParse: `namespace:path`, or a path in `minecraft`.
@@ -585,7 +586,8 @@ impl Game<'_> {
         }
         self.settings.render_distance = props.view_distance.clamp(2, 32);
         self.settings.simulation_distance = props.simulation_distance.clamp(2, 32);
-        self.streaming.radius = self.settings.render_distance;
+        // Nothing is kept around the spawn while nobody is on.
+        self.streaming.radius = -1;
         self.settle_spawn()?;
         let gate_lists = lists.clone();
         let gate: LoginGate = Arc::new(move |address, uuid, name| {
@@ -607,6 +609,7 @@ impl Game<'_> {
             motd: props.motd.clone(),
             max_players: props.max_players.max(0) as usize,
             compression_threshold: props.network_compression_threshold,
+            rate_limit: props.rate_limit,
             enable_status: props.enable_status,
             hide_online_players: props.hide_online_players,
             favicon,
@@ -748,10 +751,39 @@ impl Game<'_> {
         self.stop_dedicated()
     }
 
+    /// A dedicated server of its own, not single player's server thread
+    /// (which runs with `options.dedicated` too).
+    pub(super) fn standalone_server(&self) -> bool {
+        self.options.dedicated.is_some() && self.serving.is_none()
+    }
     /// Load the spawn area and find the world spawn as single player does,
-    /// without keeping a player there.
+    /// without keeping a player there. A dedicated server only finds the world
+    /// spawn (MinecraftServer.setInitialSpawn): a player's spawn is found as
+    /// one joins.
     pub(super) fn settle_spawn(&mut self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(600);
+        if self.standalone_server() {
+            if self.level.spawn.is_none() {
+                let [x, y, z] = loop {
+                    self.update_world();
+                    if let Some(pos) = self.find_world_spawn()? {
+                        break pos;
+                    }
+                    if Instant::now() > deadline {
+                        return Err("the spawn area did not load".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                };
+                self.level.spawn = Some([f64::from(x), f64::from(y), f64::from(z)]);
+                self.level.world_spawn.get_or_insert([x, y, z]);
+                self.streaming.extra.clear();
+            }
+            self.spawn = self
+                .level
+                .spawn
+                .map(|s| horizon_core::geometry::Vec3::new(s[0] + 0.5, s[1], s[2] + 0.5));
+            return Ok(());
+        }
         while self.player.is_none() {
             self.update_world();
             self.spawn_player()?;
@@ -764,24 +796,28 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// The chunks to keep loaded: the players' (lan_update_streaming), or
-    /// the spawn chunk while nobody is online.
+    /// The chunks to keep loaded: the players' (lan_update_streaming). While
+    /// nobody is online a dedicated server keeps none (vanilla has no spawn
+    /// ticket), an integrated one the spawn chunk's.
     pub(super) fn update_dedicated_streaming(&mut self) {
-        let center = self
-            .lan
-            .as_ref()
-            .and_then(|h| {
-                h.hub
-                    .guests
-                    .iter()
-                    .find(|g| h.hub.here(g))
-                    .map(|g| g.chunk())
-            })
-            .or_else(|| {
-                self.spawn
-                    .map(|s| ((s.x.floor() as i32) >> 4, (s.z.floor() as i32) >> 4))
-            });
-        if let Some(c) = center {
+        let guest = self.lan.as_ref().and_then(|h| {
+            h.hub
+                .guests
+                .iter()
+                .find(|g| h.hub.here(g))
+                .map(|g| g.chunk())
+        });
+        if self.standalone_server() {
+            self.streaming.radius = if guest.is_some() {
+                self.settings.render_distance
+            } else {
+                -1
+            };
+        }
+        let spawn = self
+            .spawn
+            .map(|s| ((s.x.floor() as i32) >> 4, (s.z.floor() as i32) >> 4));
+        if let Some(c) = guest.or(spawn) {
             self.streaming.center = c;
         }
     }

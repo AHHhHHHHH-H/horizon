@@ -55,6 +55,12 @@ keep = 1                     # other releases kept by updates, besides the one i
 [panel]
 bind = "127.0.0.1:8130"      # the web panel: this computer only, or a tailnet address (100.x); "" turns it off
 allow_public = false         # true lets bind be any address; never put the panel on the open internet
+
+# Horizon mods (docs/mods.md): what each server mod may save with capability storage. Its textures,
+# models and data ship in its .hmod, not here.
+[mods]
+storage_mib = 16             # megabytes each mod may keep, 1 to 1024
+storage_files = 256          # files (keys) each mod may keep, 1 to 65536
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
@@ -92,6 +98,8 @@ pub struct Config {
     pub updates: Updates,
     #[serde(default)]
     pub panel: Panel,
+    #[serde(default)]
+    pub mods: Mods,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,6 +134,31 @@ pub struct Engine {
     pub path: String,
     pub resources: String,
     pub restart_on_crash: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Mods {
+    pub storage_mib: u64,
+    pub storage_files: u64,
+}
+
+impl Default for Mods {
+    fn default() -> Self {
+        Self {
+            storage_mib: 16,
+            storage_files: 256,
+        }
+    }
+}
+
+impl Mods {
+    /// What the game reads its mods' storage quota from (`HORIZON_MOD_STORAGE`, `<MiB>,<files>`).
+    pub const ENV: &str = "HORIZON_MOD_STORAGE";
+
+    pub fn storage_env(&self) -> String {
+        format!("{},{}", self.storage_mib, self.storage_files)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -295,6 +328,13 @@ impl Config {
             ));
         }
         crate::backup::interval(&self.backups.every)?;
+        let m = &self.mods;
+        if !(1..=1024).contains(&m.storage_mib) || !(1..=65_536).contains(&m.storage_files) {
+            return Err(format!(
+                "mods.storage_mib is {} and mods.storage_files {}: use 1 to 1024 megabytes and 1 to 65536 files",
+                m.storage_mib, m.storage_files
+            ));
+        }
         self.panel.address()?;
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());

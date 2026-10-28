@@ -301,9 +301,9 @@ GUEST_NAME = 'Guest'
 # Match normal single player; --in-frame is the comparison path.
 SERVER_THREAD = True
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp',
-          'arrows', 'kills', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'styles',
+          'flow-push', 'bubble-column', 'arrows', 'kills', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
-          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'sleep', 'predict', 'push',
+          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'sleep', 'sleep-villager', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'minecarts', 'frames', 'hands',
@@ -2720,6 +2720,58 @@ def check_sleep(host, guest, out):
     assert lying['host'] and lying['guest'], f'a sleeping player is drawn standing: {detail}'
     assert not lying['after'], f'a player up again is still drawn lying: {detail}'
     return detail
+
+
+def check_sleep_villager(host, guest, out):
+    """AbstractBedBlock.kickVillagerOutOfBed: using a bed a villager sleeps in wakes the villager and
+    leaves the player up; the next use lies down. The sleeper's own body is drawn in its bed, in first
+    person too (LevelExtractor skips the camera entity unless it sleeps)."""
+    guest('command', command='gamemode survival')
+    host('command', command='time set midnight')
+    gx, gy, gz = (int(v // 1) for v in pos_of(guest))
+    x, z = gx, gz + 3
+    guest('command', command=f'fill {x - 3} {gy - 1} {z - 2} {x + 4} {gy - 1} {z + 3} minecraft:stone')
+    guest('command', command=f'fill {x - 3} {gy} {z - 2} {x + 4} {gy + 3} {z + 3} minecraft:air')
+    bed = bed_at(guest, (x, gy, z))
+    guest('command', command=f'summon minecraft:villager {x - 1.5} {gy} {z + 1.5}')
+
+    def villager():
+        found = guest('entities', radius=12, type='villager')['entities']
+        return found[0]['pos'] if found else None
+
+    def in_bed(at):
+        # Lying at the head (setPosToBed), not standing beside it.
+        return at is not None and abs(at[0] - bed[0] - 0.5) < 0.5 and abs(at[2] - bed[2] - 0.5) < 0.5 \
+            and at[1] - gy > 0.4
+    seen = {}
+    try:
+        for _ in range(90):
+            if in_bed(villager()):
+                break
+            guest.wait(20)
+        seen['villager_asleep'] = villager()
+        assert in_bed(seen['villager_asleep']), f'the villager never lay down in the bed: {seen}'
+        guest.raw('interact', *bed)
+        guest.wait(10)
+        seen['villager_kicked'] = villager()
+        seen['up'] = guest('state').get('sleeping')
+        assert not in_bed(seen['villager_kicked']), f'the bed did not wake its villager: {seen}'
+        assert seen['up'] is None, f'the player lay down beside the villager: {seen}'
+        guest.raw('interact', *bed)
+        guest.wait(10)
+        seen['asleep'] = guest('state').get('sleeping')
+        seen['own_body_asleep'] = remote(guest).get('own_body')
+        guest.shot(out, 'sleep-villager')
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(10)
+        seen['own_body_up'] = remote(guest).get('own_body')
+    finally:
+        guest('command', command='kill @e[type=minecraft:villager,distance=..16]')
+        guest('command', command=f'fill {bed[0] - 1} {bed[1]} {bed[2]} {bed[0]} {bed[1]} {bed[2]} minecraft:air')
+        host('command', command='time set day')
+    assert seen['asleep'] == bed, f'the emptied bed did not take the player: {seen}'
+    assert seen['own_body_asleep'] and not seen['own_body_up'], f'the sleeper\'s own body: {seen}'
+    return seen
 def check_predict(host, guest, out):
     # MultiPlayerGameMode.useItemOn under startPrediction (#869): the guest's door opens on its own screen
     # at once, with the host (the server) frozen, and the server's answer later agrees; an iron door
@@ -3331,6 +3383,70 @@ def check_sidebar(host, guest, out):
     wrong = {k: v for k, v in got.items() if v != want[k]}
     assert not wrong, f'sidebars: {wrong}\n{result}'
     return result
+
+
+def check_flow_push(host, guest, out):
+    """A mob in a current is carried along with it (`Entity.updateFluidInteraction`)."""
+    hx, hy, hz = pos_of(host)
+    x, y, z = (int(hx // 16) * 16 + 8, int(hy), int(hz // 16) * 16 + 8)
+    host('command', command='gamemode survival')
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+7} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'fill {x-4} {y} {z-4} {x+7} {y+6} {z+4} minecraft:air')
+    # A water source with a flowing block next to it: the current runs +x.
+    host('command', command=f'setblock {x} {y} {z} minecraft:water')
+    host('command', command=f'setblock {x+1} {y} {z} minecraft:water[level=1]')
+    # A pool of sources: the middle one has no current at all.
+    for dx in range(3):
+        for dz in range(3):
+            host('command', command=f'setblock {x+3+dx} {y} {z+3+dz} minecraft:water')
+    host.wait(20)
+    host('command', command=f'summon minecraft:pig {x+1.5} {y+0.5} {z+0.5}')
+    host('command', command=f'summon minecraft:pig {x+4.5} {y+0.5} {z+4.5}')
+    host.wait(20)
+
+    def drift(at_x, at_z):
+        host.wait(30)
+        pigs = [p for p in host('entities', radius=16, type='pig')['entities']
+                if abs(p['pos'][2] - at_z) < 1.5]
+        near = [p['pos'][0] for p in pigs if abs(p['pos'][0] - at_x) < 3.0]
+        return (max(near) - at_x) if near else 0.0
+
+    flowing = drift(x + 1.5, z + 0.5)
+    still = drift(x + 4.5, z + 4.5)
+    assert flowing - still > 0.2, f'the current did not carry the mob: {flowing} vs {still}'
+    return {'flowing': round(flowing, 3), 'still': round(still, 3)}
+
+
+def check_bubble_column(host, guest, out):
+    """A mob in a bubble column is carried up with it (`BubbleColumnBlock.entityInside`)."""
+    hx, hy, hz = pos_of(host)
+    x, y, z = (int(hx // 16) * 16 + 8, int(hy), int(hz // 16) * 16 + 8)
+    host('command', command='gamemode survival')
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+7} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'fill {x-4} {y} {z-4} {x+7} {y+6} {z+4} minecraft:air')
+    # Soul sand under a water source makes the water a bubble column that
+    # pushes up (`BubbleColumnBlock.getColumnState`).
+    host('command', command=f'setblock {x} {y-1} {z} minecraft:soul_sand')
+    host('command', command=f'setblock {x} {y} {z} minecraft:water')
+    # A plain water source, with no soul sand under it: no column there.
+    host('command', command=f'setblock {x+3} {y} {z} minecraft:water')
+    host.wait(20)
+    host('command', command=f'summon minecraft:pig {x+0.5} {y+0.5} {z+0.5}')
+    host('command', command=f'summon minecraft:pig {x+3.5} {y+0.5} {z+0.5}')
+    host.wait(20)
+
+    def rises(at_x):
+        samples = []
+        for _ in range(6):
+            host.wait(5)
+            samples += [p['pos'][1] for p in host('entities', radius=16, type='pig')['entities']
+                        if abs(p['pos'][0] - at_x) < 1.5 and abs(p['pos'][2] - (z + 0.5)) < 1.5]
+        return max(samples) if samples else y + 0.5
+
+    column = rises(x + 0.5)
+    plain = rises(x + 3.5)
+    assert column - plain > 0.2, f'the bubble column did not carry the pig up: {column} vs {plain}'
+    return {'column': round(column - (y + 0.5), 3), 'plain': round(plain - (y + 0.5), 3)}
 
 
 def check_border(host, guest, out):
@@ -4951,6 +5067,8 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'nametags': check_nametags, 'chest': check_chest, 'crafting': check_crafting,
              'spawned': check_spawned,
              'sign': check_sign, 'damage': check_damage, 'mobs': check_mobs,
+             'flow-push': check_flow_push,
+             'bubble-column': check_bubble_column,
              'hazards': check_hazards, 'pvp': check_pvp, 'respawn': check_respawn,
              'containers': check_containers, 'feedback': check_feedback, 'titles': check_titles,
              'chat': check_chat, 'styles': check_styles, 'machines': check_machines, 'brewing': check_brewing,
@@ -4960,7 +5078,8 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'cartography': check_cartography, 'hurt': check_hurt, 'commands': check_commands,
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance,
-             'clicks': check_clicks, 'sleep': check_sleep, 'push': check_push, 'piston-push': check_piston_push,
+             'clicks': check_clicks, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
+             'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
@@ -7850,6 +7969,46 @@ def check_dig_stop(host, guest, out):
 
 CHECKS += ['dig_stop']
 CHECK_FNS['dig_stop'] = check_dig_stop
+
+
+def check_dig_sounds(host, guest, out):
+    """#2277: the mining sound plays once per cadence, for everyone.
+
+    Vanilla plays the block's hit sound from the server's destroy progress
+    level events (2019 and 2020), so the digger and the players around hear
+    the same hits. Horizon's digger heard every hit twice: once from its own
+    client and once from the server, which is what the report called a sound
+    played too often.
+    """
+    result = {}
+    spots = apart(host, guest)
+    for label, player in (('host', host), ('guest', guest)):
+        other = guest if label == 'host' else host
+        x, y, z = spots[label]
+        cell = (x, y + 1, z + 2)
+        player('command', command='gamemode survival')
+        player('command', command='clear @s')
+        host('command', command=f'fill {x - 1} {y} {z + 1} {x + 1} {y + 3} {z + 4} minecraft:air')
+        host('command', command=f'setblock {cell[0]} {cell[1]} {cell[2]} minecraft:stone')
+        player.wait(10)
+        before = {g.name: heard(g, 'minecraft:block.stone.hit') for g in (host, guest)}
+        player.raw('look-at', f'{cell[0] + 0.5:.2f}', f'{cell[1] + 0.5:.2f}', f'{cell[2] + 0.5:.2f}')
+        player.raw('mouse', 'left', 'down')
+        player.wait(40)
+        player.raw('mouse', 'left', 'up')
+        player.wait(5)
+        hits = {g.name: heard(g, 'minecraft:block.stone.hit') - before[g.name] for g in (host, guest)}
+        result[label] = hits
+        assert host.raw('block', *cell).get('block') == 'minecraft:stone', f'{label}: the stone broke: {result}'
+        assert hits[other.name] >= 3, f'{label}: the player nearby heard no mining sound: {result}'
+        assert hits[player.name] <= hits[other.name] + 3, \
+            f'{label}: the digger heard the mining sound twice: {result}'
+        host('command', command=f'setblock {cell[0]} {cell[1]} {cell[2]} minecraft:air')
+    return result
+
+
+CHECKS += ['dig_sounds']
+CHECK_FNS['dig_sounds'] = check_dig_sounds
 
 
 if __name__ == '__main__':

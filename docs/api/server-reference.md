@@ -118,6 +118,15 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `bind` | `"127.0.0.1:8130"` |  | the web panel: this computer only, or a tailnet address (100.x); "" turns it off |
 | `allow_public` | `false` |  | true lets bind be any address; never put the panel on the open internet |
 
+### `[mods]`
+
+Horizon mods (docs/mods.md): what each server mod may save with capability storage. Its textures, models and data ship in its .hmod, not here.
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `storage_mib` | `16` |  | megabytes each mod may keep, 1 to 1024 |
+| `storage_files` | `256` |  | files (keys) each mod may keep, 1 to 65536 |
+
 ## Control API (`/api/v1`)
 
 HTTP and JSON on 127.0.0.1. A running server writes its address and a random token to `.horizon/api.json`, readable only by its own user; every request sends `Authorization: Bearer <token>` and a `Host` that is that address. Errors answer `{"error": "..."}` with 400, 401, 403, 404, 405 or 409. The web panel uses the same routes with its session.

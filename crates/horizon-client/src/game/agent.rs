@@ -597,6 +597,9 @@ impl Game<'_> {
             Mode::Delete { world } => {
                 json!({ "mode": "delete-world", "folder": world.folder, "name": world.name })
             }
+            Mode::BackupBeforeUpgrade { world } => {
+                json!({ "mode": "backup-before-upgrade", "folder": world.folder, "name": world.name })
+            }
             Mode::Error { message, .. } => {
                 json!({ "mode": "world-operation-error", "message": message })
             }
@@ -606,6 +609,9 @@ impl Game<'_> {
                 json!({ "mode": "multiplayer", "disconnected": reason })
             }
             Mode::Multiplayer(_) => json!({ "mode": "multiplayer" }),
+            Mode::MultiplayerWarning { check } => {
+                json!({ "mode": "multiplayer-warning", "check": check })
+            }
         }
     }
 

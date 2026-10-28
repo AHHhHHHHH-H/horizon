@@ -12,7 +12,7 @@
 //! portal) until the player is in that dimension and its exit is loaded.
 use super::{Dim, Game, Screen};
 use horizon_client::Result;
-use horizon_client::nether_portal::PortalState;
+use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
 use horizon_core::{
     geometry::{Aabb, Axis, Vec3},
     position::BlockPos,
@@ -29,8 +29,6 @@ use std::collections::HashMap;
 
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
-/// `Entity.getDimensionChangingDelay`.
-const ENTITY_DELAY: i32 = 300;
 
 /// Where in its portal a traveller stood, and where its exit is to be found.
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +87,7 @@ pub(super) struct Portals {
     /// Items and mobs, by entity id.
     entities: HashMap<u32, PortalState>,
     /// Positions before this tick's moves, by entity id.
-    before: HashMap<u32, Vec3>,
+    pub(super) before: HashMap<u32, Vec3>,
     arrivals: Vec<Arrival>,
     loaded: bool,
     dirty: bool,
@@ -676,7 +674,7 @@ impl Game<'_> {
     }
     /// `canUsePortal(false)` of a mob: alive, riding nothing, not asleep,
     /// not carrying the player, and not a boss that never travels.
-    fn mob_can_use_portal(&self, m: &horizon_client::mobs::Mob) -> bool {
+    pub(super) fn mob_can_use_portal(&self, m: &horizon_client::mobs::Mob) -> bool {
         use horizon_client::mobs::Species;
         m.alive()
             && m.extra.mount.is_none()
@@ -919,6 +917,18 @@ impl Game<'_> {
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
         }
+    }
+    /// The chunks of the arrivals still waiting to land in `dim`, for the
+    /// streaming `extra` areas that light them: vanilla's portal ticket
+    /// (`Entity.teleport` adds `TicketType.PORTAL` at the destination) keeps
+    /// the area loaded without a player.
+    pub(super) fn arrival_chunks(&self, dim: Dim) -> Vec<(i32, i32)> {
+        self.portals
+            .arrivals
+            .iter()
+            .filter(|a| a.plan.dim == dim)
+            .map(|a| (a.plan.approximate.x >> 4, a.plan.approximate.z >> 4))
+            .collect()
     }
     /// Entities waiting for the loaded dimension whose exit area is loaded:
     /// their exit portal (found or built) or End destination, position,
