@@ -4919,7 +4919,7 @@ impl Game<'_> {
         ];
         // setPortalCooldown: the new piglin does not travel at once.
         if let Some(id) = self.spawn_mob("minecraft:zombified_piglin", at, false) {
-            self.set_portal_cooldown(id);
+            self.set_portal_cooldown(id, horizon_client::nether_portal::ENTITY_DELAY);
         }
     }
 }

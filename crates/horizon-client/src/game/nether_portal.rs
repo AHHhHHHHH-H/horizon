@@ -652,22 +652,16 @@ impl Game<'_> {
         if let Some(Tag::Int(cooldown)) = tag.get("PortalCooldown")
             && *cooldown > 0
         {
-            self.portals.entities.insert(
-                id,
-                PortalState {
-                    cooldown: *cooldown,
-                    process: None,
-                },
-            );
+            self.set_portal_cooldown(id, *cooldown);
         }
     }
-    /// `Entity.setPortalCooldown` on an entity that has just spawned in a
-    /// portal: it stands in the portal for 300 ticks without going through.
-    pub(super) fn set_portal_cooldown(&mut self, id: u32) {
+    /// `Entity.setPortalCooldown`: the entity that came through a portal
+    /// does not go back through it for a while.
+    pub(super) fn set_portal_cooldown(&mut self, id: u32, cooldown: i32) {
         self.portals.entities.insert(
             id,
             PortalState {
-                cooldown: ENTITY_DELAY,
+                cooldown,
                 process: None,
             },
         );
@@ -679,6 +673,9 @@ impl Game<'_> {
         m.alive()
             && m.extra.mount.is_none()
             && self.riding != Some(m.id)
+            // The animal a player rides travels with the player, which is
+            // carried by the vehicle (`Entity.teleportCrossDimension`).
+            && !self.guest_rides(m.id)
             && m.species() != Species::Wither
     }
     /// Whether the player, a server player or a mob rides vehicle `id`.
