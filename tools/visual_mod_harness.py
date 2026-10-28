@@ -13,6 +13,11 @@ import shutil
 import subprocess
 import tempfile
 
+try:
+    from . import lab
+except ImportError:
+    import lab
+
 
 class Game:
     def __init__(self, args, root, name):
@@ -21,18 +26,18 @@ class Game:
         self.home.mkdir()
         self.socket = self.home / 'ctl.sock'
         self.pid = None
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith('HORIZON_VOICE_')}
-        self.env.update({
-            'HORIZON_HOME': str(self.home), 'HORIZON_NO_AUDIO': '1',
-            'HORIZON_LAUNCHER_HOME': str(self.home / 'launcher'),
-            'HORIZON_LAUNCHER_NO_SELF_UPDATE': '1',
-            'XDG_DATA_HOME': str(self.home / 'xdg-data'),
-            'XDG_CONFIG_HOME': str(self.home / 'xdg-config'),
-            'XDG_CACHE_HOME': str(self.home / 'xdg-cache'),
-            'HORIZON_LAUNCHER_TRASH': str(self.home / 'trash'),
-            'HORIZON_LAUNCHER_CLIPBOARD': str(self.home / 'clipboard'),
-            'HORIZON_LAUNCHER_DESKTOP': str(self.home / 'desktop'),
-        })
+        base = {k: v for k, v in os.environ.items() if not k.startswith('HORIZON_VOICE_')}
+        self.env = lab.game_env(
+            base,
+            HORIZON_HOME=self.home,
+            HORIZON_LAUNCHER_HOME=self.home / 'launcher',
+            XDG_DATA_HOME=self.home / 'xdg-data',
+            XDG_CONFIG_HOME=self.home / 'xdg-config',
+            XDG_CACHE_HOME=self.home / 'xdg-cache',
+            HORIZON_LAUNCHER_TRASH=self.home / 'trash',
+            HORIZON_LAUNCHER_CLIPBOARD=self.home / 'clipboard',
+            HORIZON_LAUNCHER_DESKTOP=self.home / 'desktop',
+        )
 
     def ctl(self, *words, timeout=300):
         command = [str(self.args.ctl), '--socket', str(self.socket), '--timeout', str(timeout), *map(str, words)]
