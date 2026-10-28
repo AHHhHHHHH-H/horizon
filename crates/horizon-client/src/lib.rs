@@ -114,6 +114,7 @@ pub mod moved_extras;
 pub mod multiplayer;
 pub mod music;
 pub mod net;
+pub mod net_gaps;
 pub mod nether_portal;
 pub mod offline_name;
 pub mod options_file;
