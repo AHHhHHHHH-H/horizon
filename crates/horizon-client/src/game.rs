@@ -14636,7 +14636,8 @@ impl Progress {
         }
     }
     fn set(&self, stage: u32) {
-        self.value.store(stage, Ordering::Relaxed);
+        // Parallel lanes finish out of order: the loading screen only ever moves forward.
+        self.value.fetch_max(stage, Ordering::Relaxed);
     }
     fn fraction(&self) -> f32 {
         self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
@@ -14918,16 +14919,114 @@ fn load_world_rest(
     let facts = resources.facts();
     let biomes = resources.biomes();
     let threads = resources.threads();
-    let registry_owner = assets;
     progress.set(6);
-    let mob_data = horizon_client::mobs::MobData::load(root, facts);
-    horizon_client::mobs::trial_spawner::load_registry(root);
-
-    let items = Items::load(root, assets.registry, facts)?;
-    log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
-    progress.set(7);
-    let recipes = Recipes::load(root, &items)?;
-    let transformers = horizon_client::block_transform::Transformers::load(root, assets.registry)?;
+    // Three independent lanes; a lane returns the first error as a string so
+    // it can cross the thread boundary.
+    let lane_a = || -> std::result::Result<_, String> {
+        let items = Items::load(root, assets.registry, facts).map_err(|e| e.to_string())?;
+        log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
+        progress.set(7);
+        let recipes = Recipes::load(root, &items).map_err(|e| e.to_string())?;
+        let transformers =
+            horizon_client::block_transform::Transformers::load(root, assets.registry)
+                .map_err(|e| e.to_string())?;
+        let stations = horizon_client::stations::StationData::load(root, &items);
+        Ok((items, recipes, transformers, stations))
+    };
+    let lane_b = || -> std::result::Result<_, String> {
+        let animate =
+            horizon_client::animate_tick::AnimateTables::load(root, assets.registry, biomes)
+                .map_err(|e| e.to_string())?;
+        let fog = horizon_client::fog::FogTables::load(root, biomes);
+        let providers = Providers::load(root);
+        let block_entity_render =
+            horizon_client::block_entity_render::BlockEntityRenderer::load(root, assets.registry)
+                .map_err(|e| e.to_string())?;
+        let behaviours = Behaviours::load_with_gameplay(
+            assets.registry,
+            root,
+            behaviour_json,
+            gameplay_projection,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok((animate, fog, providers, block_entity_render, behaviours))
+    };
+    let lane_c = || -> std::result::Result<_, String> {
+        let mob_data = horizon_client::mobs::MobData::load(root, facts);
+        horizon_client::mobs::trial_spawner::load_registry(root);
+        let music = if visuals {
+            horizon_client::music::MusicTables::load(root)
+        } else {
+            Default::default()
+        };
+        let ambient = if visuals {
+            horizon_client::ambience::AmbientTables::load(root)
+        } else {
+            Default::default()
+        };
+        let nether_environment =
+            Environment::load_dimension(root, "the_nether", false).map_err(|e| e.to_string())?;
+        let end_environment =
+            Environment::load_dimension(root, "the_end", false).map_err(|e| e.to_string())?;
+        let mob_types: HashMap<String, Arc<MobType>> = MobTypes::load(root)
+            .map_err(|e| e.to_string())?
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let player_type = visuals.then(|| perspective::player_type(root)).flatten();
+        let player_arm = visuals
+            .then(|| {
+                horizon_client::mobs::load_model(root, "minecraft:player#main")
+                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
+            })
+            .flatten();
+        let player_arm_slim = visuals
+            .then(|| {
+                horizon_client::mobs::load_model(root, "minecraft:player_slim#main")
+                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
+            })
+            .flatten();
+        let spin_attack = visuals
+            .then(|| horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"))
+            .flatten();
+        Ok((
+            mob_data,
+            music,
+            ambient,
+            nether_environment,
+            end_environment,
+            mob_types,
+            player_type,
+            player_arm,
+            player_arm_slim,
+            spin_attack,
+        ))
+    };
+    let (lane_a, lane_b, lane_c) = if threads > 1 {
+        std::thread::scope(|scope| {
+            let a = scope.spawn(lane_a);
+            let b = scope.spawn(lane_b);
+            let c = scope.spawn(lane_c);
+            (a.join().unwrap(), b.join().unwrap(), c.join().unwrap())
+        })
+    } else {
+        (lane_a(), lane_b(), lane_c())
+    };
+    let (items, recipes, transformers, stations) = lane_a?;
+    let (animate, fog, providers, block_entity_render, behaviours) = lane_b?;
+    let (
+        mob_data,
+        music,
+        ambient,
+        nether_environment,
+        end_environment,
+        mob_types,
+        player_type,
+        player_arm,
+        player_arm_slim,
+        spin_attack,
+    ) = lane_c?;
     log::info!(
         "Horizon: resources loaded in {:.1}s; {} block states, {} items, {} biomes; {} worker threads",
         started.elapsed().as_secs_f32(),
@@ -14937,54 +15036,26 @@ fn load_world_rest(
         threads
     );
     progress.set(8);
-    let stations = horizon_client::stations::StationData::load(root, &items);
-    let animate =
-        horizon_client::animate_tick::AnimateTables::load(root, registry_owner.registry, biomes)?;
-    let fog = horizon_client::fog::FogTables::load(root, biomes);
     Ok(WorldRest {
         stations,
         items,
         recipes,
         transformers,
-        providers: Providers::load(root),
-        block_entity_render: horizon_client::block_entity_render::BlockEntityRenderer::load(
-            root,
-            registry_owner.registry,
-        )?,
+        providers,
+        block_entity_render,
         animate,
         fog,
-        music: horizon_client::music::MusicTables::load(root),
-        ambient: horizon_client::ambience::AmbientTables::load(root),
-        nether_environment: Environment::load_dimension(root, "the_nether", false)?,
-        end_environment: Environment::load_dimension(root, "the_end", false)?,
-        behaviours: Behaviours::load_with_gameplay(
-            registry_owner.registry,
-            root,
-            behaviour_json,
-            gameplay_projection,
-        )?,
-        mob_types: MobTypes::load(root)?
-            .types
-            .into_iter()
-            .map(|(k, v)| (k, Arc::new(v)))
-            .collect(),
+        music,
+        ambient,
+        nether_environment,
+        end_environment,
+        behaviours,
+        mob_types,
         mob_data,
-        player_type: visuals.then(|| perspective::player_type(root)).flatten(),
-        player_arm: visuals
-            .then(|| {
-                horizon_client::mobs::load_model(root, "minecraft:player#main")
-                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
-            })
-            .flatten(),
-        player_arm_slim: visuals
-            .then(|| {
-                horizon_client::mobs::load_model(root, "minecraft:player_slim#main")
-                    .and_then(|m| m.children.into_iter().find(|c| c.name == "right_arm"))
-            })
-            .flatten(),
-        spin_attack: visuals
-            .then(|| horizon_client::mobs::load_model(root, "minecraft:spin_attack#main"))
-            .flatten(),
+        player_type,
+        player_arm,
+        player_arm_slim,
+        spin_attack,
     })
 }
 
@@ -16011,6 +16082,15 @@ mod tests {
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
     use horizon_client::keymapping::{KeyAction, SPRINT, ToggleKeys};
+
+    #[test]
+    fn loading_progress_never_goes_backwards() {
+        let progress = Progress::new();
+        progress.set(6);
+        progress.set(8);
+        progress.set(7);
+        assert_eq!(progress.value.load(Ordering::Relaxed), 8);
+    }
 
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {

@@ -552,7 +552,14 @@ impl Audio {
         Self::with_output(root, false)
     }
     fn with_output(root: &Path, output: bool) -> Self {
-        let registry = SoundRegistry::load(root);
+        // A server sends sound ids to its clients but plays nothing, so it
+        // never reads the registry (a client with no output still does, for
+        // subtitles).
+        let registry = if output {
+            SoundRegistry::load(root)
+        } else {
+            SoundRegistry::default()
+        };
         if output && registry.is_empty() {
             // The game then plays nothing on a working output (#1035, #1076).
             log::warn!(
@@ -918,6 +925,25 @@ mod tests {
             at,
             relative: false,
         }
+    }
+
+    /// The server role, not the output flag, decides whether the sound
+    /// registry is read: `Audio::silent` is only a server's.
+    #[test]
+    fn a_server_does_not_read_the_sound_registry() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-silent-audio-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("assets/minecraft/sounds/gui")).unwrap();
+        fs::write(
+            root.join("assets/minecraft/sounds.json"),
+            br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("assets/minecraft/sounds/gui/button.ogg"), b"").unwrap();
+        assert_eq!(SoundRegistry::load(&root).names().count(), 1);
+        assert!(Audio::silent(&root).event_names().is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
