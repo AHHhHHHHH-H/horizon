@@ -361,7 +361,7 @@ fn squid_step(m: &mut Mob, client: bool) {
     } else {
         v[TENTACLE_ANGLE] = v[TENTACLE_MOVEMENT].msin().abs() * PI * 0.25;
         if !client {
-            let yd = m.velocity.y - m.kind.gravity;
+            let yd = m.velocity.y - m.synced_attribute("minecraft:gravity", m.kind.gravity);
             m.velocity = Vec3::new(0.0, yd * 0.98, 0.0);
         }
         let v = &mut m.anim.v;
@@ -534,7 +534,7 @@ impl Goal for PufferfishPuff {
             cx.w.player
                 .as_ref()
                 .is_some_and(|p| p.alive && !p.creative && area.intersects(p.bounds));
-        // TARGETING_CONDITIONS: not other fish (not_scary_for_pufferfish) and alive.
+        // TARGETING_CONDITIONS: not #not_scary_for_pufferfish, and alive.
         let mob = cx.w.others_near(area).any(|s| {
             s.id != m.id
                 && s.alive
@@ -547,7 +547,13 @@ impl Goal for PufferfishPuff {
                         | Species::Squid
                         | Species::GlowSquid
                         | Species::Dolphin
-                        | Species::Axolotl
+                        | Species::Turtle
+                        | Species::Guardian
+                        | Species::ElderGuardian
+                        | Species::Tadpole
+                        | Species::Nautilus
+                        | Species::ZombieNautilus
+                        | Species::SulfurCube
                 )
                 && area.intersects(s.bounds)
         });

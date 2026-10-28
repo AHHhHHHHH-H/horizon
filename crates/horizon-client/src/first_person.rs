@@ -38,6 +38,8 @@ pub enum ItemPose {
         charge_duration: f32,
         charged: bool,
     },
+    /// A `stab` swing (`SpearAnimations.firstPersonAttack`).
+    SpearAttack,
 }
 
 /// `submitArmWithItem`: the pose of an item in the hand on the `left` or
@@ -91,6 +93,10 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
             * Mat4::from_translation(Vec3::new(invert * -0.4, 0.8, 0.3))
             * Mat4::from_rotation_y((invert * 65.0f32).to_radians())
             * Mat4::from_rotation_z((invert * -85.0f32).to_radians());
+    }
+    if matches!(pose, ItemPose::SpearAttack) {
+        first_person_attack(&mut m, invert, attack);
+        return m;
     }
     let charging = match pose {
         ItemPose::Bow { ticks_used } => {
@@ -152,6 +158,53 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
         }
     }
     m
+}
+
+/// `Mth.inverseLerp` clamped to 0..1 (`SpearAnimations.progress`).
+pub(crate) fn progress(time: f32, start: f32, end: f32) -> f32 {
+    if end == start {
+        return if time >= end { 1.0 } else { 0.0 };
+    }
+    ((time - start) / (end - start)).clamp(0.0, 1.0)
+}
+
+pub(crate) fn in_quad(x: f32) -> f32 {
+    x * x
+}
+pub(crate) fn out_back(x: f32) -> f32 {
+    let x = x - 1.0;
+    1.0 + 2.701_58 * x * x * x + 1.701_58 * x * x
+}
+pub(crate) fn in_out_sine(x: f32) -> f32 {
+    use horizon_core::geometry::trig::Mth;
+    -((std::f32::consts::PI * x).mcos() - 1.0) / 2.0
+}
+pub(crate) fn in_out_expo(x: f32) -> f32 {
+    if x < 0.5 {
+        if x == 0.0 {
+            0.0
+        } else {
+            2.0f32.powf(20.0 * x - 10.0) / 2.0
+        }
+    } else if x == 1.0 {
+        1.0
+    } else {
+        (2.0 - 2.0f32.powf(-20.0 * x + 10.0)) / 2.0
+    }
+}
+
+/// `SpearAnimations.firstPersonAttack`.
+fn first_person_attack(m: &mut glam::Mat4, invert: f32, attack: f32) {
+    let starting = in_out_sine(progress(attack, 0.0, 0.05));
+    let middle = out_back(progress(attack, 0.05, 0.2));
+    let ending = in_out_expo(progress(attack, 0.4, 1.0));
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(
+        invert * 0.1 * (starting - middle),
+        -0.075 * (starting - ending),
+        0.65 * (starting - middle),
+    ));
+    *m *= glam::Mat4::from_rotation_x((-70.0 * (starting - ending)).to_radians());
+    *m *= glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25 * (ending - middle)));
 }
 
 /// How `submitArmWithItem` holds a stack with a `minecraft:map_id`: in both
@@ -1059,6 +1112,13 @@ mod continuous_use_tests {
             item_pose(false, 0.0, 0.3, ItemPose::Trident { ticks_used: 5.0 })
         );
         assert_ne!(swing, item_pose(false, 0.0, 0.3, ItemPose::Using));
+    }
+    #[test]
+    fn spear_attack_stabs_forward_and_back() {
+        assert_ne!(
+            item_pose(false, 0.0, 0.1, ItemPose::SpearAttack),
+            item_pose(false, 0.0, 0.6, ItemPose::SpearAttack)
+        );
     }
 }
 

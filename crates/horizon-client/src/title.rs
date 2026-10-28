@@ -1,6 +1,7 @@
 //! Title, world selection and world creation screens (TitleScreen,
 //! SelectWorldScreen, CreateWorldScreen layouts), drawn as HUD quads.
 use crate::{
+    dialog_screen::BOX,
     game_rules_screen::{Exit, RulesScreen},
     hud::{HudAtlas, HudBatch, rgba},
     lang,
@@ -33,6 +34,12 @@ fn edit_top(h: f32) -> f32 {
 pub(crate) fn confirm_top(h: f32, lines: usize) -> f32 {
     ((h.ceil() - 61.0 - lines as f32 * 9.0) / 2.0).floor()
 }
+/// The SafetyScreen's column (WarningScreen: title, 12 px around the message
+/// box of its lines and 4 px padding, the checkbox, then the buttons, 8 px
+/// apart): the title's top.
+fn warning_top(h: f32, lines: usize) -> f32 {
+    ((h.ceil() - 102.0 - lines as f32 * 9.0) / 2.0).floor()
+}
 
 fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> String {
     let args: Vec<Text> = args
@@ -42,11 +49,16 @@ fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> Stri
     format_translation(&lang::get_or(key, fallback), &args).plain()
 }
 
-enum BackupToast {
-    Created { folder: String, bytes: u64 },
+enum WorldToast {
+    Created {
+        folder: String,
+        bytes: u64,
+    },
     Failed(String),
+    /// `SystemToast.onWorldAccessFailure`: the folder of a world that couldn't be locked.
+    AccessFailure(String),
 }
-impl BackupToast {
+impl WorldToast {
     fn text(&self) -> (String, String) {
         match self {
             Self::Created { folder, bytes } => (
@@ -60,6 +72,10 @@ impl BackupToast {
             Self::Failed(error) => (
                 lang::get_or("selectWorld.edit.backupFailed", "Backup failed"),
                 error.clone(),
+            ),
+            Self::AccessFailure(folder) => (
+                lang::get_or("selectWorld.access_failure", "Failed to access world"),
+                folder.clone(),
             ),
         }
     }
@@ -96,6 +112,10 @@ pub enum Mode {
     Backup {
         world: WorldEntry,
     },
+    /// BackupConfirmScreen over a world whose file fixes are due.
+    BackupBeforeUpgrade {
+        world: WorldEntry,
+    },
     Delete {
         world: WorldEntry,
     },
@@ -104,6 +124,11 @@ pub enum Mode {
         return_to: Box<Mode>,
     },
     Multiplayer(crate::multiplayer::Screen),
+    /// SafetyScreen: the warning before the first Multiplayer click, with its
+    /// "Do not show this screen again" box.
+    MultiplayerWarning {
+        check: bool,
+    },
     /// CreateFlatWorldScreen over Create New World: the fields that screen
     /// keeps and the superflat editor on top of them.
     CreateFlat {
@@ -140,6 +165,8 @@ pub struct Title {
     pub mode: Mode,
     /// Direct Connection's address, synchronized with `options.txt`'s `lastServer`.
     pub last_server: String,
+    /// `skipMultiplayerWarning`, synchronized with `options.txt` the same way.
+    pub skip_multiplayer_warning: bool,
     pub saves: PathBuf,
     /// The prepared resource root: the flat preset list and block registry.
     resources: PathBuf,
@@ -151,10 +178,16 @@ pub struct Title {
     scroll: Cell<crate::ui::Scroll>,
     create_return_to_main: bool,
     message_lines: Cell<usize>,
+    /// The SafetyScreen's checkbox as last drawn: x, y, width, height.
+    warning_check: Cell<[f32; 4]>,
     backup: Option<mpsc::Receiver<Result<u64, String>>>,
     backup_shown: Cell<bool>,
-    /// EditWorldScreen's `SystemToast` (`WORLD_BACKUP`) and its slide.
-    toast: Option<(crate::toasts::Slide, BackupToast)>,
+    /// The backup a `BackupBeforeUpgrade` asked for opens its world when done.
+    backup_then_open: bool,
+    /// The folder to open next, once that backup has finished.
+    open_request: Option<String>,
+    /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
+    toast: Option<(crate::toasts::Slide, WorldToast)>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
     splash: Option<String>,
     /// The saves listed for Home, re-read every couple of seconds.
@@ -247,6 +280,7 @@ impl Title {
         Self {
             mode,
             last_server: String::new(),
+            skip_multiplayer_warning: false,
             saves,
             resources: resources.to_owned(),
             started: now,
@@ -256,8 +290,11 @@ impl Title {
             scroll: Cell::default(),
             create_return_to_main: false,
             message_lines: Cell::new(1),
+            warning_check: Cell::new([0.0; 4]),
             backup: None,
             backup_shown: Cell::new(false),
+            backup_then_open: false,
+            open_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(
@@ -298,15 +335,23 @@ impl Title {
             options: WorldOptions::default(),
         }
     }
+    /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
+    /// back empty (the last world deleted, say) opens a fresh Create New
+    /// World, whose Cancel goes to the title screen.
     fn return_to_list(&mut self, folder: Option<&str>) {
         let worlds = list_worlds(&self.saves);
+        *self.recent.borrow_mut() = None;
+        if worlds.is_empty() {
+            self.create_return_to_main = true;
+            self.mode = Self::new_world();
+            return;
+        }
         let selected = folder.and_then(|folder| {
             worlds
                 .iter()
                 .position(|w| w.folder == folder && self.matches_search(w))
         });
         self.mode = Mode::Select { worlds, selected };
-        *self.recent.borrow_mut() = None;
     }
     /// Deletes the world `Mode::Delete` asks about and goes back to the
     /// refreshed list; a failure (the world is open elsewhere, say) shows the
@@ -381,7 +426,7 @@ impl Title {
         } = mode
         {
             if apply {
-                options.flat = true;
+                options.world_type = crate::save::WorldPreset::Flat;
                 options.flat_settings = Some(flat.settings);
             }
             self.mode = Mode::Create {
@@ -515,9 +560,13 @@ impl Title {
         if let Mode::Backup { world } = &self.mode {
             let folder = world.folder.clone();
             self.return_to_list(Some(&folder));
+            // EditWorldScreen opens the world after the backup, failed or not.
+            if std::mem::take(&mut self.backup_then_open) {
+                self.open_request = Some(folder.clone());
+            }
             let toast = match result {
-                Ok(bytes) => BackupToast::Created { folder, bytes },
-                Err(error) => BackupToast::Failed(error),
+                Ok(bytes) => WorldToast::Created { folder, bytes },
+                Err(error) => WorldToast::Failed(error),
             };
             self.toast = Some((crate::toasts::Slide::default(), toast));
         }
@@ -540,6 +589,31 @@ impl Title {
                 "minecraft:ui.toast.out"
             }
         })
+    }
+    /// The world a finished backup made before its upgrade opens next.
+    pub fn take_open_request(&mut self) -> Option<String> {
+        self.open_request.take()
+    }
+    /// `WorldOpenFlows.openWorldCheckVersionCompatibility`: a world whose file
+    /// fixes are due asks for a backup first; any other opens at once.
+    fn play(&mut self, world: WorldEntry) -> Action {
+        // `WorldOpenFlows.createWorldAccess`: a world that can't be locked, as
+        // one another instance has open, stays closed behind
+        // `onWorldAccessFailure`.
+        if crate::save::SessionLock::acquire(&self.saves.join(&world.folder)).is_err() {
+            self.toast = Some((
+                crate::toasts::Slide::default(),
+                WorldToast::AccessFailure(world.folder),
+            ));
+            return Action::None;
+        }
+        if crate::save::needs_file_fixes(&self.saves.join(&world.folder)) {
+            self.mode = Mode::BackupBeforeUpgrade { world };
+            return Action::None;
+        }
+        Action::Play {
+            folder: world.folder,
+        }
     }
     fn start_backup(&mut self, world: WorldEntry) {
         let (send, receive) = mpsc::channel();
@@ -900,6 +974,61 @@ impl Title {
                 true,
                 39,
             )],
+            Mode::BackupBeforeUpgrade { .. } => {
+                // BackupConfirmScreen.init: the buttons sit under the text at fixed offsets.
+                let y = 109.0 + self.message_lines.get() as f32 * 9.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 155.0,
+                        y,
+                        150.0,
+                        &lang::get_or(
+                            "selectWorld.backupJoinConfirmButton",
+                            "Create Backup and Load",
+                        ),
+                        true,
+                        40,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 5.0,
+                        y,
+                        150.0,
+                        &lang::get_or("selectWorld.backupJoinSkipButton", "I Know What I'm Doing!"),
+                        true,
+                        41,
+                    ),
+                    b(
+                        (w / 2.0).floor() - 75.0,
+                        y + 24.0,
+                        150.0,
+                        &lang::get_or("gui.cancel", "Cancel"),
+                        true,
+                        42,
+                    ),
+                ]
+            }
+            Mode::MultiplayerWarning { .. } => {
+                let lines = self.message_lines.get();
+                let y = warning_top(h, lines) + 82.0 + lines as f32 * 9.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 154.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.proceed", "Proceed"),
+                        true,
+                        70,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 4.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.back", "Back"),
+                        true,
+                        71,
+                    ),
+                ]
+            }
             Mode::Backup { .. } => Vec::new(),
             Mode::Multiplayer(screen) => screen
                 .buttons(w, h)
@@ -1184,6 +1313,24 @@ impl Title {
                     centered(atlas, batch, line, top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
+            Mode::BackupBeforeUpgrade { .. } => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let question = lang::get_or(
+                    "selectWorld.backupQuestion.file_fixing_required",
+                    "Create a backup before upgrading this world?",
+                );
+                let warning = lang::get_or(
+                    "selectWorld.backupWarning.file_fixing_required",
+                    "This world needs to be upgraded before you can play it. We strongly suggest creating a backup before continuing in case you experience world corruption.",
+                );
+                let lines = wrapped(atlas, &warning, w - 50.0);
+                self.message_lines.set(lines.len());
+                // BackupConfirmScreen.extractRenderState: the title at 50, the text from 70.
+                centered(atlas, batch, &question, 50.0, u32::MAX);
+                for (i, line) in lines.iter().enumerate() {
+                    centered(atlas, batch, line, 70.0 + i as f32 * 9.0, u32::MAX);
+                }
+            }
             Mode::Backup { .. } => {
                 self.backup_shown.set(true);
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
@@ -1226,6 +1373,74 @@ impl Title {
                 for (i, line) in lines.iter().enumerate() {
                     centered(atlas, batch, line, top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
+            }
+            Mode::MultiplayerWarning { check } => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let message = lang::get_or(
+                    "multiplayerWarning.message",
+                    "Caution: Online play is offered by third-party servers that are not owned, operated, or supervised by Mojang Studios or Microsoft. During online play, you may be exposed to unmoderated chat messages or other types of user-generated content that may not be suitable for everyone.",
+                );
+                // The message sits in a text box `width - 100` wide with 4 px
+                // inside, left aligned (FittingMultiLineTextWidget).
+                let box_w = w - 100.0;
+                let lines = wrapped(atlas, &message, box_w - 8.0);
+                self.message_lines.set(lines.len());
+                let top = warning_top(h, lines.len());
+                let header = Text::translate("multiplayerWarning.header", &[]).bold();
+                batch.text_styled(
+                    atlas,
+                    &header,
+                    (w / 2.0).floor() - (atlas.font.width_text(&header) / 2.0).floor(),
+                    top,
+                    u32::MAX,
+                    true,
+                );
+                let box_x = ((w - box_w) / 2.0).floor();
+                let box_y = top + 29.0;
+                let box_h = lines.len() as f32 * 9.0 + 8.0;
+                crate::ui::nine_slice(
+                    batch,
+                    atlas,
+                    "gui/sprites/widget/text_field",
+                    box_x,
+                    box_y,
+                    box_w,
+                    box_h,
+                    u32::MAX,
+                );
+                for (i, line) in lines.iter().enumerate() {
+                    batch.text(
+                        atlas,
+                        line,
+                        box_x + 4.0,
+                        box_y + 4.0 + i as f32 * 9.0,
+                        u32::MAX,
+                        true,
+                    );
+                }
+                // Checkbox: the box, its label right of it (as the dialogs draw theirs).
+                let label =
+                    lang::get_or("multiplayerWarning.check", "Do not show this screen again");
+                let width = BOX + 4.0 + HudBatch::text_width(atlas, &label).ceil();
+                let x = (w / 2.0).floor() - (width / 2.0).floor();
+                let y = top + 57.0 + lines.len() as f32 * 9.0;
+                self.warning_check.set([x, y, width, BOX]);
+                let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
+                let sprite = match (*check, hover) {
+                    (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
+                    (true, false) => "gui/sprites/widget/checkbox_selected",
+                    (false, true) => "gui/sprites/widget/checkbox_highlighted",
+                    (false, false) => "gui/sprites/widget/checkbox",
+                };
+                batch.sprite_scaled(atlas, sprite, x, y, BOX, BOX, u32::MAX);
+                batch.text(
+                    atlas,
+                    &label,
+                    x + BOX + 4.0,
+                    y + 4.0,
+                    rgba(224, 224, 224, 255),
+                    true,
+                );
             }
             Mode::Multiplayer(screen) => screen.draw(
                 atlas,
@@ -1334,6 +1549,14 @@ impl Title {
             }
             return (Action::None, changed);
         }
+        // The SafetyScreen's box toggles where it was last drawn.
+        if let Mode::MultiplayerWarning { check } = &mut self.mode {
+            let [bx, by, bw, bh] = self.warning_check.get();
+            if (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y) {
+                *check = !*check;
+                return (Action::None, true);
+            }
+        }
         let hit = self
             .buttons(w, h)
             .into_iter()
@@ -1356,7 +1579,24 @@ impl Title {
             }
             (Mode::Main, Some(2)) => Action::Quit,
             (Mode::Main, Some(4)) => {
+                // TitleScreen.init: SafetyScreen first, unless it was turned off.
+                self.mode = if self.skip_multiplayer_warning {
+                    Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves))
+                } else {
+                    Mode::MultiplayerWarning { check: false }
+                };
+                Action::None
+            }
+            (Mode::MultiplayerWarning { check }, Some(70)) => {
+                // SafetyScreen Proceed: the box saves the choice.
+                if *check {
+                    self.skip_multiplayer_warning = true;
+                }
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves));
+                Action::None
+            }
+            (Mode::MultiplayerWarning { .. }, Some(71)) => {
+                self.mode = Mode::Main;
                 Action::None
             }
             (Mode::Multiplayer(_), hit) => match self.multiplayer_click(hit, x, y, (w, h)) {
@@ -1375,12 +1615,24 @@ impl Title {
             (Mode::Main, Some(7)) => Action::Accessibility,
             (Mode::Main, Some(6)) => Action::Language,
             (Mode::Select { worlds, selected }, Some(10)) => {
-                match selected.and_then(|i| worlds.get(i)) {
-                    Some(world) => Action::Play {
-                        folder: world.folder.clone(),
-                    },
+                match selected.and_then(|i| worlds.get(i)).cloned() {
+                    Some(world) => self.play(world),
                     None => Action::None,
                 }
+            }
+            (Mode::BackupBeforeUpgrade { world }, Some(40)) => {
+                let world = world.clone();
+                self.backup_then_open = true;
+                self.start_backup(world);
+                Action::None
+            }
+            (Mode::BackupBeforeUpgrade { world }, Some(41)) => Action::Play {
+                folder: world.folder.clone(),
+            },
+            (Mode::BackupBeforeUpgrade { world }, Some(42)) => {
+                let folder = world.folder.clone();
+                self.return_to_list(Some(&folder));
+                Action::None
             }
             (Mode::Select { .. }, Some(11)) => {
                 self.create_return_to_main = false;
@@ -1445,13 +1697,13 @@ impl Title {
                     .world_row_at(worlds, (x, y), (w, h))
                     .and_then(|(row, rel)| {
                         let (index, world) = self.visible_worlds(worlds).nth(row)?;
-                        Some((index, world.folder.clone(), rel))
+                        Some((index, world.clone(), rel))
                     });
-                if let Some((index, folder, (rx, ry))) = chosen {
+                if let Some((index, world, (rx, ry))) = chosen {
                     // WorldListEntry.mouseClicked: the icon joins at once.
                     let on_icon = (0.0..32.0).contains(&rx) && (0.0..32.0).contains(&ry);
                     if on_icon || *selected == Some(index) {
-                        return Action::Play { folder };
+                        return self.play(world);
                     }
                     if let Mode::Select { selected, .. } = &mut self.mode {
                         *selected = Some(index);
@@ -1780,7 +2032,9 @@ impl Title {
         }
         match &self.mode {
             Mode::Backup { .. } => {}
-            Mode::Edit { world, .. } | Mode::Delete { world } => {
+            Mode::Edit { world, .. }
+            | Mode::Delete { world }
+            | Mode::BackupBeforeUpgrade { world } => {
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
             }
@@ -1797,6 +2051,14 @@ impl Title {
             }
             Mode::Create { .. } => self.cancel_create(),
             _ => self.mode = Mode::Main,
+        }
+    }
+    /// `JoinMultiplayerScreen.keyPressed`: F5 refreshes the server list as
+    /// Refresh does (`refreshServerList`).
+    pub fn refresh_servers(&mut self) {
+        if let Mode::Multiplayer(screen @ crate::multiplayer::Screen::List { .. }) = &mut self.mode
+        {
+            *screen = crate::multiplayer::Screen::list(&self.saves);
         }
     }
 }

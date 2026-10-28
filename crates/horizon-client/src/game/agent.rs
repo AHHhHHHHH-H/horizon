@@ -564,7 +564,7 @@ impl Game<'_> {
                 "hardcore": options.hardcore,
                 "difficulty": horizon_client::title::DIFFICULTIES[options.difficulty()],
                 "allow_commands": options.commands(*creative),
-                "superflat": options.flat,
+                "world_type": options.world_type.id(),
                 "generate_structures": options.structures,
                 "bonus_chest": options.bonus_chest(),
             }),
@@ -577,7 +577,7 @@ impl Game<'_> {
             } => json!({
                 "mode": "customize-flat",
                 "fields": { "name": name, "seed": seed },
-                "superflat": options.flat,
+                "superflat": options.world_type == horizon_client::save::WorldPreset::Flat,
                 "biome": flat.settings().biome,
                 "layers": flat.settings().layers.iter().map(|layer| json!({
                     "block": layer.block,
@@ -597,6 +597,9 @@ impl Game<'_> {
             Mode::Delete { world } => {
                 json!({ "mode": "delete-world", "folder": world.folder, "name": world.name })
             }
+            Mode::BackupBeforeUpgrade { world } => {
+                json!({ "mode": "backup-before-upgrade", "folder": world.folder, "name": world.name })
+            }
             Mode::Error { message, .. } => {
                 json!({ "mode": "world-operation-error", "message": message })
             }
@@ -606,6 +609,9 @@ impl Game<'_> {
                 json!({ "mode": "multiplayer", "disconnected": reason })
             }
             Mode::Multiplayer(_) => json!({ "mode": "multiplayer" }),
+            Mode::MultiplayerWarning { check } => {
+                json!({ "mode": "multiplayer-warning", "check": check })
+            }
         }
     }
 

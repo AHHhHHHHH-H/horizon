@@ -32,6 +32,11 @@ fn attack_range_contains(range: &serde_json::Value, distance: f64, creative: boo
 impl Game<'_> {
     /// Opening a screen stops breaking before the next game tick (which may pause).
     pub(super) fn stop_mining(&mut self) {
+        if self.clicks.destroying.active {
+            let pos = self.clicks.destroying.pos;
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            self.tutorial_destroy(state, -1.0);
+        }
         let mut destroying = std::mem::take(&mut self.clicks.destroying);
         destroying.stop(&mut GameHands {
             game: self,
@@ -112,6 +117,12 @@ impl Game<'_> {
             progress: d.progress,
             ticks: d.ticks as u32,
         });
+        if let Some(mining) = &self.mining {
+            let pos = mining.pos;
+            let progress = mining.progress;
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            self.tutorial_destroy(state, progress);
+        }
         Ok(())
     }
     /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`.
@@ -500,8 +511,8 @@ impl HandWorld for GameHands<'_, '_> {
     fn attack_entity(&mut self) -> bool {
         self.game.attack()
     }
-    fn block_action_restricted(&mut self, _: [i32; 3]) -> bool {
-        !self.game.may_build()
+    fn block_action_restricted(&mut self, pos: [i32; 3]) -> bool {
+        self.game.block_action_restricted(pos)
     }
     fn within_border(&mut self, _: [i32; 3]) -> bool {
         true
@@ -527,6 +538,8 @@ impl HandWorld for GameHands<'_, '_> {
         {
             return false;
         }
+        let state = self.game.world.block(pos[0], pos[1], pos[2]);
+        self.game.tutorial_destroy(state, 1.0);
         let r = self.game.break_block(pos);
         self.keep(r);
         true

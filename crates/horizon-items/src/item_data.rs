@@ -18,8 +18,14 @@ pub struct StackData {
     pub repair_cost: u32,
     /// `minecraft:custom_name` as plain text.
     pub custom_name: Option<String>,
+    /// Original structured name, including inherited styles. The plain cache
+    /// stays available to search, commands and existing rename operations.
+    pub custom_name_component: Option<Tag>,
     /// `minecraft:potion_contents.potion`.
     pub potion: Option<Arc<str>>,
+    /// The rest of `minecraft:potion_contents` (`custom_color`, `custom_effects`,
+    /// `custom_name`), kept as saved.
+    pub potion_extra: Vec<(String, Tag)>,
     /// `minecraft:trim`: (material, pattern).
     pub trim: Option<(Arc<str>, Arc<str>)>,
     /// `minecraft:container` (shulker boxes): the non-empty slots.
@@ -61,6 +67,24 @@ pub struct StackData {
     /// Components Horizon does not model (lore, custom data, item name,
     /// max stack size...), kept as their saved values in key order.
     pub other: Vec<(String, Tag)>,
+    /// What the server sent for this stack, for sending it back unchanged.
+    pub wire: Wire,
+}
+/// The component patch a server sent for a stack, as the creative slot packet
+/// writes it, and the stack Horizon decoded from it, to tell whether anything
+/// changed since. Like vanilla's `BundleContents.selectedItem` it is left out
+/// when stacks are compared.
+#[derive(Clone, Debug, Default)]
+pub struct Wire(Option<Arc<(ItemStack, Arc<[u8]>)>>);
+impl Wire {
+    pub fn new(decoded: ItemStack, patch: Arc<[u8]>) -> Self {
+        Self(Some(Arc::new((decoded, patch))))
+    }
+}
+impl PartialEq for Wire {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 /// A bundle's selected item index (-1: none). Like vanilla's
 /// `BundleContents.equals` it is left out when stacks are compared.
@@ -102,6 +126,10 @@ const MODELLED: &[&str] = &[
     "minecraft:written_book_content",
 ];
 impl StackData {
+    fn name_component(&self) -> Option<&Tag> {
+        let tag = self.custom_name_component.as_ref()?;
+        (read_text(tag).as_deref() == self.custom_name.as_deref()).then_some(tag)
+    }
     /// An unmodelled component's saved value.
     pub fn other(&self, id: &str) -> Option<&Tag> {
         self.other.iter().find(|(k, _)| k == id).map(|(_, v)| v)
@@ -114,6 +142,24 @@ impl StackData {
             self.custom_name = read_text(&tag);
         } else {
             self.set_other(id, Some(tag));
+        }
+    }
+    /// `SetComponentsFunction`: one component of a loot patch, in its JSON
+    /// form. Trim is modelled, a custom name is text, the rest are kept as
+    /// saved. A null value removes the component.
+    pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
+        let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
+        match id {
+            "minecraft:trim" => {
+                self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
+                    (Some(material), Some(pattern)) => {
+                        Some((Arc::from(material), Arc::from(pattern)))
+                    }
+                    _ => None,
+                };
+            }
+            "minecraft:custom_name" => self.custom_name = tag.as_ref().and_then(read_text),
+            _ => self.set_other(id, tag),
         }
     }
     /// Set (or with None remove) an unmodelled component.
@@ -159,7 +205,7 @@ pub struct WrittenBook {
 }
 impl StackData {
     pub fn is_empty(&self) -> bool {
-        *self == Self::default()
+        self.wire.0.is_none() && *self == Self::default()
     }
 }
 
@@ -175,11 +221,27 @@ impl ItemStack {
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
     }
+    /// The patch the server sent for this stack, while the stack is still what
+    /// it decoded to (its count aside); None once anything else changed.
+    pub fn wire_patch(&self) -> Option<Arc<[u8]>> {
+        let (decoded, patch) = &**self.data()?.wire.0.as_ref()?;
+        let none = StackData::default();
+        (decoded.item == self.item
+            && decoded.damage == self.damage
+            && decoded.data().unwrap_or(&none) == self.data().unwrap_or(&none))
+        .then(|| patch.clone())
+    }
     pub fn data_mut(&mut self) -> &mut StackData {
         self.extra.get_or_insert_with(Box::default)
     }
     /// Drops an all-default component box so equal stacks compare equal.
     pub fn tidy(&mut self) {
+        if let Some(data) = self.extra.as_mut()
+            && data.custom_name_component.is_some()
+            && data.name_component().is_none()
+        {
+            data.custom_name_component = None;
+        }
         if self.extra.as_ref().is_some_and(|d| d.is_empty()) {
             self.extra = None;
         }
@@ -254,8 +316,49 @@ impl ItemStack {
         let name = self.data()?.other("minecraft:item_name")?;
         Some(horizon_client_core::component::name_text(name).plain())
     }
+    /// Ignore a cached component after an existing rename operation changes
+    /// the plain name. Never save or display the old name in its place.
+    pub fn custom_name_component(&self) -> Option<&Tag> {
+        self.data()?.name_component()
+    }
     pub fn potion(&self) -> Option<&str> {
         self.data().and_then(|d| d.potion.as_deref())
+    }
+    /// `PotionContents.customEffects` as saved: (id, duration, amplifier). Both
+    /// default to 0 like `MobEffectInstance.CODEC`.
+    pub fn custom_potion_effects(&self) -> Vec<(String, i32, i32)> {
+        let Some((_, Tag::List(list))) = self
+            .data()
+            .and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_effects"))
+        else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(|e| {
+                Some((
+                    string(e.get("id")?)?,
+                    e.get("duration").and_then(int).unwrap_or(0) as i32,
+                    e.get("amplifier").and_then(int).unwrap_or(0).clamp(0, 255) as i32,
+                ))
+            })
+            .collect()
+    }
+    /// `DataComponents.POTION_DURATION_SCALE` with the item's default: 0.125
+    /// for a tipped arrow, 0.25 for a lingering potion, else 1.
+    pub fn potion_duration_scale(&self) -> f32 {
+        match self
+            .data()
+            .and_then(|d| d.other("minecraft:potion_duration_scale"))
+        {
+            Some(Tag::Float(bits)) => f32::from_bits(*bits),
+            Some(Tag::Double(bits)) => f64::from_bits(*bits) as f32,
+            Some(t) if int(t).is_some() => int(t).unwrap_or(1) as f32,
+            _ => match &*self.item {
+                "minecraft:tipped_arrow" => 0.125,
+                "minecraft:lingering_potion" => 0.25,
+                _ => 1.0,
+            },
+        }
     }
     pub fn with_potion(mut self, potion: &str) -> Self {
         self.data_mut().potion = Some(Arc::from(potion));
@@ -545,12 +648,22 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
             entries.push(("minecraft:repair_cost", Tag::Int(d.repair_cost as i32)));
         }
         if let Some(name) = &d.custom_name {
-            entries.push(("minecraft:custom_name", Tag::String(name.as_str().into())));
+            entries.push((
+                "minecraft:custom_name",
+                d.name_component()
+                    .cloned()
+                    .unwrap_or_else(|| Tag::String(name.as_str().into())),
+            ));
         }
-        if let Some(potion) = &d.potion {
+        if d.potion.is_some() || !d.potion_extra.is_empty() {
+            let potion = d
+                .potion
+                .as_ref()
+                .map(|p| ("potion", Tag::String((&**p).into())));
+            let extra = d.potion_extra.iter().map(|(k, v)| (k.as_str(), v.clone()));
             entries.push((
                 "minecraft:potion_contents",
-                Tag::compound([("potion", Tag::String((&**potion).into()))]),
+                Tag::compound(potion.into_iter().chain(extra)),
             ));
         }
         if let Some((material, pattern)) = &d.trim {
@@ -743,6 +856,14 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .map(|s| Arc::from(s.as_str())),
         None => None,
     };
+    let potion_extra = match c.get("minecraft:potion_contents") {
+        Some(Tag::Compound(map)) => map
+            .iter()
+            .filter(|(k, _)| k.to_string_lossy() != "potion")
+            .map(|(k, v)| (k.to_string_lossy(), v.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
     let data = StackData {
         enchantments: read_levels(c.get("minecraft:enchantments")),
         stored_enchantments: read_levels(c.get("minecraft:stored_enchantments")),
@@ -752,7 +873,12 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .unwrap_or(0)
             .max(0) as u32,
         custom_name: c.get("minecraft:custom_name").and_then(read_text),
+        custom_name_component: c
+            .get("minecraft:custom_name")
+            .filter(|tag| matches!(tag, Tag::Compound(_) | Tag::List(_)))
+            .cloned(),
         potion,
+        potion_extra,
         map_id: c.get("minecraft:map_id").and_then(int).map(|v| v as i32),
         banner_patterns: crate::banner_layer::layers_from_nbt(c.get("minecraft:banner_patterns")),
         base_color: c
@@ -872,6 +998,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
         }),
         bundle_selected: BundleSelected::default(),
         other: Vec::new(),
+        wire: Wire::default(),
     };
     let mut data = data;
     if let Tag::Compound(map) = c {
@@ -1008,6 +1135,46 @@ mod tests {
             pages,
             Some(vec!["Please read the rules".to_owned(), "Two".to_owned()])
         );
+    }
+
+    #[test]
+    fn structured_custom_names_round_trip_but_do_not_override_a_rename() {
+        let original = Tag::compound([
+            ("text", Tag::String("Queue".into())),
+            ("bold", Tag::Byte(1)),
+            ("italic", Tag::Byte(0)),
+            ("font", Tag::String("minecraft:alt".into())),
+        ]);
+        let components = Tag::compound([("minecraft:custom_name", original.clone())]);
+        let (_, extra) = decode_components(Some(&components));
+        let mut stack = ItemStack {
+            extra,
+            ..ItemStack::new("minecraft:stick", 1)
+        };
+        assert_eq!(stack.custom_name(), Some("Queue"));
+        assert_eq!(
+            encode_components(&stack)
+                .unwrap()
+                .get("minecraft:custom_name"),
+            Some(&original)
+        );
+        let text =
+            horizon_client_core::component::name_text(stack.custom_name_component().unwrap());
+        assert!(text.spans[0].style.is_bold());
+        assert!(!text.spans[0].style.is_italic());
+        assert_eq!(text.spans[0].style.font.as_deref(), Some("minecraft:alt"));
+        stack.data_mut().custom_name = Some("Renamed".into());
+        assert!(stack.custom_name_component().is_none());
+        assert_eq!(
+            encode_components(&stack)
+                .unwrap()
+                .get("minecraft:custom_name"),
+            Some(&Tag::String("Renamed".into()))
+        );
+        stack.data_mut().custom_name = None;
+        assert!(stack.custom_name_component().is_none());
+        stack.tidy();
+        assert!(stack.same_item_same_components(&ItemStack::new("minecraft:stick", 1)));
     }
 
     #[test]
