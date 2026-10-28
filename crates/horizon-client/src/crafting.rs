@@ -1175,11 +1175,16 @@ fn matches_all(ingredients: &[Ingredient], stacks: &[&ItemStack]) -> bool {
         augment(i, ingredients, stacks, &mut owner, &mut seen)
     })
 }
+/// Recipe files are independent reads: use the loader's budget, leaving the
+/// caller its own core, and no more than eight workers.
+fn recipe_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get().saturating_sub(1))
+        .clamp(1, 8)
+}
+
 impl Recipes {
     pub fn load(root: &Path, items: &Items) -> Result<Self> {
-        let mut crafting = Vec::new();
-        let mut cooking = Vec::new();
-        let mut meta = HashMap::new();
         let json_files = |dir: &Path| -> Result<Vec<PathBuf>> {
             let mut files: Vec<_> = fs::read_dir(dir)?
                 .flatten()
@@ -1204,15 +1209,120 @@ impl Recipes {
                 );
             }
         }
-        for (prefix, path) in files {
+        let (crafting, cooking, meta) = Self::load_files(&files, items, recipe_threads())?;
+        let facts = items
+            .items
+            .iter()
+            .map(|(id, info)| {
+                (
+                    id.clone(),
+                    Facts {
+                        dye: info.dye.as_deref().and_then(|d| {
+                            crate::block_entity_render::DYES
+                                .iter()
+                                .position(|(name, _)| *name == d)
+                        }),
+                        max_damage: info.max_damage,
+                        max_stack: info.max_stack,
+                        remainder: info.crafting_remainder.as_deref().map(Arc::from),
+                    },
+                )
+            })
+            .collect();
+        let curses = crate::items::load_tags(root, "enchantment")?
+            .remove("minecraft:curse")
+            .unwrap_or_default();
+        Ok(Self {
+            crafting,
+            cooking,
+            meta,
+            facts,
+            curses,
+            cook_index: Default::default(),
+        })
+    }
+    /// Parse a sorted file list in `threads` contiguous ranges. Ranges are
+    /// concatenated in file order, so the parallel result equals the serial one.
+    fn load_files(
+        files: &[(String, PathBuf)],
+        items: &Items,
+        threads: usize,
+    ) -> std::result::Result<
+        (
+            Vec<(String, Recipe)>,
+            Vec<Cooking>,
+            HashMap<String, (String, String)>,
+        ),
+        String,
+    > {
+        let threads = threads.clamp(1, files.len().max(1));
+        if threads == 1 {
+            let mut warnings = Vec::new();
+            let out = Self::load_range(files, items, 0..files.len(), &mut warnings)?;
+            for (name, error) in warnings {
+                log::warn!("Horizon: recipe {name} not loaded: {error}");
+            }
+            return Ok(out);
+        }
+        let chunk = files.len().div_ceil(threads);
+        let parts = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|index| {
+                    let range =
+                        (index * chunk).min(files.len())..((index + 1) * chunk).min(files.len());
+                    scope.spawn(move || {
+                        let mut warnings = Vec::new();
+                        let result = Self::load_range(files, items, range, &mut warnings);
+                        (result, warnings)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut crafting = Vec::new();
+        let mut cooking = Vec::new();
+        let mut meta = HashMap::new();
+        for (part, warnings) in parts {
+            for (name, error) in warnings {
+                log::warn!("Horizon: recipe {name} not loaded: {error}");
+            }
+            let (part_crafting, part_cooking, part_meta) = part?;
+            crafting.extend(part_crafting);
+            cooking.extend(part_cooking);
+            meta.extend(part_meta);
+        }
+        Ok((crafting, cooking, meta))
+    }
+
+    fn load_range(
+        files: &[(String, PathBuf)],
+        items: &Items,
+        range: std::ops::Range<usize>,
+        warnings: &mut Vec<(String, serde_json::Error)>,
+    ) -> std::result::Result<
+        (
+            Vec<(String, Recipe)>,
+            Vec<Cooking>,
+            HashMap<String, (String, String)>,
+        ),
+        String,
+    > {
+        let mut crafting = Vec::new();
+        let mut cooking = Vec::new();
+        let mut meta = HashMap::new();
+        for (prefix, path) in &files[range] {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let name = format!("{prefix}{stem}");
             // Vanilla's RecipeManager logs a file that does not parse and
             // goes on ("Couldn't parse data file").
-            let v: Value = match serde_json::from_slice(&fs::read(&path)?) {
+            let bytes = fs::read(path).map_err(|e| e.to_string())?;
+            let v: Value = match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => {
-                    log::warn!("Horizon: recipe {name} not loaded: {e}");
+                    warnings.push((name, e));
                     continue;
                 }
             };
@@ -1397,37 +1507,9 @@ impl Recipes {
                 crafting.push((name, recipe));
             }
         }
-        let facts = items
-            .items
-            .iter()
-            .map(|(id, info)| {
-                (
-                    id.clone(),
-                    Facts {
-                        dye: info.dye.as_deref().and_then(|d| {
-                            crate::block_entity_render::DYES
-                                .iter()
-                                .position(|(name, _)| *name == d)
-                        }),
-                        max_damage: info.max_damage,
-                        max_stack: info.max_stack,
-                        remainder: info.crafting_remainder.as_deref().map(Arc::from),
-                    },
-                )
-            })
-            .collect();
-        let curses = crate::items::load_tags(root, "enchantment")?
-            .remove("minecraft:curse")
-            .unwrap_or_default();
-        Ok(Self {
-            crafting,
-            cooking,
-            meta,
-            facts,
-            curses,
-            cook_index: Default::default(),
-        })
+        Ok((crafting, cooking, meta))
     }
+
     /// Match a `size`x`size` grid (row-major) against the crafting recipes.
     pub fn craft(&self, grid: &[Option<ItemStack>], size: usize) -> Option<ItemStack> {
         self.find(grid, size).map(|(_, result)| result)
@@ -1798,5 +1880,57 @@ mod tests {
     fn dyes_blend_like_dyed_item_color() {
         // One red dye on an undyed item gives the dye's own colour.
         assert_eq!(apply_dyes(None, &[14]), 0xB02E26);
+    }
+
+    #[test]
+    fn parallel_recipe_load_matches_serial_in_file_order() {
+        let dir = std::env::temp_dir().join(format!("horizon-recipes-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let recipes = dir.join("data/minecraft/recipe");
+        std::fs::create_dir_all(&recipes).unwrap();
+        std::fs::create_dir_all(dir.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(dir.join("items.json"), "{}").unwrap();
+        let mut files = Vec::new();
+        for i in 0..25 {
+            let path = recipes.join(format!("{i:03}.json"));
+            let text = if i % 5 == 0 {
+                format!(
+                    r#"{{"type":"minecraft:smelting","ingredient":"minecraft:item_{i}","result":{{"id":"minecraft:out_{i}"}},"cookingtime":200}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:item_{i}"],"result":{{"id":"minecraft:out_{i}"}},"category":"misc","group":"g{i}"}}"#
+                )
+            };
+            std::fs::write(&path, text).unwrap();
+            files.push((String::new(), path));
+        }
+        // A file that does not parse is skipped in both, at its place in order.
+        let bad = recipes.join("zm-bad.json");
+        std::fs::write(&bad, "{").unwrap();
+        files.push((String::new(), bad));
+        let items = Items::catalog(&dir).unwrap();
+        let serial = Recipes::load_files(&files, &items, 1).unwrap();
+        let parallel = Recipes::load_files(&files, &items, 4).unwrap();
+        let expected: Vec<String> = (0..25)
+            .filter(|i| i % 5 != 0)
+            .map(|i| format!("{i:03}"))
+            .collect();
+        assert_eq!(
+            serial
+                .0
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(format!("{:?}", serial.0), format!("{:?}", parallel.0));
+        assert_eq!(format!("{:?}", serial.1), format!("{:?}", parallel.1));
+        let mut serial_meta: Vec<_> = serial.2.iter().collect();
+        let mut parallel_meta: Vec<_> = parallel.2.iter().collect();
+        serial_meta.sort();
+        parallel_meta.sort();
+        assert_eq!(serial_meta, parallel_meta);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
