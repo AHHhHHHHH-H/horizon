@@ -1406,7 +1406,10 @@ impl Hub {
             })
             .collect();
         self.encoder.warm(&columns);
-        let mut bodies = crate::lan::chunks::bodies(&self.encoder, &columns, world);
+        let mut bodies: Vec<Vec<u8>> = columns
+            .iter()
+            .map(|c| self.encoder.body_in(c, world))
+            .collect();
         for (i, taken, batch) in batches {
             let g = &mut self.guests[i];
             let size = batch.len();
