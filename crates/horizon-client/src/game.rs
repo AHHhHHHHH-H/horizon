@@ -14633,12 +14633,16 @@ fn load_world_rest(
     let lane_c = || -> std::result::Result<_, String> {
         let mob_data = horizon_client::mobs::MobData::load(root, facts);
         horizon_client::mobs::trial_spawner::load_registry(root);
-        let music = visuals
-            .then(|| horizon_client::music::MusicTables::load(root))
-            .unwrap_or_default();
-        let ambient = visuals
-            .then(|| horizon_client::ambience::AmbientTables::load(root))
-            .unwrap_or_default();
+        let music = if visuals {
+            horizon_client::music::MusicTables::load(root)
+        } else {
+            Default::default()
+        };
+        let ambient = if visuals {
+            horizon_client::ambience::AmbientTables::load(root)
+        } else {
+            Default::default()
+        };
         let nether_environment =
             Environment::load_dimension(root, "the_nether", false).map_err(|e| e.to_string())?;
         let end_environment =
