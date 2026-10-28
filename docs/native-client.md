@@ -48,8 +48,13 @@ Development builds that link quickly: `cargo build --profile fast -p horizon-cli
 | `--world NAME` | World folder under `saves/` (default "New World"); reopened if it exists |
 | `--seed N` | Seed for a new world (numbers or text, like vanilla) |
 | `--creative` | Creative mode (instant breaking, pick block) |
-| `--render-distance N` | Chunks, 2..64 (default 12) |
+| `--render-distance N` | Chunks, 2..128 (default 12) |
 | `--resources PATH` | Prepared resource directory |
+
+Single player uses the integrated server thread by default. **Deprecated:** `--in-frame`,
+`--no-server-thread` and `HORIZON_SERVER_THREAD=0`. These overrides still work and emit a startup
+warning; no removal release is scheduled. Remove the flags and unset the environment variable to use
+the default. See [server levels](server-levels.md) for the migration details.
 
 | Control | Action |
 | --- | --- |

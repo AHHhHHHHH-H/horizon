@@ -8,7 +8,7 @@
 //! HLSL with its options at their defaults, minimums and maximums.
 use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
-use crate::stages::{Composed, StageKind, compose};
+use crate::stages::{Composed, Source, StageKind, compose_source};
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use std::collections::HashSet;
 use std::fmt;
@@ -52,7 +52,7 @@ fn problem(file: &str, message: impl Into<String>) -> Problem {
 }
 
 /// One stage that passed, ready for the renderer.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CheckedStage {
     pub kind: StageKind,
     pub file: String,
@@ -123,19 +123,42 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
 
 /// Builds and checks one stage of `pack` from its file.
 pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedStage, Vec<Problem>> {
+    let shared: Vec<(&str, &str)> = pack
+        .manifest
+        .shared
+        .iter()
+        .filter(|s| *s != file)
+        .map(|s| (s.as_str(), pack.source(s).unwrap_or_default()))
+        .collect();
+    let source = Source {
+        kind,
+        prelude: kind.prelude(),
+        shared: &shared,
+        file,
+        text: pack.source(file).unwrap_or_default(),
+    };
+    check_source(&source, &pack.manifest.options, MAX_EXPRESSIONS)
+}
+
+/// Builds and checks the stage `source`, with the pack's `options` and at most
+/// `max_expressions` naga expressions.
+pub(crate) fn check_source(
+    source: &Source,
+    options: &[PackOption],
+    max_expressions: usize,
+) -> Result<CheckedStage, Vec<Problem>> {
+    let (kind, file) = (source.kind, source.file);
     // First without the entry points, so a missing or mistyped stage function
     // is reported as such rather than as a call that doesn't resolve.
-    let mut own = compose(pack, kind, file);
-    let entries = own.parts.pop().expect("entries are the last part");
-    own.text.truncate(entries.1.start);
+    let own = compose_source(source, false);
     let module = parse(&own)?;
     let mut problems = signature(&module, kind, file);
-    problems.extend(api_rules(&module, kind, &own));
-    problems.extend(options(&module, &pack.manifest.options, file));
+    problems.extend(api_rules(&module, &source.prelude, &own));
+    problems.extend(self::options(&module, options, file));
     if !problems.is_empty() {
         return Err(problems);
     }
-    let composed = compose(pack, kind, file);
+    let composed = compose_source(source, true);
     let module = parse(&composed)?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::default())
         .validate(&module)
@@ -151,10 +174,10 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         })?;
     let (expressions, texture_reads) = cost(&module);
     let mut problems = Vec::new();
-    if expressions > MAX_EXPRESSIONS {
+    if expressions > max_expressions {
         problems.push(problem(
             file,
-            format!("{expressions} expressions; a stage may hold {MAX_EXPRESSIONS}"),
+            format!("{expressions} expressions; a stage may hold {max_expressions}"),
         ));
     }
     if texture_reads > MAX_TEXTURE_READS {
@@ -163,7 +186,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
             format!("{texture_reads} texture reads; a stage may write {MAX_TEXTURE_READS}"),
         ));
     }
-    problems.extend(translate(&module, &info, &pack.manifest.options, file));
+    problems.extend(translate(&module, &info, options, file));
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -279,8 +302,8 @@ fn names(module: &naga::Module) -> HashSet<String> {
 
 /// A pack's files declare no bindings, no entry points and no `horizon_`
 /// names: what the prelude doesn't define is the pack's.
-fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Problem> {
-    let prelude = naga::front::wgsl::parse_str(&kind.prelude()).expect("the prelude parses");
+fn api_rules(module: &naga::Module, prelude: &str, own: &Composed) -> Vec<Problem> {
+    let prelude = naga::front::wgsl::parse_str(prelude).expect("the prelude parses");
     let ours = names(&prelude);
     let file = &own.parts[own.parts.len() - 1].0;
     let mut problems = Vec::new();

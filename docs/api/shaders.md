@@ -77,6 +77,14 @@ value). The pack holds only the manifest, the `.wgsl` files it names (each used,
 `README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.hshader` is built
 the same way every time (files in path order, fixed dates), so a pack's SHA-256 depends only on its files.
 
+## Shaders from a mod
+
+A Horizon mod with capability `render` may ship post passes of its own ([mods.md](../mods.md#shaders-from-a-mod)):
+`assets/<id>/shaders/<name>.wgsl` in its `.hmod`, the same post stage as a pack's (`fn post(input: PostInput) ->
+vec4<f32>`, the same prelude, inputs and helpers), plus `params`, a uniform of up to 16 `f32`s the mod names when it
+registers the shader and sets every frame. `horizon_shader_api::mods::check` builds and checks it as a pack's stage
+is, with tighter limits: 64 KiB of WGSL, 4,000 naga expressions, no options, and 250 ms to check.
+
 ## Guide, reference and examples
 
 - [shaders-reference.md](shaders-reference.md): every stage's signature, input and output structs, resources and
@@ -95,6 +103,8 @@ Option values other than the defaults (the three stages run, with hot reload), t
 stages.
 
 ## Changelog
+
+- 2026-10-27: mods' post passes (`horizon_shader_api::mods`): the post stage with a mod's `params`.
 
 - 2026-10-26: the material stage in the game: terrain's surfaces through the pack's `material`.
 - 2026-10-26: the sky stage in the game: the pack's `sky` gets vanilla's colour along each ray.

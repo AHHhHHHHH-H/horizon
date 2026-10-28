@@ -72,6 +72,9 @@ pub fn loot_item_with_components(s: &horizon_world::loot::LootStack) -> ItemStac
     for (id, text) in &s.names {
         item.data_mut().set_loot_name(id, text);
     }
+    for (id, value) in &s.components {
+        item.data_mut().set_loot_component(id, value);
+    }
     item
 }
 
@@ -291,6 +294,7 @@ mod tests {
                 ominous_amplifier: None,
                 stew_effects: Vec::new(),
                 names: Vec::new(),
+                components: Vec::new(),
             };
         // An End city chest's enchant_with_levels roll.
         let boots = loot_item_with_components(&stack(
@@ -354,6 +358,7 @@ mod tests {
             ominous_amplifier: None,
             stew_effects: Vec::new(),
             names: Vec::new(),
+            components: Vec::new(),
         };
         let mut item = loot_item(&stack);
         assert!(has_pending_map(&item));
@@ -430,5 +435,32 @@ mod tests {
             panic!("a banner block makes a banner block entity");
         };
         assert!(bare.layers.is_empty());
+    }
+
+    #[test]
+    fn a_generated_bee_nest_keeps_its_bees() {
+        // BeehiveDecorator's bees reach the block entity (from #2542 by FusselTV).
+        let bee = |ticks: i32| {
+            Tag::compound([
+                (
+                    "entity_data",
+                    Tag::compound([("id", Tag::String("minecraft:bee".into()))]),
+                ),
+                ("ticks_in_hive", Tag::Int(ticks)),
+                ("min_ticks_in_hive", Tag::Int(600)),
+            ])
+        };
+        let Tag::Compound(nbt) = Tag::compound([
+            ("id", Tag::String("minecraft:beehive".into())),
+            ("bees", Tag::List(vec![bee(12), bee(345)])),
+        ]) else {
+            unreachable!()
+        };
+        let Some(BlockEntity::Beehive(hive)) = generated_block_entity("minecraft:bee_nest", &nbt)
+        else {
+            panic!("a bee nest makes a beehive block entity");
+        };
+        let ticks: Vec<i32> = hive.bees.iter().map(|b| b.ticks_in_hive).collect();
+        assert_eq!(ticks, [12, 345]);
     }
 }

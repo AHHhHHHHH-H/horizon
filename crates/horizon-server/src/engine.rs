@@ -154,7 +154,12 @@ pub fn resources(config: &Config, dir: &Path, program: Option<&Path>) -> Result<
 
 /// Starts the engine in the server folder, with its console and log piped to the supervisor and its status
 /// on the control endpoint.
-pub fn spawn(program: &Path, resources: &Path, dir: &Path) -> std::io::Result<Child> {
+pub fn spawn(
+    program: &Path,
+    resources: &Path,
+    dir: &Path,
+    mods: &crate::config::Mods,
+) -> std::io::Result<Child> {
     // The game runs in the server folder, so a folder given relative to ours (`--dir srv`) would put its
     // control endpoint in `srv/srv/.horizon`, which doesn't exist.
     let dir = std::path::absolute(dir)?;
@@ -168,6 +173,8 @@ pub fn spawn(program: &Path, resources: &Path, dir: &Path) -> std::io::Result<Ch
         .args(["--dedicated", "--nogui"])
         .current_dir(&dir)
         .env("HORIZON_NO_AUDIO", "1")
+        // An environment variable, not a flag, so a game from before it still starts.
+        .env(crate::config::Mods::ENV, mods.storage_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -322,6 +329,7 @@ mod tests {
                 &std::path::absolute(&game).unwrap(),
                 &root.join("res"),
                 &server,
+                &Default::default(),
             ) {
                 Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
                     tries += 1;
