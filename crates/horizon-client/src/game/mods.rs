@@ -304,7 +304,9 @@ impl Game<'_> {
             .collect();
         let enabled = &self.settings.mods.enabled;
         let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
-        let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
+        // A dedicated server's owner sets it in server.toml (`[mods]`).
+        let quota = horizon_mods::StorageQuota::from_env();
+        let mods = Mods::load_for(self.mod_runs(), quota, &paths, on, vanilla_command);
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
