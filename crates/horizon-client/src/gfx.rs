@@ -574,6 +574,9 @@ pub struct Renderer {
     pub screenshot: Option<PathBuf>,
     /// Outcome of the last screenshot: frame size, or the error.
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
+    /// Write the next frame's centre square as the world's 64x64 `icon.png`
+    /// (GameRenderer.takeAutoScreenshot).
+    pub world_icon: Option<PathBuf>,
     /// Brightness option (lightmap gamma), 0..1.
     pub gamma: f32,
     /// Optional full-light lightmap (Horizon Extras).
@@ -2669,6 +2672,7 @@ impl Renderer {
             started: Instant::now(),
             screenshot: None,
             screenshot_result: None,
+            world_icon: None,
             gamma: 0.5,
             fullbright: false,
             animated_textures: true,
@@ -5113,6 +5117,18 @@ impl Renderer {
                 pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
             }
         }
+        // GameRenderer.tryTakeScreenshotIfNeeded runs after the level (hand and
+        // screen effects included) and before the entity outline and the post
+        // chain: the icon is the plain scene, with no GUI either.
+        let eight_bit = self.config.format.block_copy_size(None) == Some(4);
+        let icon = self.world_icon.take().and_then(|path| {
+            if eight_bit {
+                Some((path, self.copy_frame(&mut encoder, &target_texture)))
+            } else {
+                log::warn!("Couldn't save auto screenshot: no 32-bit surface format");
+                None
+            }
+        });
         // GameRenderer.render3dHud: the debug crosshair after the hand and
         // the screen effects.
         if crosshair > 0 {
@@ -5192,7 +5208,7 @@ impl Renderer {
         let readback = self.screenshot.take().and_then(|path| {
             // The copy and PNG writer both assume 8-bit pixels; a float surface would make
             // the row stride too small for the copy and abort in validation.
-            if self.config.format.block_copy_size(None) == Some(4) {
+            if eight_bit {
                 Some((path, self.copy_frame(&mut encoder, &target_texture)))
             } else {
                 self.screenshot_result = Some(Err(format!(
@@ -5232,6 +5248,11 @@ impl Renderer {
                 self.write_screenshot(&path, &buffer)
                     .map_err(|e| e.to_string()),
             );
+        }
+        if let Some((path, buffer)) = icon
+            && let Err(e) = self.write_world_icon(&path, &buffer)
+        {
+            log::warn!("Couldn't save auto screenshot: {e}");
         }
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
@@ -5313,6 +5334,16 @@ impl Renderer {
         buffer
     }
     fn write_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<[u32; 2]> {
+        let (width, height, pixels) = self.read_frame(buffer)?;
+        write_png(path, width, height, &pixels)?;
+        Ok([width, height])
+    }
+    /// GameRenderer.takeAutoScreenshot: the centre square, scaled to 64x64.
+    fn write_world_icon(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
+        let (width, height, pixels) = self.read_frame(buffer)?;
+        write_png(path, 64, 64, &world_icon_pixels(&pixels, width, height))
+    }
+    fn read_frame(&self, buffer: &wgpu::Buffer) -> Result<(u32, u32, Vec<u8>)> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
             return Err("this surface does not support frame readback".into());
         }
@@ -5350,16 +5381,50 @@ impl Renderer {
             }
         }
         buffer.unmap();
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(path)?),
-            width,
-            height,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.write_header()?.write_image_data(&pixels)?;
-        Ok([width, height])
+        Ok((width, height, pixels))
     }
+}
+fn write_png(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> {
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(std::fs::File::create(path)?),
+        width,
+        height,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header()?.write_image_data(pixels)?;
+    Ok(())
+}
+/// `NativeImage.resizeSubRectTo` from the screen's centre to 64x64. Vanilla
+/// resamples with STB; this averages each destination texel's source block,
+/// which differs by a texel where a block does not divide evenly.
+fn world_icon_pixels(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let side = width.min(height) as usize;
+    if side == 0 {
+        return vec![0; 64 * 64 * 4];
+    }
+    let (left, top) = ((width as usize - side) / 2, (height as usize - side) / 2);
+    let mut out = Vec::with_capacity(64 * 64 * 4);
+    for y in 0..64 {
+        let y0 = y * side / 64;
+        let y1 = ((y + 1) * side).div_ceil(64).max(y0 + 1).min(side);
+        for x in 0..64 {
+            let x0 = x * side / 64;
+            let x1 = ((x + 1) * side).div_ceil(64).max(x0 + 1).min(side);
+            let mut sum = [0u32; 4];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = ((top + sy) * width as usize + left + sx) * 4;
+                    for c in 0..4 {
+                        sum[c] += u32::from(pixels[i + c]);
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            out.extend(sum.map(|c| (c / n) as u8));
+        }
+    }
+    out
 }
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
@@ -5452,6 +5517,32 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_icon_crops_the_centre_and_scales_to_64() {
+        use super::world_icon_pixels;
+        // 128x64, red left half and blue right half: the centre square is
+        // 64x64 at x=32, so it keeps half of each colour.
+        let mut pixels = Vec::with_capacity(128 * 64 * 4);
+        for _ in 0..128 * 64 {
+            pixels.extend_from_slice(&[255, 0, 0, 255]);
+        }
+        for y in 0..64 {
+            for x in 64..128 {
+                let i = (y * 128 + x) * 4;
+                pixels[i..i + 4].copy_from_slice(&[0, 0, 255, 255]);
+            }
+        }
+        let icon = world_icon_pixels(&pixels, 128, 64);
+        assert_eq!(icon.len(), 64 * 64 * 4);
+        assert_eq!(&icon[..4], [255, 0, 0, 255]);
+        let last = (63 * 64 + 63) * 4;
+        assert_eq!(&icon[last..last + 4], [0, 0, 255, 255]);
+        // A source smaller than the icon repeats its texels rather than
+        // indexing past them.
+        let tiny = world_icon_pixels(&[1, 2, 3, 255], 1, 1);
+        assert!(tiny.as_chunks::<4>().0.iter().all(|p| p == &[1, 2, 3, 255]));
+    }
+
     #[test]
     fn surface_is_8_bit_and_not_srgb() {
         use super::surface_format;
