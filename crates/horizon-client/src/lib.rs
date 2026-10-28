@@ -8,7 +8,7 @@ pub mod arrows;
 pub use horizon_client_render::{
     assets, atlas_sources, auth, bidi, biome, block_entities, block_entity_anim,
     block_entity_render, border_render, breaking, brewing, camera, chat, chunk, chunk_map, clouds,
-    collisions, command_block, containers, crash, dynamic_light, effects, environment, extras,
+    collisions, command_block, containers, crash, datapack, dynamic_light, effects, environment, extras,
     fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui, hud, hud_layout,
     hud_overlays, inventory_effects, java_text, level_loading, light, lod, logging, menu_blur,
     mesher, minimap, mipmap, mod_list, model_library, models, options_file, options_fixes,
@@ -37,7 +37,6 @@ pub mod crafting;
 pub mod creative;
 pub mod cushion;
 pub mod data_cmd;
-pub mod datapack;
 pub mod debug_chart;
 pub mod debug_keys;
 pub mod debug_overlay;
