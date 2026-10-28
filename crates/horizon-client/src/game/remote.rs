@@ -3143,11 +3143,7 @@ impl Game<'_> {
                 }
             }
             C::Unknown(id, _) => self.record_protocol_gap(Gap::PlayPacket(id)),
-            C::ProjectilePower(_)
-            | C::SoundEntity(_)
-            | C::UpdateTags(_)
-            | C::SetEntityMotion(_)
-            | C::UpdateAttributes(_) => {
+            C::ProjectilePower(_) | C::SoundEntity(_) | C::UpdateTags(_) => {
                 self.record_protocol_gap(Gap::UnhandledPlayPacket(packet.id()));
             }
             // Consumed by the network thread, not client-world updates.
@@ -3161,6 +3157,10 @@ impl Game<'_> {
             C::ChunkBatchStart(_) => {}
             // Non-brand plugin channels are optional extensions, not vanilla features.
             C::CustomPayload(_) => {}
+            // Also answered on the network thread (cookies, links, transfers).
+            C::CookieRequest(_) | C::StoreCookie(_) | C::ServerLinks(_) => {}
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
         Ok(())
     }

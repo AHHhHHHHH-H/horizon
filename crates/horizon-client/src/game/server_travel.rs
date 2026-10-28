@@ -408,6 +408,8 @@ impl Game<'_> {
         self.server_trips.push(Trip {
             conn,
             dim: Dim::Overworld,
+            source: self.dim,
+            vehicle: None,
             target: Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5),
             end: false,
             plan: None,

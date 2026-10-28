@@ -177,6 +177,8 @@ pub(super) struct Starting {
     handle: Integrated,
     ready: Receiver<Ready>,
     player: String,
+    /// The save folder, for the world's icon.
+    folder: String,
 }
 
 /// The world to open and the player who owns it.
@@ -287,6 +289,7 @@ impl Game<'_> {
             handle,
             ready,
             player,
+            folder: folder.to_owned(),
         });
         // Harnesses, control scripts and runs without a window go on with the world open.
         if self.window.is_none() || super::synchronous_startup(&self.options) {
@@ -318,7 +321,10 @@ impl Game<'_> {
             }
         };
         let Some(Starting {
-            mut handle, player, ..
+            mut handle,
+            player,
+            folder,
+            ..
         }) = self.integrated_starting.take()
         else {
             return Ok(());
