@@ -41,15 +41,22 @@ class Game:
 
     def ctl(self, *words, timeout=300):
         command = [str(self.args.ctl), '--socket', str(self.socket), '--timeout', str(timeout), *map(str, words)]
-        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=timeout + 30)
+        result = subprocess.run(command, cwd=self.home, env=self.env, capture_output=True, text=True, timeout=timeout + 30)
         if result.returncode:
+            (self.args.output / f'{self.home.name}-failure.json').write_text(json.dumps({
+                'command': list(map(str, words)), 'stdout': result.stdout, 'stderr': result.stderr,
+            }, indent=2) + '\n')
+            logs = self.home / 'logs'
+            if logs.is_dir():
+                shutil.copytree(logs, self.args.output / f'{self.home.name}-logs', dirs_exist_ok=True)
             raise RuntimeError(f'{words}: {result.stderr[-2000:]} {result.stdout[-2000:]}')
         return json.loads(result.stdout.strip().splitlines()[-1])
 
-    def launch(self, *extra, mod=True):
+    def launch(self, *extra, mod=True, world=True):
         args = ['launch', '--game', self.args.client, '--resources', self.args.resources,
-                '--world', 'API fixture', '--creative', '--test-terrain', '--seed', '1',
-                '--width', '480', '--height', '320', '--render-distance', '2', '--offscreen', '--wait']
+                '--width', '480', '--height', '320', '--render-distance', '2', '--offscreen']
+        if world:
+            args.extend(['--world', 'API fixture', '--creative', '--test-terrain', '--seed', '1', '--wait'])
         if mod:
             self.mod = self.home / 'effect_lab.hmod'
             shutil.copy2(self.args.hmod, self.mod)
@@ -128,7 +135,9 @@ def main():
                     host = Game(args, root, 'host')
                     host.launch(mod=False)
                     opened = host.ctl('lan', 'open', '0', 'commands')
-                    game.launch('--server', f'127.0.0.1:{opened["port"]}')
+                    game.launch(world=False)
+                    game.ctl('connect', f'127.0.0.1:{opened["port"]}', 'VisualGuest')
+                    game.ctl('wait-for', 'loaded')
                 else:
                     game.launch(*(['--in-frame'] if mode == 'in-frame' else []))
                 result = game.exercise(args.output)

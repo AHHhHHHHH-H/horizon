@@ -3,8 +3,9 @@
 Tracking issue: https://github.com/ludovic111/horizon/issues/2884
 Implementation PR: https://github.com/ludovic111/horizon/pull/2888
 
-This is an implementation checkpoint, not a claim that all six requested mods
-are ported or that every API is complete. No custom client was installed.
+This tracks the bounded API contracts, not six completed mod ports. All validation
+runs use scratch homes; a separate opt-in local test installation is not used as
+a fixture. Mod adaptations are separate from this API PR's merge criteria.
 
 ## Implemented in this branch
 
@@ -48,27 +49,35 @@ These are bounded client APIs, not an unrestricted shader framework:
 - [x] Original Effect Lab example, packaged with assets and persistent settings.
 - [x] Native integration fixture code for in-frame, server-thread and TCP guests.
 - [x] GPU readback test for filter composition, depth and resource cleanup.
-- [ ] Run the final native fixtures and CPU/GPU profiling on the final build.
+- [x] Run native fixtures and capture CPU/GPU timings in-frame, server-thread and over TCP.
 - [ ] Final full repository checks after the API 18 changes.
-- [ ] Six complete mod/resource-pack adaptations (separate work; none claimed complete).
+
+The separate original Emissive Ores mod has been built and user-tested. The other
+five adaptations remain separate work; they do not block review of these APIs.
 
 ## Validation checkpoint
 
-At the API 14 checkpoint:
+After merging main at `b6c936f82`, with the control-chat routing fix:
 
-- Real WebAssembly sandbox suite: 40 passed, 1 pre-existing ignored.
+- Real WebAssembly sandbox suite: 44 passed, 1 pre-existing ignored.
 - Generated API-reference checks: 4 passed.
-- Client particle unit tests with mods enabled: 14 passed.
-- Client binary check with mods enabled: passed.
-- Clippy, all targets of client/runtime/SDK/developer tool with mods: passed.
-- Native visual, collision/lifetime integration and GPU profiling checks:
-  not run. No claim of visual equivalence or complete custom-particle support.
+- Client library tests with mods: 1110 passed, 33 ignored. Includes GPU readback
+  for filter composition/depth/cleanup and shader globals/HLSL validation.
+- Python suite: 398 passed before the additional fixture regression tests.
+- Native Effect Lab fixtures: in-frame, server-thread and TCP guest passed effect
+  admission, disable cleanup and failed-hot-reload cleanup. On/off PNGs captured.
+- CPU/GPU timestamp summaries recorded for each mode. These are one-second smoke
+  profiles on one Linux integrated GPU, not a statistical performance guarantee.
+  Post-processing targets used 1,509,120 bytes in these runs and returned to zero
+  on disable and failed reload. Built-in effects have an opt-in CPU/GPU cost.
+- Full workspace clippy (mods enabled and no-default-features server): passed.
+- Full workspace tests, doc tests and content-root checks: still running; see PR
+  for their final results. Do not reuse the old particle-only validation report.
 
-The focused sandbox suite at the event-API checkpoint passed 39 tests, with one
-pre-existing ignored test. Each new API also passed its focused sandbox test and
-the client compiled with `mods` enabled. The generated API reference passed.
-The broader repository self-check is recorded separately in the PR; do not reuse
-the initial particle-only PR's old passing report for this expanded branch.
+The fixture exposed a control-socket chat bug: remote chat bypassed client-mod
+commands. It now uses the same routing as normal player chat. TCP guests use the
+established `connect` flow with a distinct guest name. Fixture processes inherit a
+scratch working directory, and failures retain their command output and logs.
 
 Run final validation from the branch root:
 
