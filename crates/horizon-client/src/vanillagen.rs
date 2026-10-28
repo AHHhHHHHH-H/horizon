@@ -2,7 +2,7 @@
 //! aquifers, surface rules, carvers and placed features) to chunk streaming.
 use crate::{
     biome::Biomes,
-    chunk::{BIOME_STRATEGY, Chunk, HEIGHT, MIN_Y, SECTIONS, Section},
+    chunk::{BIOME_STRATEGY, Chunk, HEIGHT, MIN_Y, SECTIONS, Section, block_strategy},
     save::SavedProto,
     streaming::{ChunkGenerator, LodSampler, Proto},
 };
@@ -285,10 +285,40 @@ impl VanillaTerrain {
             (chunk.terrain.min_y() + chunk.terrain.height()).min(MIN_Y + HEIGHT),
         );
         let mut values = Box::new([0u32; 4096]);
+        let base_section = chunk.terrain.min_y() >> 4;
         for si in 0..SECTIONS as i32 {
             let base = MIN_Y + si * 16;
             if base + 16 <= lo || base >= hi {
                 continue;
+            }
+            // A uniform terrain section (air above the surface, mostly) needs
+            // no per-cell reads: copy its one state, or leave resident air.
+            let section = usize::try_from(si - base_section)
+                .ok()
+                .and_then(|i| chunk.terrain.section(i));
+            if let Some(section) = section {
+                if section.bits() == 0 {
+                    let id = section.get(0).expect("index in range").0;
+                    if id != 0 {
+                        Arc::make_mut(&mut out.sections[si as usize]).blocks =
+                            PalettedContainer::new(block_strategy(), id);
+                    }
+                    continue;
+                }
+                // Hand the terrain palette and packed indices over as-is: the
+                // resident container accepts any palette order and `pack`
+                // rewrites vanilla's first-use order on save.
+                if let Some(words) = section.words()
+                    && let Some(container) = PalettedContainer::from_parts(
+                        block_strategy(),
+                        section.palette().iter().map(|s| s.0).collect(),
+                        section.bits(),
+                        words.to_vec(),
+                    )
+                {
+                    Arc::make_mut(&mut out.sections[si as usize]).blocks = container;
+                    continue;
+                }
             }
             values.fill(0);
             let mut any = false;
