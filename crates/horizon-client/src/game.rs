@@ -1476,6 +1476,9 @@ struct Game<'a> {
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
     focused: bool,
+    /// When the window lost focus, while it is still without
+    /// (`Minecraft.lastActiveTime`: pausing waits 500 ms).
+    focus_lost: Option<Instant>,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
     /// The window's fullscreen request and reported state.
@@ -5844,6 +5847,26 @@ impl Game<'_> {
                     | Screen::CommandBlock
             ) || self.book.is_some()
                 || self.win_screen_pauses())
+    }
+    /// `Minecraft.pauseIfInactive`: a window without focus for more than 500 ms
+    /// pauses the game. Screens (books, signs, the pack prompt, a server dialog)
+    /// stay open instead of pausing.
+    fn pause_if_inactive(&mut self) {
+        if self
+            .focus_lost
+            .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
+            && self.control.is_none()
+            && self.screen == Screen::Playing
+            && self.player.is_some()
+            && !self.options.no_pause
+            && self.settings.file.bool("pauseOnLostFocus")
+            && self.book.is_none()
+            && self.sign_edit.is_none()
+            && self.server_packs.prompt.is_none()
+            && !self.dialog_open()
+        {
+            self.screen = Screen::Paused;
+        }
     }
     /// `MouseHandler.grabMouse` / `releaseMouse`. Both put the pointer at
     /// the window's centre, so a screen opened from gameplay (inventory,
@@ -13002,24 +13025,12 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
+                    self.focus_lost = (!focused).then(Instant::now);
                     if !focused && self.control.is_none() {
                         self.keys.clear();
                         self.left = false;
                         self.right = false;
                         self.capture(false);
-                        // Gui.setPauseScreen: an open screen (books, signs, the
-                        // pack prompt, a server dialog) stays instead of pausing.
-                        if self.screen == Screen::Playing
-                            && self.player.is_some()
-                            && !self.options.no_pause
-                            && self.settings.file.bool("pauseOnLostFocus")
-                            && self.book.is_none()
-                            && self.sign_edit.is_none()
-                            && self.server_packs.prompt.is_none()
-                            && !self.dialog_open()
-                        {
-                            self.screen = Screen::Paused;
-                        }
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
@@ -13877,6 +13888,7 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         self.poll_pads(event_loop);
+        self.pause_if_inactive();
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
             event_loop.exit();
@@ -14033,6 +14045,7 @@ impl<'a> Game<'a> {
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
             focused: true,
+            focus_lost: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
             mouse: MouseLook::default(),
