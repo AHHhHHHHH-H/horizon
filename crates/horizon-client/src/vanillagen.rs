@@ -285,7 +285,6 @@ impl VanillaTerrain {
             (chunk.terrain.min_y() + chunk.terrain.height()).min(MIN_Y + HEIGHT),
         );
         let mut values = Box::new([0u32; 4096]);
-        let base_section = chunk.terrain.min_y() >> 4;
         for si in 0..SECTIONS as i32 {
             let base = MIN_Y + si * 16;
             if base + 16 <= lo || base >= hi {
@@ -293,7 +292,9 @@ impl VanillaTerrain {
             }
             // A uniform terrain section (air above the surface, mostly) needs
             // no per-cell reads: copy its one state, or leave resident air.
-            let section = usize::try_from(si - base_section)
+            // The terrain's sections start at its own MIN_Y, which differs per
+            // dimension, so convert this client section to a terrain index.
+            let section = usize::try_from((base - chunk.terrain.min_y()) >> 4)
                 .ok()
                 .and_then(|i| chunk.terrain.section(i));
             if let Some(section) = section {
