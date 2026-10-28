@@ -625,6 +625,7 @@ fn configure(
                 }))?
             }
             cfg::Clientbound::RegistryData(r) => registries.add(r),
+            cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
             cfg::Clientbound::CodeOfConduct(_) => {
                 reply(cfg::Serverbound::AcceptCodeOfConduct(Empty))?
             }
