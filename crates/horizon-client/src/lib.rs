@@ -79,6 +79,7 @@ pub mod graphics;
 pub mod graphics_style;
 pub mod graphics_ui;
 pub mod health;
+pub mod heart_colors;
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hud;

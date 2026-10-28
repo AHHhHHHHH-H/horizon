@@ -80,6 +80,27 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   blocks change within 0.3 ms a frame; the 128x128 image is recomposed only when the view moved or a tile changed, and
   uploaded into a dedicated atlas slot. With no mod showing a map, nothing runs.
 
+### Colored hearts (`coloredHearts`, default off)
+- Past ten hearts, the HUD stops adding rows of hearts and tints the one row
+  of ten instead: it shows the row of ten hearts the player is currently in,
+  one color per row of ten — health first, then absorption with its own
+  colors. The idea is ported, not a mod's code.
+- The colors are the `heartColors` and `absorptionColors` lists in
+  `horizon-extras.txt`, `#RRGGBB` values separated by commas, up to eight
+  each. The defaults start with the heart sprite's own red and the absorbing
+  heart's gold, so a first row of either looks vanilla; further rows are
+  gold, green, cyan, purple, pink, yellow and white (absorption varies).
+- The tinted sprites are generated when the atlas is packed, from the
+  installed resource pack's own heart sprites: each sprite's distinct
+  colors, ranked by luminance (shade, body, highlight), map onto darker,
+  plain and lighter copies of the target color. A pack's hearts recolor too,
+  and turning the extra on needs no restart.
+- A half-filled heart's background covers only its filled half, so an odd
+  point of absorption doesn't read as an empty right half.
+- The row blinks as a whole after damage. While the extra is on, the
+  per-effect sprites (poison, wither, frozen) and the regeneration bounce
+  are not drawn: every heart is the heart sprite in its row's color.
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection

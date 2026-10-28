@@ -520,6 +520,9 @@ pub struct HealthInputs {
     pub under_water: bool,
     /// `getVehicleMaxHearts` of the ridden living vehicle (0 = none).
     pub vehicle_hearts: i32,
+    /// The colored hearts extra's row counts (`heart_colors`); none keeps
+    /// vanilla's rows.
+    pub colored: Option<crate::heart_colors::Rows>,
 }
 
 /// `Hud.getVehicleMaxHearts` for a vehicle that shows its health.
@@ -627,6 +630,94 @@ fn heart(
     table[usize::from(hardcore) * 4 + usize::from(half) * 2 + usize::from(blink)]
 }
 
+/// The colored hearts extra (`heart_colors`): the one row of ten icons shows
+/// the row of ten hearts the player is currently in, tinted that row's color
+/// — health first, then absorption with its own colors. A half-filled icon's
+/// container covers only its filled half. The rows past ten hearts are the
+/// tints instead; the blink swaps the whole row to its blinking sprites.
+fn colored_hearts(
+    i: &HealthInputs,
+    rows: crate::heart_colors::Rows,
+    blink: bool,
+    jitter: bool,
+    x_left: i32,
+    y_base: i32,
+    next: &mut dyn FnMut(i32) -> i32,
+) -> Vec<GuiDraw> {
+    use crate::heart_colors::slot_id;
+    let mut out = Vec::new();
+    let health_points = ceil(i.max_health);
+    let filled = ceil(i.health) + ceil(i.absorption);
+    // The row of ten the last filled half-heart sits in.
+    let seg = (filled.max(1) - 1) / 20;
+    let seg_start = seg * 20;
+    for n in 0..10 {
+        let x = x_left + n * 8;
+        let mut y = y_base;
+        if jitter {
+            y += next(2);
+        }
+        let point = seg_start + n * 2;
+        // 0 = empty, 1 = half, 2 = full.
+        let fill = (filled - point).clamp(0, 2);
+        let (absorption, row) = if point >= health_points {
+            (true, (point - health_points) / 20)
+        } else {
+            (false, point / 20)
+        };
+        let color = row.min(
+            i32::from(if absorption {
+                rows.absorption
+            } else {
+                rows.health
+            }) - 1,
+        ) as usize;
+        let variant = usize::from(i.hardcore) * 4 + usize::from(fill == 1) * 2 + usize::from(blink);
+        let container = format!(
+            "hud/heart/container{}{}",
+            if i.hardcore { "_hardcore" } else { "" },
+            if blink { "_blinking" } else { "" }
+        );
+        if fill == 1 {
+            // The container covers only the filled half.
+            out.push(GuiDraw::Sprite {
+                sprite: Cow::Owned(container),
+                x,
+                y,
+                w: 5,
+                h: 9,
+                region: Some([9, 9, 0, 0]),
+                color: WHITE,
+                blend: Blend::Textured,
+            });
+        } else {
+            out.push(GuiDraw::Sprite {
+                sprite: Cow::Owned(container),
+                x,
+                y,
+                w: 9,
+                h: 9,
+                region: None,
+                color: WHITE,
+                blend: Blend::Textured,
+            });
+        }
+        if fill > 0 {
+            out.push(GuiDraw::Sprite {
+                sprite: Cow::Owned(slot_id(absorption, variant, color)),
+                x,
+                y,
+                w: 9,
+                h: 9,
+                region: None,
+                color: WHITE,
+                blend: Blend::Textured,
+            });
+        }
+    }
+    out
+}
+
 impl HealthHud {
     /// `Hud.extractPlayerHealth` for a screen of `w` x `h` GUI pixels.
     pub fn layout(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
@@ -652,8 +743,12 @@ impl HealthHud {
         let (x_left, x_right, y_base) = (w / 2 - 91, w / 2 + 91, h - 39);
         let max_health = i.max_health.max(old.max(current) as f32);
         let absorption = ceil(i.absorption);
-        let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
-        let row_height = (10 - (rows - 2)).max(3);
+        let (rows, row_height) = if i.colored.is_some() {
+            (1, 10)
+        } else {
+            let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
+            (rows, (10 - (rows - 2)).max(3))
+        };
         let mut y_air = y_base - 10;
         self.left_height = 39 + (rows - 1) * row_height + 10 + if i.armor > 0 { 10 } else { 0 };
         // The mount's heart rows (`extractVehicleHealth`); food adds its row below.
@@ -678,53 +773,65 @@ impl HealthHud {
                 }
             }
         }
-        let containers = f64::from(max_health / 2.0).ceil() as i32;
-        let absorb_containers = (f64::from(absorption) / 2.0).ceil() as i32;
-        for c in (0..containers + absorb_containers).rev() {
-            let (row, column) = (c / 10, c % 10);
-            let x = x_left + column * 8;
-            let mut y = y_base - row * row_height;
-            if current + absorption <= 4 {
-                y += next(2);
-            }
-            if c < containers && c == offset_index {
-                y -= 2;
-            }
-            out.push(sprite(
-                heart(None, false, i.hardcore, false, blink),
-                x,
-                y,
-                9,
-                9,
+        if let Some(rows) = i.colored {
+            out.extend(colored_hearts(
+                i,
+                rows,
+                blink,
+                current + absorption <= 4,
+                x_left,
+                y_base,
+                &mut next,
             ));
-            let halves = c * 2;
-            if c >= containers {
-                let ah = halves - containers * 2;
-                if ah < absorption {
-                    let withered = i.kind == HeartKind::Withered;
+        } else {
+            let containers = f64::from(max_health / 2.0).ceil() as i32;
+            let absorb_containers = (f64::from(absorption) / 2.0).ceil() as i32;
+            for c in (0..containers + absorb_containers).rev() {
+                let (row, column) = (c / 10, c % 10);
+                let x = x_left + column * 8;
+                let mut y = y_base - row * row_height;
+                if current + absorption <= 4 {
+                    y += next(2);
+                }
+                if c < containers && c == offset_index {
+                    y -= 2;
+                }
+                out.push(sprite(
+                    heart(None, false, i.hardcore, false, blink),
+                    x,
+                    y,
+                    9,
+                    9,
+                ));
+                let halves = c * 2;
+                if c >= containers {
+                    let ah = halves - containers * 2;
+                    if ah < absorption {
+                        let withered = i.kind == HeartKind::Withered;
+                        let name = heart(
+                            Some(i.kind),
+                            !withered,
+                            i.hardcore,
+                            ah + 1 == absorption,
+                            false,
+                        );
+                        out.push(sprite(name, x, y, 9, 9));
+                    }
+                }
+                if blink && halves < old {
+                    let name = heart(Some(i.kind), false, i.hardcore, halves + 1 == old, true);
+                    out.push(sprite(name, x, y, 9, 9));
+                }
+                if halves < current {
                     let name = heart(
                         Some(i.kind),
-                        !withered,
+                        false,
                         i.hardcore,
-                        ah + 1 == absorption,
+                        halves + 1 == current,
                         false,
                     );
                     out.push(sprite(name, x, y, 9, 9));
                 }
-            }
-            if blink && halves < old {
-                let name = heart(Some(i.kind), false, i.hardcore, halves + 1 == old, true);
-                out.push(sprite(name, x, y, 9, 9));
-            }
-            if halves < current {
-                let name = heart(
-                    Some(i.kind),
-                    false,
-                    i.hardcore,
-                    halves + 1 == current,
-                    false,
-                );
-                out.push(sprite(name, x, y, 9, 9));
             }
         }
         if i.vehicle_hearts == 0 {
@@ -940,4 +1047,166 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
 pub fn abgr(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     crate::hud::rgba(r, g, b, a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::heart_colors::Rows;
+
+    fn inputs(colored: Option<Rows>) -> (HealthHud, HealthInputs) {
+        (
+            HealthHud::default(),
+            HealthInputs {
+                tick: 0,
+                millis: 0,
+                health: 20.0,
+                max_health: 20.0,
+                absorption: 0.0,
+                armor: 0,
+                food: 20,
+                saturation: 5.0,
+                kind: HeartKind::Normal,
+                regeneration: false,
+                hunger: false,
+                hardcore: false,
+                damage_cooldown: false,
+                air: 300,
+                max_air: 300,
+                under_water: false,
+                vehicle_hearts: 0,
+                colored,
+            },
+        )
+    }
+
+    fn sprites(draws: &[GuiDraw]) -> Vec<(&str, i32, i32)> {
+        draws
+            .iter()
+            .filter_map(|d| match d {
+                GuiDraw::Sprite { sprite, x, y, .. } => Some((sprite.as_ref(), *x, *y)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn colored_hearts_show_one_row_of_ten() {
+        let (mut hud, mut i) = inputs(Some(Rows {
+            health: 2,
+            absorption: 1,
+        }));
+        i.max_health = 40.0;
+        i.health = 30.0;
+        let draws = hud.layout(&i, 400, 300);
+        let s = sprites(&draws);
+        // Ten containers on one row (y_base = 261), plus the five full hearts
+        // of the second row of ten (its color's slots).
+        assert_eq!(
+            s.iter()
+                .filter(|(n, _, _)| n.starts_with("hud/heart/container"))
+                .count(),
+            10
+        );
+        let fills: Vec<_> = s
+            .iter()
+            .filter(|(n, _, _)| n.starts_with("horizon/heart"))
+            .collect();
+        assert_eq!(fills.len(), 5);
+        for (n, _, _) in &fills {
+            assert_eq!(*n, "horizon/heart0x1", "the second row of health's color");
+        }
+        // One row: every heart on the same y, starting at the left edge.
+        assert!(s.iter().all(|(_, _, y)| *y == 261));
+        assert_eq!(s.iter().map(|(_, x, _)| *x).min(), Some(109));
+        // The heights above the hotbar follow the one row, not the 40 HP.
+        assert_eq!(hud.left_height, 49);
+    }
+
+    #[test]
+    fn absorption_tints_with_its_own_colors() {
+        let (mut hud, mut i) = inputs(Some(Rows {
+            health: 2,
+            absorption: 2,
+        }));
+        i.max_health = 20.0;
+        i.health = 20.0;
+        i.absorption = 8.0;
+        let draws = hud.layout(&i, 400, 300);
+        let fills: Vec<_> = sprites(&draws)
+            .into_iter()
+            .filter(|(n, _, _)| n.starts_with("horizon/"))
+            .collect();
+        // Four gold absorption hearts after the full health, in the
+        // absorption list's first color.
+        assert_eq!(fills.len(), 4);
+        assert!(
+            fills.iter().all(|(n, _, _)| *n == "horizon/aheart0x0"),
+            "{fills:?}"
+        );
+    }
+
+    #[test]
+    fn a_half_heart_container_covers_only_its_filled_half() {
+        let (mut hud, mut i) = inputs(Some(Rows {
+            health: 1,
+            absorption: 1,
+        }));
+        i.health = 1.0;
+        let draws = hud.layout(&i, 400, 300);
+        let containers: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                GuiDraw::Sprite {
+                    sprite, region, w, ..
+                } => Some((sprite.as_ref(), *region, *w)),
+                _ => None,
+            })
+            .filter(|(n, _, _)| n.starts_with("hud/heart/container"))
+            .collect();
+        assert_eq!(containers.len(), 10);
+        assert_eq!(
+            containers[0],
+            ("hud/heart/container", Some([9, 9, 0, 0]), 5)
+        );
+        assert!(
+            containers[1..]
+                .iter()
+                .all(|(n, region, w)| region.is_none() && *w == 9 && *n == "hud/heart/container")
+        );
+    }
+
+    #[test]
+    fn rows_past_the_colors_repeat_the_last_one() {
+        let (mut hud, mut i) = inputs(Some(Rows {
+            health: 2,
+            absorption: 1,
+        }));
+        i.max_health = 80.0;
+        i.health = 70.0;
+        let draws = hud.layout(&i, 400, 300);
+        // The fourth row of health has no color left: the second's again.
+        assert!(
+            sprites(&draws)
+                .iter()
+                .any(|(n, _, _)| *n == "horizon/heart0x1")
+        );
+    }
+
+    #[test]
+    fn without_the_extra_the_rows_are_vanillas() {
+        let (mut hud, mut i) = inputs(None);
+        i.max_health = 40.0;
+        i.health = 30.0;
+        let draws = hud.layout(&i, 400, 300);
+        let all = sprites(&draws);
+        assert!(!all.iter().any(|(n, _, _)| n.starts_with("horizon/")));
+        // Two rows of ten containers, vanilla's layout.
+        assert_eq!(
+            all.iter()
+                .filter(|(n, _, _)| *n == "hud/heart/container")
+                .count(),
+            20
+        );
+    }
 }
