@@ -2212,11 +2212,7 @@ impl ParticleEngine {
                     };
                 q.gravity = 3.0e-6;
                 q.velocity = [v[0], v[1] + f64::from(r.next_float() / 500.0), v[2]];
-                q.rgba[3] = if ty == T::CampfireSignalSmoke {
-                    0.95
-                } else {
-                    0.9
-                };
+                // Alpha stays at SingleQuadParticle's default of 1.0; the tick fades it.
                 q.behaviour = Behaviour::Campfire;
                 q
             }
