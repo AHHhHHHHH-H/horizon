@@ -1539,6 +1539,53 @@ enum Biomes<'a, 'b> {
         &'a mut super::biome_source::BiomeSourceResolver<'b>,
         &'a mut SamplerContext,
     ),
+    /// A resolver whose answers are kept per quart: far sampling paints eight
+    /// depths of every column, and neighbouring columns share quarts, so most
+    /// queries repeat one (each is a full climate sample and parameter search).
+    Memo(
+        &'a mut super::biome_source::BiomeSourceResolver<'b>,
+        &'a mut SamplerContext,
+        &'a mut BiomeMemo,
+    ),
+}
+/// Resolved biomes by quart (`Biomes::Memo`).
+struct BiomeMemo {
+    biomes: HashMap<[i32; 3], BiomeId>,
+    /// Quarts per side of the columns sharing one biome, the first one asked
+    /// (its surface's); 0 for one per quart. Far cells wider than a quart
+    /// don't show a biome change a few blocks down, and climate changes over
+    /// hundreds of blocks: a far tile shares one per 4x4 of its columns, in
+    /// cells up to 64 blocks wide.
+    /// (Painting asks through the biome zoom, which strays into neighbouring
+    /// quarts: per quart, those strays were most of the climate samples.)
+    cell: i32,
+}
+/// The biome at `quart`, resolved once per quart (`Biomes::Memo`).
+fn memo_biome(
+    data: &GeneratorData,
+    resolver: &mut super::biome_source::BiomeSourceResolver<'_>,
+    context: &mut SamplerContext,
+    memo: &mut BiomeMemo,
+    quart: [i32; 3],
+) -> Result<BiomeId, MaterialRuleError> {
+    let key = if memo.cell > 0 {
+        [
+            quart[0].div_euclid(memo.cell),
+            0,
+            quart[2].div_euclid(memo.cell),
+        ]
+    } else {
+        quart
+    };
+    if let Some(&id) = memo.biomes.get(&key) {
+        return Ok(id);
+    }
+    let name = resolver
+        .sample(context, quart)
+        .map_err(|_| MaterialRuleError::BiomeQueryFailed)?;
+    let id = data.biome_id(name).ok_or(MaterialRuleError::MissingBiome)?;
+    memo.biomes.insert(key, id);
+    Ok(id)
 }
 // Lazy equality proofs for the eight quart corners of a block-biome cell.
 // Adjacent blocks share these candidates even though their zoom distances differ.
@@ -1658,6 +1705,13 @@ impl<R: RandomSource> MaterialSurfaceQueries for SurfaceQueries<'_, '_, R> {
                     .map_err(|_| MaterialRuleError::BiomeQueryFailed)?;
                 data.biome_id(name).ok_or(MaterialRuleError::MissingBiome)?
             }
+            Biomes::Memo(resolver, context, memo) => memo_biome(
+                data,
+                resolver,
+                context,
+                memo,
+                self.pipeline.zoom.quart_at_block(p),
+            )?,
         };
         Ok(Some(data.biome_names[id.0 as usize].clone()))
     }
@@ -1759,6 +1813,7 @@ trait SeededPipeline: Send + Sync {
         z: i32,
         width: i32,
         side: usize,
+        approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError>;
     fn structure_starts(
         &self,
@@ -2078,24 +2133,85 @@ where
         z: i32,
         width: i32,
         side: usize,
+        approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError> {
         if width <= 0 || side == 0 || side > 64 {
             return Err(resource("far sample dimensions"));
         }
         let mut geometry = Vec::with_capacity(side * side);
-        let mut context = SamplerContext::sparse();
+        // The coarse and band passes below share the 2D (x/z-only) parts.
+        let mut context = if approximate {
+            SamplerContext::sparse().with_planes()
+        } else {
+            SamplerContext::sparse()
+        };
         let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
         let step_xz = width.max(4);
         let ox = x.div_euclid(4) * 4;
         let oz = z.div_euclid(4) * 4;
         let nx = ((x - ox + (side as i32 - 1) * width + step_xz - 1) / step_xz) + 1;
         let nz = ((z - oz + (side as i32 - 1) * width + step_xz - 1) / step_xz) + 1;
-        let ny = (height + 7) / 8 + 1;
-        let volume = DensityVolume::new([nx, ny, nz], [ox, min, oz], [step_xz, 8, step_xz])
+        // Approximate: cells many blocks wide keep their interpolated shape on
+        // a coarser vertical lattice, for a fraction of the density work.
+        let step_y = match width {
+            _ if !approximate => 8,
+            ..32 => 8,
+            32..128 => 16,
+            _ => 32,
+        };
+        let final_density = self.router.get(RouterField::FinalDensity);
+        // Approximate: far tiles show the surface, so find its band on a
+        // coarse lattice (its points are the fine lattice's), then sample the
+        // fine lattice only inside it. Most of a tall world's column is sky or
+        // deep rock. Parts thinner than the coarse step above an air sample
+        // (floating islands, overhang lips) can be missed; below the band, a
+        // column is one span of the default block.
+        let (band_min, band_max) = if approximate {
+            const COARSE: i32 = 64;
+            let coarse_layers = (height + COARSE - 1) / COARSE + 1;
+            let coarse = DensityVolume::new(
+                [nx, coarse_layers, nz],
+                [ox, min, oz],
+                [step_xz, COARSE, step_xz],
+            )
             .map_err(stage("far density"))?;
+            let mut coarse_densities = vec![0.; coarse.size()];
+            final_density
+                .sample_volume(&mut context, &mut coarse_densities, coarse)
+                .map_err(stage("far density"))?;
+            let (mut lowest, mut highest) = (i32::MAX, i32::MIN);
+            for iz in 0..nz as usize {
+                for ix in 0..nx as usize {
+                    let solid = (0..coarse_layers as usize)
+                        .rev()
+                        .find(|&iy| coarse_densities[coarse.index([ix, iy, iz]).unwrap()] > 0.);
+                    if let Some(iy) = solid {
+                        let y = min + iy as i32 * COARSE;
+                        lowest = lowest.min(y - COARSE);
+                        highest = highest.max(y + 2 * COARSE);
+                    }
+                }
+            }
+            if lowest > highest {
+                (min, min + height)
+            } else {
+                let lowest = lowest.max(min);
+                (
+                    min + (lowest - min) / step_y * step_y,
+                    highest
+                        .max(self.settings.sea_level + COARSE)
+                        .min(min + height),
+                )
+            }
+        } else {
+            (min, min + height)
+        };
+        let ny = (band_max - band_min + step_y - 1) / step_y + 1;
+        let volume =
+            DensityVolume::new([nx, ny, nz], [ox, band_min, oz], [step_xz, step_y, step_xz])
+                .map_err(stage("far density"))?;
         let mut densities = vec![0.; volume.size()];
-        self.router
-            .get(RouterField::FinalDensity)
+        final_density
             .sample_volume(&mut context, &mut densities, volume)
             .map_err(stage("far density"))?;
         let aquifer = DisabledAquifer::new(
@@ -2130,6 +2246,16 @@ where
             self.router.get(RouterField::Erosion).as_ref(),
         );
         let mut biome_context = SamplerContext::cached();
+        let mut biome_memo = BiomeMemo {
+            biomes: HashMap::new(),
+            // Columns `width` blocks apart are width / 4 quarts apart; cells
+            // stop at 64 blocks (wider ones moved a third of level 6's biomes).
+            cell: if approximate && width >= 4 {
+                width.min(16)
+            } else {
+                0
+            },
+        };
         for dz in 0..side {
             for dx in 0..side {
                 let (wx, wz) = (x + dx as i32 * width, z + dz as i32 * width);
@@ -2141,9 +2267,9 @@ where
                 for (iy, density) in profile.iter_mut().enumerate() {
                     *density = value(wx, iy, wz);
                 }
-                for y in (min..min + height).rev() {
-                    let iy = (y - min) as usize / 8;
-                    let alpha = ((y - min) % 8) as f32 / 8.;
+                for y in (band_min..band_max).rev() {
+                    let iy = ((y - band_min) / step_y) as usize;
+                    let alpha = ((y - band_min) % step_y) as f32 / step_y as f32;
                     let density = profile[iy] + (profile[iy + 1] - profile[iy]) * alpha;
                     let state = aquifer
                         .compute_substance([wx, y, wz], f64::from(density))
@@ -2174,16 +2300,25 @@ where
                         }
                     }
                 }
+                if band_min > min {
+                    let fill = self.settings.default_block;
+                    if top.is_some() && !complete {
+                        below += band_min - min;
+                    }
+                    match spans.last_mut() {
+                        Some((low, _, state)) if *low == band_min && *state == fill => *low = min,
+                        _ => spans.push((min, band_min, fill)),
+                    }
+                }
                 let biome = if let Some((height, _)) = top {
-                    let name = resolver
-                        .sample(
-                            &mut biome_context,
-                            self.zoom.quart_at_block(BlockPos::new(wx, height - 1, wz)),
-                        )
-                        .map_err(stage("far biome"))?;
-                    self.data
-                        .biome_id(name)
-                        .ok_or_else(|| resource("far biome"))?
+                    memo_biome(
+                        &self.data,
+                        &mut resolver,
+                        &mut biome_context,
+                        &mut biome_memo,
+                        self.zoom.quart_at_block(BlockPos::new(wx, height - 1, wz)),
+                    )
+                    .map_err(stage("far biome"))?
                 } else {
                     BiomeId(0)
                 };
@@ -2201,7 +2336,7 @@ where
         let queries = SurfaceQueries {
             pipeline: self,
             temperatures: &mut worker.temperatures,
-            biome: Biomes::Resolver(&mut resolver, &mut biome_context),
+            biome: Biomes::Memo(&mut resolver, &mut biome_context, &mut biome_memo),
             uniform_biomes: None,
             possible: None,
         };
@@ -2605,14 +2740,19 @@ impl GeneratorWorker {
     }
     /// Direct far sampling: work scales with rendered vertical resolution,
     /// without allocating chunks, carving masks or propagated aquifers.
+    /// `approximate` (Reduced far detail) trades the exact tile for speed in
+    /// wide cells: one biome per 4x4 columns, a coarser vertical lattice, and
+    /// density only around the surface.
     pub fn lod_grid(
         &mut self,
         x: i32,
         z: i32,
         width: i32,
         side: usize,
+        approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError> {
-        self.pipeline.lod_grid(&mut self.state, x, z, width, side)
+        self.pipeline
+            .lod_grid(&mut self.state, x, z, width, side, approximate)
     }
     pub fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
         self.pipeline.noise_biomes(&mut self.state, quarts)
@@ -2926,7 +3066,7 @@ mod tests {
         }
         let dense_time = started.elapsed();
         let started = std::time::Instant::now();
-        let direct = worker.lod_grid(-1024, 0, 32, 8).unwrap();
+        let direct = worker.lod_grid(-1024, 0, 32, 8, false).unwrap();
         for z in 0..8 {
             for x in 0..8 {
                 let wx = -1024 + x * 32;
@@ -2961,7 +3101,11 @@ mod tests {
         let (surface, spans) = worker.surface_column(256, 0);
         assert!(surface.is_none());
         assert!(spans.is_empty());
-        let (surface, spans) = worker.lod_grid(256, 0, 32, 1).unwrap().pop().unwrap();
+        let (surface, spans) = worker
+            .lod_grid(256, 0, 32, 1, false)
+            .unwrap()
+            .pop()
+            .unwrap();
         assert!(
             surface.is_none() && spans.is_empty(),
             "direct sampling retains End void"
