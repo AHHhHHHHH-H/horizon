@@ -1089,36 +1089,29 @@ impl Streaming {
             });
         }
         if self.decorates && self.decorating < workers * 2 {
-            let wants = |s: &Self, x: i32, z: i32| {
-                !s.decorated.contains(&(x, z))
-                    && !world.chunks.contains_key(&(x, z))
-                    && (s.in_range(x, z, 2) || s.near_finished(x, z, 1))
-            };
             // A wanted chunk holds back higher-ranked ones only if it can be
             // decorated: its 3x3 neighbourhood is (or will be) generated as
             // protos, none of them already final.
-            let waits_for = |s: &Self, x: i32, z: i32| {
-                wants(s, x, z)
-                    && (-1..=1).all(|dz| {
-                        (-1..=1).all(|dx| {
-                            let n = (x + dx, z + dz);
-                            !world.chunks.contains_key(&n)
-                                && (s.protos.contains_key(&n)
-                                    || s.generating.contains(&n)
-                                    || s.ranges().requested(n.0, n.1, true))
-                        })
+            let mut wanted: Vec<(u64, i64, i32, i32)> = {
+                let ranges = Ranges {
+                    center: self.center,
+                    radius: self.radius,
+                    extra: &self.extra,
+                    forced: &self.forced,
+                    cover: ExtraCover::matching(&self.cover, &self.extra),
+                    band: self.band.as_ref(),
+                };
+                self.protos
+                    .iter()
+                    .filter(|(k, p)| {
+                        p.is_some()
+                            && !self.decorated.contains(k)
+                            && !world.chunks.contains_key(k)
+                            && (ranges.in_range(k.0, k.1, 2) || ranges.near_finished(k.0, k.1, 1))
                     })
+                    .map(|(k, _)| (0, ranges.priority(k.0, k.1, self.loading), k.0, k.1))
+                    .collect()
             };
-            let keys: Vec<(i32, i32)> = self
-                .protos
-                .iter()
-                .filter(|(k, p)| p.is_some() && wants(self, k.0, k.1))
-                .map(|(k, _)| *k)
-                .collect();
-            let mut wanted: Vec<(u64, i64, i32, i32)> = keys
-                .into_iter()
-                .map(|(x, z)| (0, self.distance(x, z), x, z))
-                .collect();
             // Chunks no ticket reached (forced and extra areas) go last, nearest first.
             wanted.sort_unstable_by_key(|w| w.1);
             for w in &mut wanted {
@@ -1129,10 +1122,31 @@ impl Streaming {
                 if self.decorating >= workers * 2 {
                     break;
                 }
-                if self
-                    .decoration_order
-                    .blocked(x, z, |nx, nz| waits_for(self, nx, nz))
-                {
+                // One `Ranges` per candidate: `blocked` asks about up to 24
+                // neighbours, each of their 3x3.
+                let ranges = Ranges {
+                    center: self.center,
+                    radius: self.radius,
+                    extra: &self.extra,
+                    forced: &self.forced,
+                    cover: ExtraCover::matching(&self.cover, &self.extra),
+                    band: self.band.as_ref(),
+                };
+                let waits_for = |nx: i32, nz: i32| {
+                    !self.decorated.contains(&(nx, nz))
+                        && !world.chunks.contains_key(&(nx, nz))
+                        && (ranges.in_range(nx, nz, 2) || ranges.near_finished(nx, nz, 1))
+                        && (-1..=1).all(|dz| {
+                            (-1..=1).all(|dx| {
+                                let n = (nx + dx, nz + dz);
+                                !world.chunks.contains_key(&n)
+                                    && (self.protos.contains_key(&n)
+                                        || self.generating.contains(&n)
+                                        || ranges.requested(n.0, n.1, true))
+                            })
+                        })
+                };
+                if self.decoration_order.blocked(x, z, waits_for) {
                     continue;
                 }
                 let keys: Vec<(i32, i32)> =
