@@ -75,6 +75,7 @@ python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cov
 python3 tools/parity.py mob_ai sculk       # named harnesses
 python3 tools/lan_e2e.py --check chest     # two real games over LAN (server-thread host); --in-frame compares the fallback
 python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
+python3 tools/prune_worktrees.py           # list every worktree's PR state; --apply sweeps merged/closed ones
 ```
 
 - Harnesses and the game need the vanilla data in `.local/` (`minecraft/`, `horizon-client/26.3`, `datagen/`,
@@ -96,6 +97,10 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
   `target/fast/horizon-ctl --socket $PWD/ctl.sock launch --world W --creative --offscreen --wait --resources $PWD/.local/horizon-client/26.3`,
   then `horizon-ctl --socket … state|keys|turn|command|screenshot|quit`
   ([docs/horizon-ctl-commands.md](docs/horizon-ctl-commands.md)).
+- One worktree per agent/PR; when the PR merges or closes, the worktree is dead weight — its `target/`
+  alone is 5–25 GB. `python3 tools/prune_worktrees.py` lists each linked worktree with its PR state;
+  `--apply` stashes anything uncommitted and removes the done ones (the branch stays; `--no-pr` also
+  removes worktrees whose branch never got a PR). Never remove the worktree your own thread runs in.
 
 ## Vanilla reference
 
