@@ -1,6 +1,9 @@
 //! Region codecs, including lz4-java's block framing (not the LZ4 frame format).
-use flate2::{Compression as Level, Decompress, FlushDecompress, Status};
-use std::io::{self, Read, Write};
+use flate2::{Compression as Level, Decompress, FlushDecompress, Status, write::ZlibEncoder};
+use std::{
+    cell::RefCell,
+    io::{self, Read, Write},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -13,6 +16,23 @@ pub enum Compression {
 
 pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+/// One zlib stream and its scratch per thread: a saved chunk allocates a
+/// 256 KiB deflate state no more, and `reset` clears it between chunks.
+struct Zlib {
+    compressor: Option<ZlibEncoder<Vec<u8>>>,
+    decompressor: Option<Decompress>,
+    block: [u8; 8192],
+}
+thread_local! {
+    static ZLIB: RefCell<Zlib> = const {
+        RefCell::new(Zlib {
+            compressor: None,
+            decompressor: None,
+            block: [0; 8192],
+        })
+    };
 }
 
 impl TryFrom<u8> for Compression {
@@ -50,33 +70,42 @@ impl Compression {
                 }
                 Ok(output)
             }
-            Self::Zlib => {
-                let mut decoder = Decompress::new(true);
+            Self::Zlib => ZLIB.with(|zlib| {
+                let mut state = zlib.borrow_mut();
+                let Zlib {
+                    decompressor,
+                    block,
+                    ..
+                } = &mut *state;
+                let decoder = decompressor.get_or_insert_with(|| Decompress::new(true));
+                decoder.reset(true);
                 let mut output = Vec::new();
-                let mut block = [0; 8192];
-                loop {
+                let result = loop {
                     let before_in = decoder.total_in();
                     let before_out = decoder.total_out();
-                    let status = decoder
-                        .decompress(
-                            &bytes[before_in as usize..],
-                            &mut block,
-                            FlushDecompress::None,
-                        )
-                        .map_err(|e| invalid(e.to_string()))?;
+                    let status = match decoder.decompress(
+                        &bytes[before_in as usize..],
+                        block,
+                        FlushDecompress::None,
+                    ) {
+                        Ok(status) => status,
+                        Err(e) => break Err(invalid(e.to_string())),
+                    };
                     let produced = (decoder.total_out() - before_out) as usize;
                     if produced > max_output.saturating_sub(output.len()) {
-                        return Err(invalid("decompression limit exceeded"));
+                        break Err(invalid("decompression limit exceeded"));
                     }
                     output.extend_from_slice(&block[..produced]);
                     if status == Status::StreamEnd {
-                        return Ok(output);
+                        break Ok(output);
                     }
                     if decoder.total_in() == before_in && produced == 0 {
-                        return Err(invalid("truncated zlib stream"));
+                        break Err(invalid("truncated zlib stream"));
                     }
-                }
-            }
+                };
+                decoder.reset(true);
+                result
+            }),
             Self::Lz4 => decode_lz4(bytes, max_output),
         }
     }
@@ -89,11 +118,17 @@ impl Compression {
                 encoder.write_all(bytes)?;
                 encoder.finish()
             }
-            Self::Zlib => {
-                let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Level::default());
-                encoder.write_all(bytes)?;
-                encoder.finish()
-            }
+            Self::Zlib => ZLIB.with(|zlib| {
+                let mut state = zlib.borrow_mut();
+                let encoder = state
+                    .compressor
+                    .get_or_insert_with(|| ZlibEncoder::new(Vec::new(), Level::default()));
+                encoder.get_mut().clear();
+                let result = encoder.write_all(bytes).and_then(|()| encoder.try_finish());
+                let encoded = std::mem::take(encoder.get_mut());
+                let _ = encoder.reset(Vec::new());
+                result.map(|()| encoded)
+            }),
             Self::Lz4 => Ok(encode_lz4(bytes)),
         }
     }
@@ -210,6 +245,31 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn zlib_streams_are_reused_and_reset_after_errors() {
+        let data: Vec<u8> = (0..200_000).map(|i| (i * 31) as u8).collect();
+        // Reused thread-local streams stay independent, including after an
+        // error truncated or over-limit decode.
+        for _ in 0..64 {
+            let encoded = Compression::Zlib.encode(&data).unwrap();
+            assert_eq!(
+                Compression::Zlib.decode(&encoded, data.len()).unwrap(),
+                data
+            );
+        }
+        let encoded = Compression::Zlib.encode(b"reset me").unwrap();
+        assert!(
+            Compression::Zlib
+                .decode(&encoded[..encoded.len() - 1], 100)
+                .is_err()
+        );
+        assert!(Compression::Zlib.decode(&encoded, 3).is_err());
+        assert_eq!(
+            Compression::Zlib.decode(&encoded, 100).unwrap(),
+            b"reset me"
+        );
+        assert!(Compression::Zlib.encode(&data).is_ok());
     }
     #[test]
     fn checksums_reject_corruption() {
