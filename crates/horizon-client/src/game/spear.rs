@@ -201,6 +201,11 @@ impl Game<'_> {
             }
             let who = actor.map_or(OWN, |conn| conn as i32);
             self.kinetic_hit_feedback(who, &kinetic, [feet.x, feet.y, feet.z]);
+            // SpearMobsTrigger: the living entities stabbed in this use.
+            let stabbed = self.stabbed.keys().filter(|(who, _)| *who == actor).count() as i64;
+            self.trigger("minecraft:spear_mobs", move |c, _| {
+                c["count"].as_i64().is_none_or(|need| stabbed >= need)
+            });
         }
     }
 
@@ -247,6 +252,8 @@ impl Game<'_> {
             self.mobs[index].knockback(0.4, xd, zd);
             let (strength, _) = self.extra_knockback(&kind, 0.0);
             self.mobs[index].knockback(f64::from(strength), xd, zd);
+            // ...and the attacker stops sprinting.
+            self.stop_sprint_after_extra_knockback();
         }
         let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
         if dismounted {
