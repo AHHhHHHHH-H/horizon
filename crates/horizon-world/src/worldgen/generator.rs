@@ -1278,6 +1278,17 @@ impl<R: RandomSource> Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
 {
+    /// WorldGenRegion's level random, positioned at the center chunk.
+    fn region_random_at(&self, center: ChunkPos) -> R {
+        self.root
+            .from_hash_of("minecraft:worldgen_region_random")
+            .fork_positional()
+            .at(BlockPos::new(
+                center.x.wrapping_shl(4),
+                0,
+                center.z.wrapping_shl(4),
+            ))
+    }
     /// ChunkGenerator.getBaseHeight: the first free Y above the noise column
     /// (with aquifers, without terrain adaptation) for a heightmap type.
     fn base_height(&self, x: i32, z: i32, kind: HeightmapType) -> i32 {
@@ -1720,6 +1731,7 @@ trait SeededPipeline: Send + Sync {
     fn forget_structure_starts(&self);
     fn ring_positions(&self, worker: &mut WorkerState, set: &str) -> Option<Vec<ChunkPos>>;
     fn spawn_position(&self) -> Result<[i32; 2], GeneratorError>;
+    fn region_random(&self, center: ChunkPos) -> Box<dyn super::structure::legacy::PieceRandom>;
     fn locate(
         &self,
         worker: &mut WorkerState,
@@ -1758,17 +1770,7 @@ where
     ) -> Result<DecorateStats, GeneratorError> {
         match &self.decoration {
             Some(decoration) => {
-                let center = region[4].position();
-                // WorldGenRegion's level random, positioned at the center chunk.
-                let mut random = self
-                    .root
-                    .from_hash_of("minecraft:worldgen_region_random")
-                    .fork_positional()
-                    .at(BlockPos::new(
-                        center.x.wrapping_shl(4),
-                        0,
-                        center.z.wrapping_shl(4),
-                    ));
+                let mut random = self.region_random_at(region[4].position());
                 decoration.decorate(
                     &self.data,
                     self.seed,
@@ -1842,6 +1844,9 @@ where
             },
             set,
         )
+    }
+    fn region_random(&self, center: ChunkPos) -> Box<dyn super::structure::legacy::PieceRandom> {
+        Box::new(self.region_random_at(center))
     }
     fn spawn_position(&self) -> Result<[i32; 2], GeneratorError> {
         if let Some(position) = self.spawn_position.get() {
@@ -2472,6 +2477,14 @@ impl OverworldGenerator {
     /// NoiseSpawnFinder.findSpawnPosition: the column `origin` is the chunk of.
     pub fn spawn_position(&self) -> Result<[i32; 2], GeneratorError> {
         self.pipeline.spawn_position()
+    }
+    /// A new `WorldGenRegion` random centred on the chunk: what its generation
+    /// steps draw from (`level.getRandom()`).
+    pub fn region_random(
+        &self,
+        center: ChunkPos,
+    ) -> Box<dyn super::structure::legacy::PieceRandom> {
+        self.pipeline.region_random(center)
     }
     /// Create per-thread state. Workers are cheap; keep one per thread.
     pub fn worker(&self) -> GeneratorWorker {
@@ -3237,5 +3250,57 @@ mod tests {
         for (first, hit) in fresh.iter().zip(&again) {
             assert!(Arc::ptr_eq(first, hit));
         }
+    }
+
+    /// The resources the worldgen tests read.
+    fn test_root() -> std::path::PathBuf {
+        std::env::var_os("HORIZON_TEST_RESOURCES")
+            .or_else(|| std::env::var_os("HORIZON_RESOURCES"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3")
+            })
+    }
+    /// The block registry the worldgen bundle needs. `GeneratorData` keeps it
+    /// for as long as the generator lives, so it is shared, not freed.
+    static TEST_REGISTRY: std::sync::LazyLock<BlockRegistry> = std::sync::LazyLock::new(|| {
+        crate::level::data::load_registry(&test_root()).expect("registry")
+    });
+
+    /// The world presets with their own noise settings generate the terrain
+    /// those settings describe: the amplified and large-biome presets are not
+    /// the overworld's terrain under another name.
+    #[test]
+    fn world_presets_use_their_own_noise_settings() {
+        let root = test_root();
+        if !root.join("worldgen/world_presets.json").exists() {
+            eprintln!("skipping: no worldgen bundle at {}", root.display());
+            return;
+        }
+        let data =
+            GeneratorData::load(&root.join("worldgen"), &TEST_REGISTRY).expect("worldgen data");
+        let surface = |preset: &str| {
+            let generator = OverworldGenerator::for_world(
+                data.clone(),
+                1234,
+                preset,
+                "minecraft:overworld",
+                false,
+            )
+            .expect("generator");
+            let mut worker = generator.worker();
+            (0..32)
+                .map(|i| {
+                    worker
+                        .surface_sample(i * 137, i * 91)
+                        .expect("surface")
+                        .height
+                })
+                .collect::<Vec<_>>()
+        };
+        let normal = surface("minecraft:normal");
+        assert!(normal.iter().all(|height| (0..384).contains(height)));
+        assert_ne!(normal, surface("minecraft:amplified"));
+        assert_ne!(normal, surface("minecraft:large_biomes"));
     }
 }

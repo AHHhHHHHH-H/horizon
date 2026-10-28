@@ -298,13 +298,18 @@ impl Lists {
     }
 }
 
-/// The world presets of 26.3's `worldgen/world_preset`.
-const WORLD_PRESETS: [&str; 7] = [
-    "minecraft:normal",
-    "minecraft:flat",
-    "minecraft:large_biomes",
-    "minecraft:amplified",
-    "minecraft:single_biome_surface",
+/// DedicatedServerProperties.LEGACY_PRESET_NAMES: the old `level-type`
+/// names, before the presets had their own ids.
+const LEGACY_PRESET_NAMES: [(&str, horizon_client::save::WorldPreset); 2] = [
+    ("default", horizon_client::save::WorldPreset::Normal),
+    (
+        "largebiomes",
+        horizon_client::save::WorldPreset::LargeBiomes,
+    ),
+];
+/// World presets of 26.3's `worldgen/world_preset` that Horizon does not
+/// generate: they are valid `level-type`s and use `minecraft:normal`.
+const UNGENERATED_PRESETS: [&str; 2] = [
     "minecraft:debug_all_block_states",
     "minecraft:flat_all_dimensions",
 ];
@@ -323,31 +328,47 @@ impl Game<'_> {
     /// DedicatedServerProperties.createDimensions for a world that doesn't
     /// exist yet: `level-type`'s preset, a flat world's `generator-settings`
     /// and `generate-structures`, written before the world opens so that
-    /// streaming reads them. Horizon generates the normal and flat presets.
+    /// streaming reads them.
     fn write_world_gen(&self, dir: &std::path::Path, props: &ServerProperties) -> Result<()> {
         let level_type = &props.level_type;
-        let preset = parse_identifier(level_type)
-            .filter(|id| WORLD_PRESETS.contains(&id.as_str()))
-            .unwrap_or_else(|| {
-                log_from(
-                    "Worker-Main-1",
-                    "WARN",
-                    &format!(
-                        "Failed to parse level-type {level_type}, defaulting to minecraft:normal"
-                    ),
-                );
-                "minecraft:normal".to_owned()
-            });
-        let flat = preset == "minecraft:flat";
-        if !flat && preset != "minecraft:normal" {
+        let identifier = parse_identifier(level_type);
+        if let Some(id) = identifier
+            .as_deref()
+            .filter(|id| UNGENERATED_PRESETS.contains(id))
+        {
             log_from(
                 "Worker-Main-1",
                 "WARN",
                 &format!(
-                    "Horizon doesn't generate the {preset} world preset yet: using minecraft:normal"
+                    "Horizon doesn't generate the {id} world preset yet: using minecraft:normal"
                 ),
             );
         }
+        let preset = identifier
+            .as_deref()
+            .and_then(horizon_client::save::WorldPreset::of_id)
+            .or_else(|| {
+                LEGACY_PRESET_NAMES
+                    .iter()
+                    .find(|(name, _)| *name == level_type)
+                    .map(|(_, preset)| *preset)
+            })
+            .unwrap_or_else(|| {
+                if !identifier
+                    .as_deref()
+                    .is_some_and(|id| UNGENERATED_PRESETS.contains(&id))
+                {
+                    log_from(
+                        "Worker-Main-1",
+                        "WARN",
+                        &format!(
+                            "Failed to parse level-type {level_type}, defaulting to minecraft:normal"
+                        ),
+                    );
+                }
+                horizon_client::save::WorldPreset::Normal
+            });
+        let flat = preset == horizon_client::save::WorldPreset::Flat;
         let settings = if flat {
             let biomes = self.res.biomes();
             let (settings, errors) = horizon_client::flatgen::settings_from_json(
@@ -363,7 +384,7 @@ impl Game<'_> {
             None
         };
         let options = horizon_client::save::WorldGen {
-            flat,
+            preset,
             structures: props.generate_structures,
             bonus_chest: false,
         };
