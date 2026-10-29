@@ -269,6 +269,59 @@ impl Game<'_> {
         }
         self.native_hud(batch, &mut corners);
     }
+    /// The target details extra's readout (`target_info`): the block or mob
+    /// the crosshair is over, above the hotbar. Nothing when nothing is
+    /// within reach.
+    pub(super) fn target_details_draws(
+        &self,
+        w: i32,
+        h: i32,
+        bar_height: i32,
+    ) -> Vec<horizon_client::hud_layout::GuiDraw> {
+        use horizon_client::target_info::{self, Inputs, NAME};
+        let mut lines: Vec<(String, u32)> = Vec::new();
+        // A mob before a block, as the pick order does (`pick_entity_hit`).
+        let mut at = None;
+        if let Some((i, _)) = self.mob_hit() {
+            let m = &self.mobs[i];
+            let key = format!("entity.minecraft.{}", m.kind.id);
+            let name = self
+                .pack
+                .names
+                .display_get(&key)
+                .unwrap_or_else(|| m.kind.id.replace('_', " "));
+            lines.push((name, NAME));
+            lines.push((
+                format!("{} / {}", m.health.ceil(), m.kind.max_health),
+                target_info::health_color(m.health, m.kind.max_health),
+            ));
+            at = Some([
+                m.position.x.floor() as i32,
+                m.position.y.floor() as i32,
+                m.position.z.floor() as i32,
+            ]);
+        } else if let Some(hit) = self.pick() {
+            let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let name = self.res.facts().get(state).name.to_string();
+            lines.push((self.pack.names.display_item(&name), NAME));
+            at = Some(hit.pos);
+        }
+        let inputs = Inputs {
+            w,
+            h,
+            bar_height,
+            lines,
+            at: self
+                .settings
+                .extras
+                .target_coordinates
+                .then_some(at)
+                .flatten(),
+        };
+        let atlas = &self.gui.atlas;
+        let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
+        target_info::layout(&inputs, &width)
+    }
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {

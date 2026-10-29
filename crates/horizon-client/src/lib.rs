@@ -106,6 +106,7 @@ pub mod sprint;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
+pub mod target_info;
 pub mod text_display;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
