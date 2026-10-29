@@ -9,7 +9,7 @@ pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, bidi, biome, block_entities, block_entity_anim,
     block_entity_render, border_render, breaking, brewing, camera, chat, chunk, chunk_map, clouds,
     collisions, command_block, containers, crash, datapack, dynamic_light, effects, environment, extras,
-    fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui, hud, hud_layout,
+    fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui, heart_colors, hud, hud_layout,
     hud_overlays, inventory_effects, java_text, level_loading, light, lod, logging, menu_blur,
     mesher, minimap, mipmap, mod_list, model_library, models, options_file, options_fixes,
     options_ui, overlay, pack_screen, packs, par, particles, poi_sections, providers, screen_draw,
@@ -58,7 +58,6 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
-pub mod heart_colors;
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;

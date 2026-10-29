@@ -34,6 +34,7 @@ pub mod gfx;
 pub mod graphics;
 pub mod graphics_style;
 pub mod graphics_ui;
+pub mod heart_colors;
 pub mod hud;
 pub mod hud_layout;
 pub mod hud_overlays;
