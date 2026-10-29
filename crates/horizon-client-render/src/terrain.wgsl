@@ -24,6 +24,10 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
+    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_count: vec4<u32>,
+    emissive_materials: array<vec4<u32>, 128>,
+    emissive_count: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -71,6 +75,7 @@ struct TerrainOut {
     @location(4) cylindrical: f32,
     // The light the face emits, 0 to 15 (mesher.rs's `EMISSION_BITS`).
     @location(5) @interpolate(flat) emission: u32,
+    @location(6) @interpolate(flat) emissive_layer: u32,
 }
 // Horizon Extras' dynamic lights (dynamic_light.rs): the block light, in the vertex's units
 // (16 per level), a vertex at camera-relative `pos` gets from the frame's light sources, one
@@ -88,6 +93,16 @@ fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
     let uv = vec2(block, sky) * 16.0;
     return textureSampleLevel(lightmap, lightmap_sampler,
         clamp(uv / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
+}
+// Bounded client-only colored illumination. No world-light or shadow writes.
+fn mod_colored_light(pos: vec3<f32>) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
+        let at = globals.colored_lights[i][0];
+        let color = globals.colored_lights[i][1];
+        rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
+    }
+    return min(rgb, vec3(1.0));
 }
 // mesher.rs's TerrainVertex holds the UV in fixed point; the instance's
 // origin.w is the step: 1/32768 per unit for sections (a power of two on an
@@ -122,8 +137,20 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.clip = globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
     out.layer = layer;
+    out.emissive_layer = 0xffffffffu;
+    var lo = 0u;
+    var hi = min(globals.emissive_count.x, 128u);
+    for (var step = 0u; step < 8u && lo < hi; step++) {
+        let mid = (lo + hi) / 2u;
+        let entry = globals.emissive_materials[mid];
+        if entry.x == (layer & 0x7fffu) { out.emissive_layer = entry.y; break; }
+        if entry.x < (layer & 0x7fffu) { lo = mid + 1u; } else { hi = mid; }
+    }
     let block = max(f32(light.y), dynamic_block_light(pos));
     out.color = vec4(color.rgb, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    if globals.colored_count.x > 0u {
+        out.color = vec4(min(out.color.rgb + color.rgb * mod_colored_light(pos), vec3(1.0)), out.color.a);
+    }
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
@@ -146,12 +173,26 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
     // may shine. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.0, in.emission > 0u);
-    return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
+    var result = vec4(color.rgb, emissive);
+    if globals.emissive_count.x > 0u {
+        let overlay = sprite(in.uv, select(0u, in.emissive_layer, in.emissive_layer != 0xffffffffu));
+        if in.emissive_layer != 0xffffffffu {
+            result = vec4(mix(color.rgb, overlay.rgb, overlay.a), select(emissive, 0.0, overlay.a > 0.0));
+        }
+    }
+    return apply_fog(result, in.spherical, in.cylindrical);
 }
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if color.a < 0.01 { discard; }
-    return apply_fog(color, in.spherical, in.cylindrical);
+    var result = color;
+    if globals.emissive_count.x > 0u {
+        let overlay = sprite(in.uv, select(0u, in.emissive_layer, in.emissive_layer != 0xffffffffu));
+        if in.emissive_layer != 0xffffffffu {
+            result = vec4(mix(color.rgb, overlay.rgb, overlay.a), color.a);
+        }
+    }
+    return apply_fog(result, in.spherical, in.cylindrical);
 }
 
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in

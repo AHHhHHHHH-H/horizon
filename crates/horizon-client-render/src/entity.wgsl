@@ -22,6 +22,10 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
+    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_count: vec4<u32>,
+    emissive_materials: array<vec4<u32>, 128>,
+    emissive_count: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -58,6 +62,15 @@ struct Out {
     @location(12) @interpolate(flat) cull: u32,
 }
 // Shipped light.glsl; normals are already transformed and RGBA8_SNORM packed.
+fn mod_colored_light(pos: vec3<f32>) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
+        let at = globals.colored_lights[i][0];
+        let color = globals.colored_lights[i][1];
+        rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
+    }
+    return min(rgb, vec3(1.0));
+}
 fn entity_light(normal: vec3<f32>, nether: bool) -> f32 {
     let l0 = normalize(vec3(0.2, 1.0, -0.7));
     let l1 = normalize(vec3(-0.2, select(1.0, -1.0, nether), 0.7));
@@ -98,6 +111,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     let unlit = overlay == 2u || overlay == 4u || overlay == 6u || overlay == 9u || overlay == 10u
         || overlay == 11u || overlay == 12u;
     out.light_color = select(lm, vec4(1.0), unlit);
+    if globals.colored_count.x > 0u && !unlit {
+        out.light_color = vec4(min(lm.rgb + mod_colored_light(position), vec3(1.0)), lm.a);
+    }
     // Overlay 6 (beacon beams): the light bytes carry the sprite's v range; 11 and 12
     // (cracks): the destroy stage sprite's origin.
     out.wrap = vec2(f32(light.x | (light.y << 8u)), f32(light.z | (light.w << 8u))) / 65535.0;

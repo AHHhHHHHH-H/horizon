@@ -281,6 +281,16 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("placed recipe {book_id}{}", if all { " (all)" } else { "" })
             }
             Output::Give { item, count, .. } => format!("gave {count} {item}"),
+            Output::Sound { sound, .. } => format!("queued local sound {}", sound.id),
+            Output::Particles { particles, .. } => {
+                format!("queued {} local particle(s)", particles.len())
+            }
+            Output::ConfiguredParticles { particles, .. } => {
+                format!("queued {} configured particle(s)", particles.len())
+            }
+            Output::SpriteParticles { particles, .. } => {
+                format!("queued {} sprite particle(s)", particles.len())
+            }
             Output::Shake { strength, seconds } => {
                 format!("shook the camera: {strength:.2} for {seconds:.1} s")
             }

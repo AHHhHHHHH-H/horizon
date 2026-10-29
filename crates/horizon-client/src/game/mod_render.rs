@@ -182,3 +182,143 @@ mod tests {
         assert!(shake.jolts.is_empty());
     }
 }
+
+/// The currently drawn atmosphere, so changing targets does not snap to vanilla.
+#[cfg(feature = "mods")]
+#[derive(Default)]
+pub(super) struct AtmosphereBlend {
+    target: Option<horizon_mods::ModAtmosphere>,
+    from: horizon_client::environment::Sky,
+    last: horizon_client::environment::Sky,
+    since: Option<Instant>,
+}
+#[cfg(feature = "mods")]
+impl AtmosphereBlend {
+    fn apply(
+        &mut self,
+        sky: &mut horizon_client::environment::Sky,
+        target: Option<&horizon_mods::ModAtmosphere>,
+        now: Instant,
+    ) {
+        let Some(target) = target else {
+            self.target = None;
+            self.since = None;
+            self.last = *sky;
+            return;
+        };
+        if self.target.as_ref() != Some(target) {
+            self.from = if self.target.is_some() {
+                self.last
+            } else {
+                *sky
+            };
+            self.target = Some(*target);
+            self.since = Some(now);
+        }
+        let elapsed = self
+            .since
+            .map_or(0.0, |start| now.duration_since(start).as_secs_f32());
+        let t = if target.transition_seconds > 0.0 {
+            (elapsed / target.transition_seconds).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let t = t * t * (3.0 - 2.0 * t);
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        let rgb = |color: u32| {
+            [
+                ((color >> 16) & 255) as f32 / 255.0,
+                ((color >> 8) & 255) as f32 / 255.0,
+                (color & 255) as f32 / 255.0,
+            ]
+        };
+        if let Some(c) = target.sky_color {
+            let c = rgb(c);
+            sky.sky_color = std::array::from_fn(|i| lerp(self.from.sky_color[i], c[i]));
+        }
+        if let Some(c) = target.fog_color {
+            let c = rgb(c);
+            sky.fog_color = std::array::from_fn(|i| lerp(self.from.fog_color[i], c[i]));
+        }
+        if let Some(c) = target.cloud_color {
+            let c = rgb(c);
+            for (i, c) in c.into_iter().enumerate() {
+                sky.cloud_color[i] = lerp(self.from.cloud_color[i], c);
+            }
+        }
+        if let Some(v) = target.fog_start {
+            sky.fog_start = lerp(self.from.fog_start, v);
+        }
+        if let Some(v) = target.fog_end {
+            sky.fog_end = lerp(self.from.fog_end, v);
+        }
+        sky.fog_end = sky.fog_end.max(sky.fog_start + 0.01);
+        if let Some(v) = target.star_brightness {
+            sky.star_brightness = lerp(self.from.star_brightness, v);
+        }
+        if let Some(v) = target.cloud_opacity {
+            sky.cloud_color[3] = lerp(self.from.cloud_color[3], v);
+        }
+        self.last = *sky;
+    }
+}
+#[cfg(feature = "mods")]
+impl Game<'_> {
+    pub(super) fn mod_atmosphere(&self, sky: &mut horizon_client::environment::Sky) {
+        let target = self
+            .title
+            .is_none()
+            .then(|| self.mods.mods.atmosphere())
+            .flatten();
+        self.mods
+            .atmosphere
+            .borrow_mut()
+            .apply(sky, target, Instant::now());
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod atmosphere_tests {
+    use super::*;
+    #[test]
+    fn transitions_interpolate_and_clearing_restores_the_base() {
+        use horizon_client::environment::Sky;
+        let target = horizon_mods::ModAtmosphere {
+            sky_color: Some(0x00FF00),
+            fog_color: None,
+            cloud_color: None,
+            fog_start: Some(0.0),
+            fog_end: Some(128.0),
+            star_brightness: None,
+            cloud_opacity: None,
+            transition_seconds: 1.0,
+        };
+        let now = Instant::now();
+        let mut blend = AtmosphereBlend::default();
+        let base = Sky {
+            fog_end: 256.0,
+            ..Sky::default()
+        };
+        let mut sky = base;
+        blend.apply(&mut sky, Some(&target), now);
+        assert_eq!(sky.sky_color, [0.0; 3]);
+        sky = base;
+        blend.apply(
+            &mut sky,
+            Some(&target),
+            now + std::time::Duration::from_millis(500),
+        );
+        assert_eq!(sky.sky_color, [0.0, 0.5, 0.0]);
+        sky = base;
+        blend.apply(
+            &mut sky,
+            Some(&target),
+            now + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(sky.sky_color, [0.0, 1.0, 0.0]);
+        sky = base;
+        blend.apply(&mut sky, None, now + std::time::Duration::from_secs(2));
+        assert_eq!(sky.sky_color, base.sky_color);
+        assert_eq!(sky.fog_end, base.fog_end);
+    }
+}

@@ -19,6 +19,7 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-mod",
+        additional_derives: [PartialEq],
     });
 }
 /// The server mods' world: `log` and `storage` are the client world's.
@@ -42,14 +43,15 @@ mod ui_bindings {
         world: "ui-host",
     });
 }
+pub use bindings::horizon::mods::audio::Sound as LocalSound;
 pub use bindings::horizon::mods::{
-    game::{Clock, Hit, Player},
+    game::{BlockSample, Clock, Hit, NearbyEntity, Player, WorldEvent, WorldEventKind},
     hud::{Corner, Line},
 };
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+    horizon::mods::{audio, chat, command, game, hud, log as mod_log, storage},
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
@@ -71,6 +73,7 @@ mod render_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "render-host",
+        additional_derives: [PartialEq],
     });
 }
 use render_bindings::horizon::mods::input;
@@ -78,9 +81,11 @@ use render_bindings::horizon::mods::input;
 pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    AmbientParticle, Atmosphere as ModAtmosphere, ColoredLight, ConfiguredParticle,
+    Corner as RenderCorner, EmissiveMaterial, FarTerrain as ModFarTerrain, FillShape, FrameRate,
+    ItemShape, Minimap as ModMinimap, Point as RenderPoint, PostEffect, QuadShape,
+    Rect as RenderRect, Shape, SpriteParticle, SpriteShape, TextShape, WorldParticle,
+    Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -133,10 +138,18 @@ const STORAGE_MAX_KEYS: usize = 64;
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
+/// A read-only snapshot of the client's loaded world, never the remote server.
+/// Implementations must not generate chunks or perform disk/network I/O.
+pub trait ClientWorldView: std::fmt::Debug + Send + Sync {
+    fn sample(&self, x: i32, y: i32, z: i32) -> Option<BlockSample>;
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub player: Option<Player>,
+    pub client_world: Option<Arc<dyn ClientWorldView>>,
+    pub nearby_entities: Arc<[NearbyEntity]>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
     pub gui_size: (f32, f32),
@@ -238,6 +251,30 @@ pub enum Output {
     CloseScreen { owner: usize },
     /// `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
     Shake { strength: f32, seconds: f32 },
+    /// Client-local vanilla particles; pending requests disappear with their owner.
+    Particles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<WorldParticle>,
+    },
+    /// Owner-scoped particles with explicit physics and vanilla sprite sets.
+    ConfiguredParticles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<ConfiguredParticle>,
+    },
+    /// Bounded owner-scoped particles using packaged sprite assets.
+    SpriteParticles {
+        mod_id: String,
+        dimension: String,
+        particles: Vec<SpriteParticle>,
+    },
+    /// A bounded local sound; pending requests belong to their mod.
+    Sound {
+        mod_id: String,
+        dimension: String,
+        sound: LocalSound,
+    },
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
     PlaceRecipe { book_id: i32, all: bool },
@@ -316,6 +353,9 @@ struct Running {
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
+    client_world: bool,
+    entity_queries: bool,
+    world_events: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
 }
@@ -416,6 +456,12 @@ struct State {
     minimap: Option<ModMinimap>,
     /// Capability `render`'s far terrain, when the mod draws one.
     far_terrain: Option<ModFarTerrain>,
+    atmosphere: Option<(String, ModAtmosphere)>,
+    colored_lights: Vec<ColoredLight>,
+    sprite_namespaces: Vec<String>,
+    emissive_materials: Vec<EmissiveMaterial>,
+    emissive_suffixes: bool,
+    post_effects: Vec<PostEffect>,
     input: InputState,
     browser: BrowserState,
     /// Capability `storage`'s folder; made on first `set`.
@@ -425,6 +471,10 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    sound_budget: usize,
+    particle_budget: usize,
+    world_query_budget: usize,
+    world_events: std::collections::VecDeque<WorldEvent>,
     limits: StoreLimits,
     world: WorldSlot,
 }
@@ -437,6 +487,8 @@ pub struct Mods {
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
+    sound_budget: usize,
+    particle_budget: usize,
     world: WorldSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
@@ -619,10 +671,24 @@ impl Mods {
             zoom: None,
             minimap: None,
             far_terrain: None,
+            atmosphere: None,
+            colored_lights: Vec::new(),
+            emissive_materials: Vec::new(),
+            emissive_suffixes: false,
+            post_effects: Vec::new(),
+            sprite_namespaces: if m.capabilities.contains(&crate::Capability::Registries) {
+                m.owned_namespaces().map(str::to_owned).collect()
+            } else {
+                Vec::new()
+            },
             input: InputState::default(),
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            sound_budget: 0,
+            particle_budget: 0,
+            world_query_budget: 0,
+            world_events: Default::default(),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -683,6 +749,9 @@ impl Mods {
             ui,
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
+            client_world: functions.iter().any(|f| f == "game.sample-block"),
+            entity_queries: functions.iter().any(|f| f == "game.nearby-entities"),
+            world_events: functions.iter().any(|f| f == "game.poll-world-events"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
         }))
     }
@@ -702,7 +771,23 @@ impl Mods {
     }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
+        let changed_world = self.snapshot.player.as_ref().map(|p| &p.dimension)
+            != snapshot.player.as_ref().map(|p| &p.dimension);
         self.snapshot = Arc::new(snapshot);
+        if changed_world {
+            for entry in &mut self.entries {
+                if let Some(run) = &mut entry.run {
+                    let state = run.store.data_mut();
+                    state.world_events.clear();
+                    state.atmosphere = None;
+                    state.colored_lights.clear();
+                    state.emissive_materials.clear();
+                    state.emissive_suffixes = false;
+                    state.post_effects.clear();
+                    state.snapshot = self.snapshot.clone();
+                }
+            }
+        }
     }
 
     /// Calls `f` on every running mod whose hooks `wants`, with `fuel`.
@@ -802,6 +887,15 @@ impl Mods {
 
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
+        self.particle_budget = 256;
+        self.sound_budget = 64;
+        for entry in &mut self.entries {
+            if let Some(run) = &mut entry.run {
+                run.store.data_mut().particle_budget = 32;
+                run.store.data_mut().sound_budget = 8;
+                run.store.data_mut().world_query_budget = 64;
+            }
+        }
         self.each_client(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
     }
     /// A rendered frame, `seconds` after the last.
@@ -961,6 +1055,84 @@ impl Mods {
     }
     /// Some running mod calls `game.raycast`: the snapshot needs a
     /// [`Snapshot::view_hit`].
+    /// The first running owner's visual atmosphere, only in the dimension it set.
+    pub fn atmosphere(&self) -> Option<&ModAtmosphere> {
+        let dimension = &self.snapshot.player.as_ref()?.dimension;
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .filter_map(|run| run.store.data().atmosphere.as_ref())
+            .find_map(|(d, value)| (d == dimension).then_some(value))
+    }
+    /// Live owners only, in stable install order; bounded to eight per owner.
+    pub fn colored_lights(&self) -> impl Iterator<Item = &ColoredLight> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().colored_lights)
+    }
+    pub fn emissive_materials(&self) -> impl Iterator<Item = &EmissiveMaterial> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().emissive_materials)
+    }
+    pub fn emissive_suffixes(&self) -> bool {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .any(|r| r.store.data().emissive_suffixes)
+    }
+    pub fn post_effects(&self) -> impl Iterator<Item = &PostEffect> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| &r.store.data().post_effects)
+            .take(4)
+    }
+    pub fn wants_world_events(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.world_events))
+    }
+    /// Fan out only bounded events visible near the local player.
+    pub fn observed_world_event(&mut self, mut event: WorldEvent) {
+        let Some(p) = &self.snapshot.player else {
+            return;
+        };
+        let d2 = (event.x - p.x).powi(2) + (event.y - p.y).powi(2) + (event.z - p.z).powi(2);
+        if !d2.is_finite() || d2 > 32.0_f64.powi(2) {
+            return;
+        }
+        event.detail = clip(event.detail);
+        event.speed = if event.speed.is_finite() {
+            event.speed.clamp(0.0, 4.0)
+        } else {
+            0.0
+        };
+        for entry in &mut self.entries {
+            if let Some(run) = &mut entry.run
+                && run.world_events
+            {
+                let queue = &mut run.store.data_mut().world_events;
+                if queue.len() == 128 {
+                    queue.pop_front();
+                }
+                queue.push_back(event.clone());
+            }
+        }
+    }
+    pub fn wants_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.entity_queries))
+    }
+    /// Whether a client mod needs a bounded loaded-world snapshot.
+    pub fn wants_client_world(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.client_world))
+    }
     pub fn wants_raycast(&self) -> bool {
         self.entries
             .iter()
@@ -1256,7 +1428,59 @@ impl Mods {
     }
     /// What mods asked to show since the last call.
     pub fn drain(&mut self) -> Vec<Output> {
-        std::mem::take(&mut self.out)
+        let mut out = Vec::new();
+        for mut event in std::mem::take(&mut self.out) {
+            if let Output::Sound { mod_id, .. } = &event {
+                if self.sound_budget == 0
+                    || !self.entries.iter().any(|entry| {
+                        entry
+                            .run
+                            .as_ref()
+                            .is_some_and(|run| run.store.data().id == *mod_id)
+                    })
+                {
+                    continue;
+                }
+                self.sound_budget -= 1;
+            }
+            let particle_owner = match &event {
+                Output::Particles { mod_id, .. }
+                | Output::ConfiguredParticles { mod_id, .. }
+                | Output::SpriteParticles { mod_id, .. } => Some(mod_id),
+                _ => None,
+            };
+            if let Some(mod_id) = particle_owner {
+                if !self.entries.iter().any(|entry| {
+                    entry
+                        .run
+                        .as_ref()
+                        .is_some_and(|run| run.store.data().id == *mod_id)
+                }) {
+                    continue;
+                }
+                let count = match &mut event {
+                    Output::Particles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    Output::ConfiguredParticles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    Output::SpriteParticles { particles, .. } => {
+                        particles.truncate(self.particle_budget);
+                        particles.len()
+                    }
+                    _ => unreachable!(),
+                };
+                self.particle_budget -= count;
+                if count == 0 {
+                    continue;
+                }
+            }
+            out.push(event);
+        }
+        out
     }
 
     /// Restarts the mods whose file changed since they loaded (mod
@@ -1399,7 +1623,89 @@ impl mod_log::Host for State {
         log::log!(level, "[mod {}] {}", self.id, clip(message));
     }
 }
+impl audio::Host for State {
+    fn play(&mut self, sound: LocalSound) -> bool {
+        if self.sound_budget == 0 {
+            return false;
+        }
+        self.sound_budget -= 1;
+        let Some(player) = &self.snapshot.player else {
+            return false;
+        };
+        let id_ok = sound.id.len() <= 256
+            && sound.id.split_once(':').is_some_and(|(ns, path)| {
+                !ns.is_empty()
+                    && !path.is_empty()
+                    && ns.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                    })
+                    && path.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b)
+                    })
+                    && path
+                        .split('/')
+                        .all(|p| !p.is_empty() && p != "." && p != "..")
+            });
+        let d2 = (sound.x - player.x).powi(2)
+            + (sound.y - player.y).powi(2)
+            + (sound.z - player.z).powi(2);
+        if !id_ok
+            || !d2.is_finite()
+            || d2 > 32.0_f64.powi(2)
+            || !sound.volume.is_finite()
+            || !(0.0..=1.0).contains(&sound.volume)
+            || !sound.pitch.is_finite()
+            || !(0.5..=2.0).contains(&sound.pitch)
+        {
+            return false;
+        }
+        self.out.push(Output::Sound {
+            mod_id: self.id.clone(),
+            dimension: player.dimension.clone(),
+            sound,
+        });
+        true
+    }
+}
+
 impl game::Host for State {
+    fn poll_world_events(&mut self) -> Vec<WorldEvent> {
+        self.world_events.drain(..).collect()
+    }
+    fn nearby_entities(&mut self, radius: f32) -> Vec<NearbyEntity> {
+        if self.world_query_budget == 0 || !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
+            return Vec::new();
+        }
+        self.world_query_budget -= 1;
+        let Some(p) = &self.snapshot.player else {
+            return Vec::new();
+        };
+        self.snapshot
+            .nearby_entities
+            .iter()
+            .filter(|e| {
+                (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2)
+                    <= f64::from(radius).powi(2)
+            })
+            .take(128)
+            .cloned()
+            .collect()
+    }
+    fn sample_block(&mut self, x: i32, y: i32, z: i32) -> Option<BlockSample> {
+        if self.world_query_budget == 0 {
+            return None;
+        }
+        self.world_query_budget -= 1;
+        let player = self.snapshot.player.as_ref()?;
+        let distance = (f64::from(x) - player.x).powi(2)
+            + (f64::from(y) - player.y).powi(2)
+            + (f64::from(z) - player.z).powi(2);
+        if !distance.is_finite() || distance > 32.0_f64.powi(2) {
+            return None;
+        }
+        self.snapshot.client_world.as_ref()?.sample(x, y, z)
+    }
+
     fn get_player(&mut self) -> Option<Player> {
         self.snapshot.player.clone()
     }
@@ -1773,7 +2079,232 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// Bounds both the native work and the region a sandbox may affect.
+fn valid_world_particle(p: &WorldParticle, player: &Player) -> bool {
+    let positions = [p.x, p.y, p.z, player.x, player.y, player.z];
+    let velocity = [p.velocity_x, p.velocity_y, p.velocity_z];
+    positions.into_iter().all(f64::is_finite)
+        && velocity
+            .into_iter()
+            .all(|v| v.is_finite() && v.abs() <= 1.0)
+        && (p.x - player.x).powi(2) + (p.y - player.y).powi(2) + (p.z - player.z).powi(2)
+            <= 32.0_f64.powi(2)
+}
+
+fn valid_configured_particle(p: &ConfiguredParticle, player: &Player) -> bool {
+    let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+    valid_world_particle(&p.particle, player)
+        && p.color <= 0xFFFFFF
+        && bounded(p.alpha, 0.0, 1.0)
+        && bounded(p.size, 0.005, 1.0)
+        && (1..=200).contains(&p.lifetime)
+        && bounded(p.gravity, -1.0, 1.0)
+        && bounded(p.friction, 0.0, 1.0)
+}
+
+fn valid_particle_sprite(sprite: &str, namespaces: &[String]) -> bool {
+    let Some((namespace, path)) = sprite.split_once(':') else {
+        return false;
+    };
+    sprite.len() <= 192
+        && namespaces.iter().any(|ns| ns == namespace)
+        && path.starts_with("particle/")
+        && path.len() > 9
+        && path.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+        })
+}
+
 impl render::Host for State {
+    fn set_post_effects(&mut self, effects: Vec<PostEffect>) -> Result<(), String> {
+        if !effects.is_empty() && self.snapshot.player.is_none() {
+            return Err("no world is open".into());
+        }
+        let bounded = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+        if effects.len() > 2
+            || effects.iter().any(|e| match e {
+                PostEffect::Bloom(b) => {
+                    !bounded(b.strength, 0.0, 1.0)
+                        || !bounded(b.threshold, 0.0, 1.0)
+                        || !bounded(b.radius, 0.5, 8.0)
+                }
+                PostEffect::Godrays(g) => {
+                    !bounded(g.strength, 0.0, 1.0)
+                        || !bounded(g.light_x, 0.0, 1.0)
+                        || !bounded(g.light_y, 0.0, 1.0)
+                        || g.color > 0xFFFFFF
+                }
+            })
+        {
+            return Err("invalid post-effect count, strength, radius, threshold or light".into());
+        }
+        self.post_effects = effects;
+        Ok(())
+    }
+    fn set_emissive_materials(
+        &mut self,
+        materials: Vec<EmissiveMaterial>,
+        pack_suffixes: bool,
+    ) -> Result<(), String> {
+        if (!materials.is_empty() || pack_suffixes) && self.snapshot.player.is_none() {
+            return Err("no world is open".into());
+        }
+        let valid = |id: &str| {
+            id.len() <= 192
+                && id.split_once(':').is_some_and(|(ns, p)| {
+                    !ns.is_empty()
+                        && !p.is_empty()
+                        && ns.bytes().all(|c| {
+                            c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c)
+                        })
+                        && p.split('/').all(|s| {
+                            !s.is_empty()
+                                && s != "."
+                                && s != ".."
+                                && s.bytes().all(|c| {
+                                    c.is_ascii_lowercase()
+                                        || c.is_ascii_digit()
+                                        || b"_.-".contains(&c)
+                                })
+                        })
+                })
+        };
+        if materials.len() > 32
+            || materials.iter().any(|m| {
+                !valid(&m.base)
+                    || !valid(&m.overlay)
+                    || !m.overlay.split_once(':').is_some_and(|(ns, p)| {
+                        self.sprite_namespaces.iter().any(|s| s == ns) && p.starts_with("emissive/")
+                    })
+            })
+        {
+            return Err("invalid emissive material count, id or owned overlay".into());
+        }
+        self.emissive_materials = materials;
+        self.emissive_suffixes = pack_suffixes;
+        Ok(())
+    }
+    fn emit_sprite_particles(&mut self, particles: Vec<SpriteParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| {
+                valid_configured_particle(&p.particle, player)
+                    && valid_particle_sprite(&p.sprite, &self.sprite_namespaces)
+            })
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::SpriteParticles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
+    fn set_colored_lights(&mut self, lights: Vec<ColoredLight>) -> Result<(), String> {
+        if lights.is_empty() {
+            self.colored_lights.clear();
+            return Ok(());
+        }
+        let player = self.snapshot.player.as_ref().ok_or("no world is open")?;
+        if lights.len() > 8
+            || lights.iter().any(|p| {
+                ![p.x, p.y, p.z].into_iter().all(f64::is_finite)
+                    || (p.x - player.x).powi(2)
+                        + (p.y - player.y).powi(2)
+                        + (p.z - player.z).powi(2)
+                        > 1024.0
+                    || p.color > 0xFFFFFF
+                    || !p.radius.is_finite()
+                    || !(0.25..=16.0).contains(&p.radius)
+                    || !p.intensity.is_finite()
+                    || !(0.0..=1.0).contains(&p.intensity)
+            })
+        {
+            return Err("invalid light count, position, color, radius or intensity".into());
+        }
+        self.colored_lights = lights;
+        Ok(())
+    }
+    fn emit_configured_particles(&mut self, particles: Vec<ConfiguredParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| valid_configured_particle(p, player))
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::ConfiguredParticles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
+    fn set_atmosphere(&mut self, value: Option<ModAtmosphere>) -> Result<(), String> {
+        let Some(value) = value else {
+            self.atmosphere = None;
+            return Ok(());
+        };
+        let bounded = |v: Option<f32>, lo: f32, hi: f32| {
+            v.is_none_or(|v| v.is_finite() && (lo..=hi).contains(&v))
+        };
+        if [value.sky_color, value.fog_color, value.cloud_color]
+            .into_iter()
+            .any(|c| c.is_some_and(|v| v > 0xFFFFFF))
+            || !bounded(value.fog_start, 0.0, 4096.0)
+            || !bounded(value.fog_end, 0.0, 4096.0)
+            || !bounded(value.star_brightness, 0.0, 1.0)
+            || !bounded(value.cloud_opacity, 0.0, 1.0)
+            || !value.transition_seconds.is_finite()
+            || !(0.0..=10.0).contains(&value.transition_seconds)
+            || matches!((value.fog_start, value.fog_end), (Some(a), Some(b)) if b <= a)
+        {
+            return Err("invalid atmosphere colour, distance, opacity or transition".into());
+        }
+        let player = self.snapshot.player.as_ref().ok_or("no world is open")?;
+        self.atmosphere = Some((player.dimension.clone(), value));
+        Ok(())
+    }
+    fn emit_particles(&mut self, particles: Vec<WorldParticle>) -> u32 {
+        let Some(player) = &self.snapshot.player else {
+            return 0;
+        };
+        let accepted: Vec<_> = particles
+            .into_iter()
+            .take(32)
+            .filter(|p| valid_world_particle(p, player))
+            .take(self.particle_budget)
+            .collect();
+        let count = accepted.len();
+        self.particle_budget -= count;
+        if count > 0 {
+            self.out.push(Output::Particles {
+                mod_id: self.id.clone(),
+                dimension: player.dimension.clone(),
+                particles: accepted,
+            });
+        }
+        count as u32
+    }
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
     }

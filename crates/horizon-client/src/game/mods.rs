@@ -7,6 +7,41 @@
 //! without it the game links no wasmtime, and every hook does nothing.
 //! Content mods (`content_root`) load in every build.
 use super::Game;
+#[cfg(feature = "mods")]
+fn configured_particle(
+    p: horizon_mods::ConfiguredParticle,
+) -> horizon_client::particles::ModParticle {
+    use horizon_client::particles::{ModParticle, ParticleType as P};
+    use horizon_mods::AmbientParticle as A;
+    let at = p.particle;
+    let kind = match at.kind {
+        A::Smoke => P::Smoke,
+        A::Flame => P::Flame,
+        A::Bubble => P::Bubble,
+        A::Splash => P::Splash,
+        A::EndRod => P::EndRod,
+        A::CherryLeaves => P::CherryLeaves,
+        A::WhiteAsh => P::WhiteAsh,
+        A::SporeBlossomAir => P::SporeBlossomAir,
+    };
+    ModParticle {
+        kind,
+        position: [at.x, at.y, at.z],
+        velocity: [at.velocity_x, at.velocity_y, at.velocity_z],
+        rgba: [
+            ((p.color >> 16) & 255) as f32 / 255.0,
+            ((p.color >> 8) & 255) as f32 / 255.0,
+            (p.color & 255) as f32 / 255.0,
+            p.alpha,
+        ],
+        size: p.size,
+        lifetime: p.lifetime,
+        gravity: p.gravity,
+        friction: p.friction,
+        collision: p.collision,
+        full_bright: p.full_bright,
+    }
+}
 use horizon_client::{
     command::{Dispatcher, vanilla},
     extras_hud::Corners,
@@ -40,12 +75,18 @@ use {
 pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
+    #[cfg(feature = "mods")]
+    pub(super) world_tables: Option<std::sync::Arc<super::mod_world::Tables>>,
+    #[cfg(feature = "mods")]
+    pub(super) world_observer: super::mod_world::Observer,
     /// Capability `input`: a claimed item's use while the button is down.
     #[cfg(feature = "mods")]
     pub(super) using: Option<super::mod_input::ModUse>,
     /// Capability `render`'s camera shakes.
     #[cfg(feature = "mods")]
     pub(super) shake: super::mod_render::Shake,
+    #[cfg(feature = "mods")]
+    pub(super) atmosphere: std::cell::RefCell<super::mod_render::AtmosphereBlend>,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
@@ -255,6 +296,7 @@ impl Game<'_> {
     /// Says why the installed and dev mods don't run.
     pub(super) fn start_mods(&mut self) {
         let dir = Self::options_path().with_file_name(mod_list::DIR);
+        self.particles.retain_mod_particles(|_| false);
         let found = horizon_mods::find(&dir).len() + self.mods.dev.len();
         if found > 0 {
             log::warn!(
@@ -265,6 +307,18 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
+    pub(super) fn mod_post_effects(&self) -> Vec<horizon_client::gfx::ModPostEffect> {
+        Vec::new()
+    }
+    pub(super) fn mod_emissive_materials(&self) -> Vec<[u32; 4]> {
+        Vec::new()
+    }
+    pub(super) fn mod_colored_lights(
+        &self,
+        _camera: glam::DVec3,
+    ) -> Vec<horizon_client::dynamic_light::Colored> {
+        Vec::new()
+    }
     pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
@@ -421,6 +475,71 @@ impl Game<'_> {
             self.start_mods();
         }
     }
+    pub(super) fn mod_post_effects(&self) -> Vec<horizon_client::gfx::ModPostEffect> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        self.mods
+            .mods
+            .post_effects()
+            .map(|e| {
+                use horizon_client::gfx::ModPostEffect as E;
+                match e {
+                    horizon_mods::PostEffect::Bloom(b) => E {
+                        params: [0.0, b.strength, b.threshold, b.radius],
+                        ..E::default()
+                    },
+                    horizon_mods::PostEffect::Godrays(g) => E {
+                        params: [1.0, g.strength, 0.0, 0.0],
+                        light: [
+                            g.light_x,
+                            g.light_y,
+                            ((g.color >> 16) & 255) as f32 / 255.0,
+                            ((g.color >> 8) & 255) as f32 / 255.0,
+                        ],
+                        color: [(g.color & 255) as f32 / 255.0, 0.0, 0.0, 0.0],
+                    },
+                }
+            })
+            .collect()
+    }
+    pub(super) fn mod_emissive_materials(&self) -> Vec<[u32; 4]> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        horizon_client::mod_emissive::mappings(
+            &self.pack.render.sprite_layers,
+            self.mods
+                .mods
+                .emissive_materials()
+                .map(|m| (m.base.clone(), m.overlay.clone())),
+            if self.mods.mods.emissive_suffixes() {
+                &self.pack.render.emissive_suffixes
+            } else {
+                &[]
+            },
+        )
+    }
+    pub(super) fn mod_colored_lights(
+        &self,
+        camera: glam::DVec3,
+    ) -> Vec<horizon_client::dynamic_light::Colored> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        let sources = self
+            .mods
+            .mods
+            .colored_lights()
+            .filter(|l| {
+                self.world.chunks.contains_key(&(
+                    (l.x.floor() as i32).div_euclid(16),
+                    (l.z.floor() as i32).div_euclid(16),
+                ))
+            })
+            .map(|l| ([l.x, l.y, l.z], l.color, l.radius, l.intensity));
+        horizon_client::dynamic_light::select_colored(sources, camera)
+    }
     /// What mods read this tick (or frame, for mods with a `frame` hook): the
     /// server's players as they were at the last tick's end.
     fn mod_snapshot(&mut self) -> Snapshot {
@@ -469,6 +588,8 @@ impl Game<'_> {
         }
         let (recipes, known_recipes) = self.mod_recipes();
         Snapshot {
+            client_world: self.mod_world_snapshot(),
+            nearby_entities: self.mod_nearby_entities(),
             player,
             clock,
             gui_size: self.gui_size(),
@@ -602,6 +723,7 @@ impl Game<'_> {
         self.tick_mod_use();
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
+        self.observe_mod_world_events();
         self.mods.mods.tick(self.ticks);
         self.show_mod_output();
     }
@@ -617,6 +739,8 @@ impl Game<'_> {
         }
         self.mods.checked = Some(Instant::now());
         if self.mods.mods.reload_changed(vanilla_command) {
+            // A reload may replace an owner while keeping the same id.
+            self.particles.retain_mod_particles(|_| false);
             let chosen = &self.settings.mods;
             self.mods.mods.set_bindings(|id| chosen.keys_of(id));
             self.list_mods();
@@ -720,6 +844,124 @@ impl Game<'_> {
                     self.mods.shake.add(strength, seconds);
                     continue;
                 }
+                Output::Sound {
+                    dimension, sound, ..
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        self.audio.play(
+                            &sound.id,
+                            Some([sound.x, sound.y, sound.z]),
+                            sound.volume,
+                            sound.pitch,
+                        );
+                    }
+                    continue;
+                }
+                Output::SpriteParticles {
+                    mod_id,
+                    dimension,
+                    particles,
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            let at = &p.particle.particle;
+                            if !self.world.chunks.contains_key(&(
+                                (at.x.floor() as i32).div_euclid(16),
+                                (at.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            let spec = configured_particle(p.particle);
+                            self.particles
+                                .add_mod_sprite_particle(&mod_id, &spec, &p.sprite);
+                        }
+                    }
+                    continue;
+                }
+                Output::ConfiguredParticles {
+                    mod_id,
+                    dimension,
+                    particles,
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            let at = p.particle;
+                            if !self.world.chunks.contains_key(&(
+                                (at.x.floor() as i32).div_euclid(16),
+                                (at.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            use horizon_client::particles::{ModParticle, ParticleType as P};
+                            use horizon_mods::AmbientParticle as A;
+                            let kind = match at.kind {
+                                A::Smoke => P::Smoke,
+                                A::Flame => P::Flame,
+                                A::Bubble => P::Bubble,
+                                A::Splash => P::Splash,
+                                A::EndRod => P::EndRod,
+                                A::CherryLeaves => P::CherryLeaves,
+                                A::WhiteAsh => P::WhiteAsh,
+                                A::SporeBlossomAir => P::SporeBlossomAir,
+                            };
+                            self.particles.add_mod_particle(
+                                &mod_id,
+                                &ModParticle {
+                                    kind,
+                                    position: [at.x, at.y, at.z],
+                                    velocity: [at.velocity_x, at.velocity_y, at.velocity_z],
+                                    rgba: [
+                                        ((p.color >> 16) & 255) as f32 / 255.0,
+                                        ((p.color >> 8) & 255) as f32 / 255.0,
+                                        (p.color & 255) as f32 / 255.0,
+                                        p.alpha,
+                                    ],
+                                    size: p.size,
+                                    lifetime: p.lifetime,
+                                    gravity: p.gravity,
+                                    friction: p.friction,
+                                    collision: p.collision,
+                                    full_bright: p.full_bright,
+                                },
+                            );
+                        }
+                    }
+                    continue;
+                }
+                Output::Particles {
+                    dimension,
+                    particles,
+                    ..
+                } => {
+                    if self.title.is_none() && self.dim.id() == dimension {
+                        for p in particles {
+                            if !self.world.chunks.contains_key(&(
+                                (p.x.floor() as i32).div_euclid(16),
+                                (p.z.floor() as i32).div_euclid(16),
+                            )) {
+                                continue;
+                            }
+                            use horizon_client::particles::{ParticleOptions, ParticleType as P};
+                            use horizon_mods::AmbientParticle as A;
+                            let kind = match p.kind {
+                                A::Smoke => P::Smoke,
+                                A::Flame => P::Flame,
+                                A::Bubble => P::Bubble,
+                                A::Splash => P::Splash,
+                                A::EndRod => P::EndRod,
+                                A::CherryLeaves => P::CherryLeaves,
+                                A::WhiteAsh => P::WhiteAsh,
+                                A::SporeBlossomAir => P::SporeBlossomAir,
+                            };
+                            self.particles.add(
+                                &ParticleOptions::simple(kind),
+                                [p.x, p.y, p.z],
+                                [p.velocity_x, p.velocity_y, p.velocity_z],
+                            );
+                        }
+                    }
+                    continue;
+                }
                 Output::PlaceRecipe { book_id, all } => {
                     self.mod_place_recipe(book_id, all);
                     continue;
@@ -743,6 +985,12 @@ impl Game<'_> {
         }
         // A mod may set or clear its settings page in any call, not only
         // while loading: its row's Settings button follows.
+        let entries = self.mods.mods.entries();
+        self.particles.retain_mod_particles(|id| {
+            entries.iter().any(|e| {
+                e.status == Status::Running && e.manifest.as_ref().is_some_and(|m| m.id == id)
+            })
+        });
         let rows = self.settings.mods.installed.iter_mut();
         for (row, e) in rows.zip(self.mods.mods.entries()) {
             row.has_settings = e.has_ui_settings();

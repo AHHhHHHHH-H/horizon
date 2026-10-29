@@ -26,6 +26,9 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 
+mod mod_particles;
+pub use mod_particles::ModParticle;
+
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
 pub struct ParticleOptions {
@@ -289,6 +292,8 @@ enum DripStage {
 /// One live particle (`Particle` + `SingleQuadParticle` state).
 #[derive(Clone, Debug)]
 pub struct Particle {
+    /// Set only for sandbox-owned configurable particles, never vanilla ones.
+    mod_owner: Option<String>,
     pub ty: ParticleType,
     pub position: [f64; 3],
     pub previous: [f64; 3],
@@ -632,6 +637,7 @@ impl Particle {
     }
     fn blank(ty: ParticleType, p: [f64; 3]) -> Self {
         Self {
+            mod_owner: None,
             ty,
             position: p,
             previous: p,

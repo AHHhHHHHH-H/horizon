@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "audio"]
+experimental = ["ui", "render", "input", "recipes", "audio"]
 "#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
@@ -48,6 +48,8 @@ fn mods_dir() -> &'static Path {
                 "welcome",
                 "-p",
                 "beacons",
+                "-p",
+                "effect-lab",
                 "-p",
                 "horizon-mods-test-guest",
                 "-p",
@@ -73,12 +75,18 @@ fn mods_dir() -> &'static Path {
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
+            ("effect_lab", example("effect-lab")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
-            let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
+            let component = componentize(&core).unwrap();
+            let hmod = if name == "effect_lab" {
+                Package::write_files(&manifest,Some(&component),&[("assets/effect_lab/textures/particle/spark.png",
+                    include_bytes!("../../horizon-mod-sdk/examples/effect-lab/assets/effect_lab/textures/particle/spark.png")),
+                    ("assets/effect_lab/textures/emissive/stone.png",include_bytes!("../../horizon-mod-sdk/examples/effect-lab/assets/effect_lab/textures/emissive/stone.png"))]).unwrap()
+            } else { Package::write(&manifest, &component).unwrap() };
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
         }
         dir
@@ -241,8 +249,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "audio"]
+experimental = ["ui", "render", "input", "recipes", "audio"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -1301,4 +1309,483 @@ fn browser_lists_items_and_hears_the_player() {
         mods.browser_event(owner, BrowserEvent::Page(1));
     }
     assert_eq!(said(&mut mods, "browser_poll")[0], "256 events");
+}
+
+#[test]
+fn world_particles_are_local_bounded_and_discarded_on_failure() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let emit = |mods: &mut Mods, args: &str| {
+        assert!(mods.command(&format!("particles {args}")));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Particles { particles, .. } => Some(particles.len()),
+                _ => None,
+            })
+            .sum::<usize>()
+    };
+    assert_eq!(emit(&mut mods, ""), 0); // no world/player
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for invalid in ["far", "nan", "speed", "inf"] {
+        assert_eq!(emit(&mut mods, invalid), 0);
+    }
+    assert_eq!(emit(&mut mods, "edge"), 32);
+    // More host calls, including frames, cannot reset the per-tick quota.
+    mods.frame(0.01);
+    assert_eq!(emit(&mut mods, ""), 0);
+    mods.tick(2);
+    assert_eq!(emit(&mut mods, ""), 32);
+    mods.tick(3);
+    assert_eq!(emit(&mut mods, "panic"), 0);
+}
+
+#[test]
+fn configured_particles_validate_parameters_and_share_vanilla_request_quota() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for invalid in [
+        "nan", "size", "life", "zero", "color", "gravity", "friction", "far",
+    ] {
+        assert!(mods.command(&format!("configured_particles {invalid}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+        );
+    }
+    assert!(mods.command("configured_particles"));
+    let out = mods.drain();
+    let particles = out
+        .iter()
+        .find_map(|o| match o {
+            Output::ConfiguredParticles { particles, .. } => Some(particles),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(particles.len(), 32);
+    assert_eq!(particles[0].color, 0x55CCAA);
+    assert_eq!(particles[0].lifetime, 40);
+    assert!(mods.command("particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::Particles { .. }))
+    );
+    mods.frame(0.01);
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.tick(2);
+    assert!(mods.command("particles"));
+    mods.drain();
+    assert!(mods.command("configured_particles"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+    mods.tick(3);
+    assert!(mods.command("configured_particles panic"));
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::ConfiguredParticles { .. }))
+    );
+}
+
+#[test]
+fn colored_lights_validate_atomically_and_follow_owner_and_dimension() {
+    fn said(mods: &mut Mods, command: &str) -> Vec<String> {
+        assert!(mods.command(command));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(said(&mut mods, "colored_lights")[0].contains("no world"));
+    mods.set_snapshot(player());
+    assert_eq!(said(&mut mods, "colored_lights"), ["Ok(())"]);
+    assert_eq!(mods.colored_lights().count(), 1);
+    for bad in ["far", "nan", "color", "intensity", "many"] {
+        assert!(said(&mut mods, &format!("colored_lights {bad}"))[0].starts_with("Err"));
+        assert_eq!(mods.colored_lights().count(), 1);
+    }
+    assert_eq!(said(&mut mods, "colored_lights clear"), ["Ok(())"]);
+    assert_eq!(mods.colored_lights().count(), 0);
+    said(&mut mods, "colored_lights");
+    let mut next = player();
+    next.player.as_mut().unwrap().dimension = "minecraft:the_nether".into();
+    mods.set_snapshot(next);
+    assert_eq!(mods.colored_lights().count(), 0);
+    said(&mut mods, "colored_lights panic");
+    assert_eq!(mods.colored_lights().count(), 0);
+}
+
+#[test]
+fn emissive_and_post_controls_validate_and_cleanup_without_renderer() {
+    fn said(mods: &mut Mods, command: &str) -> Vec<String> {
+        assert!(mods.command(command));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(said(&mut mods, "post_effects")[0].contains("no world"));
+    assert!(said(&mut mods, "emissive")[0].contains("no world"));
+    mods.set_snapshot(player());
+    assert_eq!(said(&mut mods, "post_effects"), ["Ok(())"]);
+    assert_eq!(mods.post_effects().count(), 1);
+    for bad in ["nan", "radius", "threshold", "many"] {
+        assert!(said(&mut mods, &format!("post_effects {bad}"))[0].starts_with("Err"));
+        assert_eq!(mods.post_effects().count(), 1);
+    }
+    assert_eq!(said(&mut mods, "post_effects rays"), ["Ok(())"]);
+    assert_eq!(said(&mut mods, "emissive"), ["Ok(())"]);
+    assert!(mods.emissive_suffixes());
+    for bad in ["foreign", "bad"] {
+        assert!(said(&mut mods, &format!("emissive {bad}"))[0].starts_with("Err"));
+        assert!(mods.emissive_suffixes());
+    }
+    let mut next = player();
+    next.player.as_mut().unwrap().dimension = "minecraft:the_end".into();
+    mods.set_snapshot(next);
+    assert_eq!(mods.post_effects().count(), 0);
+    assert!(!mods.emissive_suffixes());
+    said(&mut mods, "post_effects");
+    said(&mut mods, "emissive");
+    said(&mut mods, "post_effects panic");
+    assert_eq!(mods.post_effects().count(), 0);
+    assert!(!mods.emissive_suffixes());
+}
+
+#[test]
+fn effect_lab_package_contains_original_asset_settings_and_working_controls() {
+    let path = mods_dir().join("effect_lab.hmod");
+    let package = Package::read(&path).unwrap();
+    let content = horizon_mods::Content::read(&path, &package.manifest).unwrap();
+    assert!(
+        content
+            .files
+            .iter()
+            .any(|p| p == "assets/effect_lab/textures/particle/spark.png")
+    );
+    let mut mods = load("effect_lab.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    assert!(mods.command("effect_lab off"));
+    mods.drain();
+    mods.tick(1);
+    assert_eq!(mods.colored_lights().count(), 0);
+    assert!(mods.command("effect_lab on"));
+    mods.drain();
+    mods.tick(4);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::SpriteParticles { particles,.. } if particles.len()==1))
+    );
+    assert_eq!(mods.colored_lights().count(), 1);
+    assert!(mods.emissive_suffixes());
+    assert_eq!(mods.post_effects().count(), 1);
+    assert!(mods.entries()[0].has_ui_settings());
+    assert!(mods.command("effect_lab off"));
+    mods.drain();
+    assert_eq!(mods.colored_lights().count(), 0);
+    assert!(!mods.emissive_suffixes());
+    assert_eq!(mods.post_effects().count(), 0);
+}
+
+#[test]
+fn sprite_particles_require_owned_content_namespaces() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let path = mods_dir().join("sprite-owner.hmod");
+    let manifest = UI_MANIFEST
+        .replace("api = \"0.1\"", "api = \"0.2\"")
+        .replace("capabilities = [", "capabilities = [\"registries\", ");
+    std::fs::write(&path, Package::write(&manifest, &wasm).unwrap()).unwrap();
+    let mut mods = Mods::load(&[path], |_| true, |_| false);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    mods.tick(1);
+    for args in ["sprite_foreign", "sprite_parent", "sprite_bad"] {
+        assert!(mods.command(&format!("configured_particles {args}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::SpriteParticles { .. }))
+        );
+    }
+    assert!(mods.command("configured_particles sprite"));
+    assert!(
+        mods.drain().iter().any(
+            |o| matches!(o, Output::SpriteParticles { particles, .. } if particles.len() == 32)
+        )
+    );
+    let mut no_content = load("horizon_mods_test_ui_guest.hmod");
+    no_content.set_snapshot(player());
+    no_content.tick(1);
+    assert!(no_content.command("configured_particles sprite"));
+    assert!(
+        !no_content
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::SpriteParticles { .. }))
+    );
+}
+
+#[test]
+fn world_particles_share_a_global_tick_budget_across_drains() {
+    let folder = mods_dir().join("particle-budget");
+    std::fs::create_dir_all(&folder).unwrap();
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let paths: Vec<_> = (0..9)
+        .map(|i| {
+            let path = folder.join(format!("particles_{i}.hmod"));
+            let manifest = UI_MANIFEST.replace("test_ui_guest", &format!("particles_{i}"));
+            std::fs::write(&path, Package::write(&manifest, &wasm).unwrap()).unwrap();
+            path
+        })
+        .collect();
+    let mut mods = Mods::load(&paths, |_| true, |_| false);
+    assert_eq!(
+        mods.entries()
+            .iter()
+            .filter(|e| e.status == Status::Running)
+            .count(),
+        9
+    );
+    let mut snapshot = player();
+    snapshot.player.as_mut().unwrap().dimension = "test:particles".into();
+    mods.set_snapshot(snapshot);
+    mods.tick(1); // 9 mods each request 32; only 256 may reach the engine.
+    let count = |mods: &mut Mods| {
+        let mut vanilla = 0;
+        let mut configured = 0;
+        for o in mods.drain() {
+            match o {
+                Output::Particles { particles, .. } => vanilla += particles.len(),
+                Output::ConfiguredParticles { particles, .. } => configured += particles.len(),
+                _ => {}
+            }
+        }
+        (vanilla, configured)
+    };
+    assert_eq!(count(&mut mods), (128, 128));
+    assert_eq!(count(&mut mods), (0, 0));
+    mods.tick(2);
+    assert_eq!(count(&mut mods), (128, 128));
+}
+
+#[test]
+fn client_world_queries_are_read_only_nearby_and_tick_bounded() {
+    #[derive(Debug)]
+    struct World;
+    impl horizon_mods::ClientWorldView for World {
+        fn sample(&self, _: i32, _: i32, _: i32) -> Option<horizon_mods::BlockSample> {
+            Some(horizon_mods::BlockSample {
+                state: "minecraft:stone".into(),
+                biome: "minecraft:plains".into(),
+                fluid: "minecraft:empty".into(),
+                block_light: 0,
+                sky_light: 15,
+            })
+        }
+    }
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_client_world());
+    let mut snapshot = player();
+    snapshot.client_world = Some(std::sync::Arc::new(World));
+    mods.set_snapshot(snapshot);
+    let sample = |mods: &mut Mods, xyz: &str| {
+        assert!(mods.command(&format!("sample_block {xyz}")));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    mods.tick(1);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 64");
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 0");
+    mods.tick(2);
+    assert_eq!(sample(&mut mods, "2147483647 64 -3"), "samples 0");
+    mods.tick(3);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 64");
+    mods.set_snapshot(Snapshot::default());
+    mods.tick(4);
+    assert_eq!(sample(&mut mods, "12 64 -3"), "samples 0");
+}
+
+#[test]
+fn local_audio_is_validated_rate_limited_and_discarded_on_failure() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let play = |mods: &mut Mods, arg: &str| {
+        assert!(mods.command(&format!("local_sound {arg}")));
+        mods.drain()
+            .into_iter()
+            .filter(|out| matches!(out, Output::Sound { .. }))
+            .count()
+    };
+    assert_eq!(play(&mut mods, ""), 0);
+    mods.set_snapshot(player());
+    for (i, invalid) in ["nan", "pitch", "far", "path"].into_iter().enumerate() {
+        mods.tick(i as u64);
+        assert_eq!(play(&mut mods, invalid), 0);
+    }
+    mods.tick(10);
+    assert_eq!(play(&mut mods, ""), 8);
+    assert_eq!(play(&mut mods, ""), 0);
+    mods.tick(11);
+    assert_eq!(play(&mut mods, ""), 8);
+    mods.tick(12);
+    assert_eq!(play(&mut mods, "panic"), 0);
+}
+
+#[test]
+fn atmosphere_is_validated_dimension_scoped_and_owner_scoped() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    mods.set_snapshot(player());
+    assert!(mods.command("atmosphere set"));
+    assert_eq!(mods.atmosphere().unwrap().sky_color, Some(0x123456));
+    assert!(mods.command("atmosphere invalid"));
+    assert_eq!(mods.atmosphere().unwrap().cloud_opacity, Some(0.5));
+    let mut other_dimension = player();
+    other_dimension.player.as_mut().unwrap().dimension = "minecraft:the_nether".into();
+    mods.set_snapshot(other_dimension);
+    assert!(mods.atmosphere().is_none());
+    mods.set_snapshot(player());
+    assert!(mods.command("atmosphere clear"));
+    assert!(mods.atmosphere().is_none());
+    assert!(mods.command("atmosphere panic"));
+    assert!(mods.atmosphere().is_none());
+}
+
+#[test]
+fn entity_queries_are_bounded_to_visible_client_data() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_entities());
+    let mut snapshot = player();
+    let p = snapshot.player.as_ref().unwrap();
+    snapshot.nearby_entities = (0..300)
+        .map(|id| horizon_mods::NearbyEntity {
+            id,
+            kind: "minecraft:pig".into(),
+            x: p.x + 2.0,
+            y: p.y,
+            z: p.z,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            velocity_z: 0.0,
+            width: 0.9,
+            height: 0.9,
+            on_ground: true,
+            burning: false,
+        })
+        .collect();
+    mods.set_snapshot(snapshot);
+    let query = |mods: &mut Mods, radius: &str| {
+        assert!(mods.command(&format!("nearby {radius}")));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    mods.tick(1);
+    assert_eq!(query(&mut mods, "NaN"), "entities 0");
+    assert_eq!(query(&mut mods, "33"), "entities 0");
+    assert_eq!(query(&mut mods, "1"), "entities 0");
+    assert_eq!(query(&mut mods, "2"), "entities 128");
+    mods.set_snapshot(Snapshot::default());
+    assert_eq!(query(&mut mods, "32"), "entities 0");
+}
+
+#[test]
+fn observed_events_are_nearby_bounded_ordered_and_reset_on_world_change() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.wants_world_events());
+    mods.set_snapshot(player());
+    for tick in 0..300 {
+        mods.observed_world_event(horizon_mods::WorldEvent {
+            kind: horizon_mods::WorldEventKind::Landed,
+            entity: None,
+            x: 12.5,
+            y: 64.0,
+            z: -3.25,
+            detail: "minecraft:player".into(),
+            speed: 1.0,
+            tick,
+        });
+    }
+    let poll = |mods: &mut Mods| {
+        assert!(mods.command("world_events"));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(poll(&mut mods), "events 128 first 172");
+    assert_eq!(poll(&mut mods), "events 0 first 0");
+    mods.observed_world_event(horizon_mods::WorldEvent {
+        kind: horizon_mods::WorldEventKind::Eating,
+        entity: None,
+        x: f64::NAN,
+        y: 64.0,
+        z: 0.0,
+        detail: "bad".into(),
+        speed: 0.0,
+        tick: 301,
+    });
+    assert_eq!(poll(&mut mods), "events 0 first 0");
+    mods.observed_world_event(horizon_mods::WorldEvent {
+        kind: horizon_mods::WorldEventKind::Eating,
+        entity: None,
+        x: 12.5,
+        y: 64.0,
+        z: -3.25,
+        detail: "minecraft:apple".into(),
+        speed: 0.0,
+        tick: 302,
+    });
+    mods.set_snapshot(Snapshot::default());
+    assert_eq!(poll(&mut mods), "events 0 first 0");
 }

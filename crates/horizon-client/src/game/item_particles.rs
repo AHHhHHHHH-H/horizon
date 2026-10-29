@@ -20,6 +20,14 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
+        #[cfg(feature = "mods")]
+        self.mod_observed_event(
+            horizon_mods::WorldEventKind::Eating,
+            None,
+            [p.x, p.y, p.z],
+            stack.item.to_string(),
+            0.0,
+        );
         let eye_y = self.eye_position().map_or(p.y, |e| e[1]);
         let options = self.item_particle(stack);
         let mut spawned = Vec::new();

@@ -7,24 +7,25 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 
 | In `capabilities` | Grants | The player reads "May …" |
 | --- | --- | --- |
-| `game-read` | [`game`](#game) | see your position, health and the time |
+| `game-read` | [`game`](#game) | see your position, health, time and nearby loaded world |
 | `chat` | [`chat`](#chat) | show you chat messages |
 | `hud` | [`hud`](#hud) | draw text on your screen |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks and items to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
-| `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
+| `render` | [`render`](#render) | draw on your screen, emit nearby particles, change local lighting and world appearance, apply visual filters, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
+| `audio` | [`audio`](#audio) | play local sounds near you |
 
 ## World `horizon-mod`
 
 A client mod: runs in the player's game.
 
-- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `log`, `audio`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `events`
 
 ## World `horizon-server-mod`
@@ -38,7 +39,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `audio`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -121,11 +122,87 @@ A block along the player's view.
 | `z` | `f64` |  |
 | `block` | `string` | `minecraft:stone`, ... |
 
+### record `block-sample`
+
+| Field | Type | |
+| --- | --- | --- |
+| `state` | `string` | State string, e.g. minecraft:oak_log[axis=y]. |
+| `biome` | `string` |  |
+| `fluid` | `string` | minecraft:empty, minecraft:water or minecraft:lava (including waterlogged blocks). |
+| `block-light` | `u8` |  |
+| `sky-light` | `u8` |  |
+
+### record `nearby-entity`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `kind` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `velocity-x` | `f64` |  |
+| `velocity-y` | `f64` |  |
+| `velocity-z` | `f64` |  |
+| `width` | `f32` |  |
+| `height` | `f32` |  |
+| `on-ground` | `bool` |  |
+| `burning` | `bool` |  |
+
+### enum `world-event-kind`
+
+| Case | |
+| --- | --- |
+| `landed` |  |
+| `entered-water` |  |
+| `entered-lava` |  |
+| `block-interacted` |  |
+| `block-changed` |  |
+| `container-opened` |  |
+| `eating` |  |
+
+### record `world-event`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `world-event-kind` |  |
+| `entity` | `option<u32>` | None means the local player; otherwise a client entity ID. |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `detail` | `string` | Item/block ID or container label; at most 256 characters. |
+| `speed` | `f32` | Prior movement speed for landings/fluid entry, 0..4 blocks/tick. |
+| `tick` | `u64` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
+| `sample-block` | `func(x: s32, y: s32, z: s32) -> option<block-sample>` | Reads a loaded block within 32 blocks of the player, at most 64 times per mod per tick, shared by all hooks. None outside the world, beyond that radius, without a player, or when the query budget is exhausted. This never requests or generates chunks. API level 9. |
+| `nearby-entities` | `func(radius: f32) -> list<nearby-entity>` | Up to 128 nearest loaded living entities, dropped items, experience orbs, boats and minecarts (the local player is get-player). Radius is finite, 0..32 blocks. Uses the shared 64-query per-tick budget. No server-only or unloaded entities are exposed. API level 12. |
+| `poll-world-events` | `func() -> list<world-event>` | Drains up to 128 locally observed events, oldest first. Overflow drops oldest events. Initial entity sightings do not synthesize a landing. Events never reveal unloaded/server-only state. API level 13. |
+
+## `audio`
+
+Access: capability `audio`.
+
+Capability `audio` (experimental): bounded local positional sounds.
+
+### record `sound`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | A namespaced sound event from the active vanilla/mod resource packs. |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `volume` | `f32` | Finite, 0..1. |
+| `pitch` | `f32` | Finite, 0.5..2. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `play` | `func(sound: sound) -> bool` | Queues a local sound within 32 blocks of the player. Returns false for invalid input, no player, or more than 8 requests per mod per tick. Across all mods at most 64 requests are delivered per tick. Missing sound events are silent; nothing is downloaded or sent to a server. Disabling/crashing the owner drops pending requests. API level 10. |
 
 ## `chat`
 
@@ -409,6 +486,111 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `item` | `item-shape` |  |
 | `text` | `text-shape` |  |
 
+### enum `ambient-particle`
+
+Existing vanilla particles with no block/item payload. Client-local only.
+
+| Case | |
+| --- | --- |
+| `smoke` |  |
+| `flame` |  |
+| `bubble` |  |
+| `splash` |  |
+| `end-rod` |  |
+| `cherry-leaves` |  |
+| `white-ash` |  |
+| `spore-blossom-air` |  |
+
+### record `world-particle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `ambient-particle` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `velocity-x` | `f64` | Initial velocity in blocks per tick; each component must be within -1..1. |
+| `velocity-y` | `f64` |  |
+| `velocity-z` | `f64` |  |
+
+### record `configured-particle`
+
+Explicit physics with a vanilla sprite set, not that type's behaviour. Custom image assets are not supported by this function.
+
+| Field | Type | |
+| --- | --- | --- |
+| `particle` | `world-particle` |  |
+| `color` | `u32` | RGB tint, 0xRRGGBB, and alpha 0..1. |
+| `alpha` | `f32` |  |
+| `size` | `f32` | Quad half-size in blocks, 0.005..1; constant over its lifetime. |
+| `lifetime` | `u32` | 1..200 game ticks. |
+| `gravity` | `f32` | -1..1; acceleration is -0.04 * gravity blocks/tick squared. |
+| `friction` | `f32` | Velocity multiplier after each move, 0..1. |
+| `collision` | `bool` |  |
+| `full-bright` | `bool` |  |
+
+### record `colored-light`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `color` | `u32` | RGB, 0xRRGGBB. |
+| `radius` | `f32` | Radius in blocks, 0.25..16; linear falloff to zero at the edge. |
+| `intensity` | `f32` | 0..1. Adds local visual illumination; never changes gameplay light. |
+
+### record `sprite-particle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `particle` | `configured-particle` |  |
+| `sprite` | `string` | Owned namespace:particle/path, from assets/<namespace>/textures/ particle/path.png in the mod's registries content. Static PNG only. |
+
+### record `emissive-material`
+
+| Field | Type | |
+| --- | --- | --- |
+| `base` | `string` |  |
+| `overlay` | `string` |  |
+
+### record `bloom`
+
+| Field | Type | |
+| --- | --- | --- |
+| `strength` | `f32` |  |
+| `threshold` | `f32` |  |
+| `radius` | `f32` |  |
+
+### record `godrays`
+
+| Field | Type | |
+| --- | --- | --- |
+| `strength` | `f32` |  |
+| `light-x` | `f32` |  |
+| `light-y` | `f32` |  |
+| `color` | `u32` |  |
+
+### variant `post-effect`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `bloom` | `bloom` |  |
+| `godrays` | `godrays` |  |
+
+### record `atmosphere`
+
+| Field | Type | |
+| --- | --- | --- |
+| `sky-color` | `option<u32>` | Optional RGB colours, 0xRRGGBB; absent fields keep vanilla values. |
+| `fog-color` | `option<u32>` |  |
+| `cloud-color` | `option<u32>` |  |
+| `fog-start` | `option<f32>` | Distances in blocks, 0..4096. End must be greater than start. |
+| `fog-end` | `option<f32>` |  |
+| `star-brightness` | `option<f32>` |  |
+| `cloud-opacity` | `option<f32>` |  |
+| `transition-seconds` | `f32` | Smoothly interpolate from the last drawn values, 0..10 seconds. |
+
 ### record `frame-rate`
 
 | Field | Type | |
@@ -445,6 +627,13 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
+| `emit-particles` | `func(particles: list<world-particle>) -> u32` | Queues at most 32 particles per mod per game tick, shared by all hooks. Returns the accepted count. Only the first 32 entries are examined. Non-finite values, velocity components outside -1..1, positions beyond 32 blocks from the player, and calls without a player are ignored. The client drops requests outside loaded chunks and draws at most 256 mod particles per tick across all mods. No server packets are sent. Disabling or crashing a mod discards its queued requests; particles already spawned expire normally. Requires Mod API level 8. |
+| `emit-configured-particles` | `func(particles: list<configured-particle>) -> u32` | Shares emit-particles' per-mod and global request quotas, distance and loaded-chunk limits. Invalid records are ignored. Returns the queued count, not a guarantee of display: player settings and live caps apply. At most 256 live configured particles per owner and 1024 across mods. Disabling, reloading or crashing removes these particles immediately; dimension changes clear them too. Does not emit light into the world. Requires Mod API level 14 and capability render. |
+| `set-colored-lights` | `func(lights: list<colored-light>) -> result<_, string>` | Replaces this owner's lights (up to 8). Requires a player, positions within 32 blocks, finite values and valid bounds; invalid lists leave the previous list unchanged. Empty clears. Renderer selects at most 16 nearest sources globally in loaded chunks. Lights do not cast shadows or modify world light propagation. Terrain and entities use the normal renderer only; material-replacing shader packs may override the result. Cleared on owner stop/reload and world/dimension changes. API level 15. |
+| `emit-sprite-particles` | `func(particles: list<sprite-particle>) -> u32` | Configured physics with a static packaged sprite instead of the kind's vanilla sprite set. Only this mod's content namespaces may be used. Shares all particle quotas. Missing or oversized images are not drawn. Atlas admits at most 64 custom particle images per namespace, 256 total, each at most 64x64. Assets follow the content reload/restart lifecycle; live particles follow their owner's lifecycle. API level 16. |
+| `set-emissive-materials` | `func(materials: list<emissive-material>, pack-suffixes: bool) -> result<_, string>` | Replaces up to 32 block-texture overlays owned by this mod. Base is a texture id; overlay must be in an owned namespace under emissive/. Optional pack suffix mode recognizes _e, _emissive and a safe optifine/emissive.properties suffix.emissive value. Global maximum 128 resolved mappings, explicit entries first, first owner wins. Overlays are full-bright but fogged, do not cast light, and affect normal terrain rendering only (not items/entities or replacing material shader packs). Invalid lists preserve prior state; empty/false clears. Assets use the content reload lifecycle; disabling owners removes mappings. API 17. |
+| `set-post-effects` | `func(effects: list<post-effect>) -> result<_, string>` | Replaces up to 2 owned effects; empty clears. Strength and threshold are 0..1, bloom radius 0.5..8 target pixels, godray light coordinates 0..1 in the viewport. Finite values and RGB colors only. First 4 effects globally in stable mod/list order. Bounded built-in filters read world color/depth and compose additive contributions before hand/HUD. Not arbitrary WGSL or general shader chaining. Paused while a shader pack owns post-processing; never on the title screen. Cleared on stop/reload and world/dimension changes. API level 18. |
+| `set-atmosphere` | `func(value: option<atmosphere>) -> result<_, string>` | Sets this mod's visual atmosphere for the current dimension. None clears it. The first running mod with an override wins; it disappears on disable, failure or dimension change. Does not change gameplay lighting or weather. Invalid values leave the previous override intact. API level 11. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's corner panel: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays and the other mods' panels (under the status effects at the top right), as `hud`'s panels are. |

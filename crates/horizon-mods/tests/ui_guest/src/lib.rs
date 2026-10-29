@@ -16,7 +16,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    Mod, Registration, audio, browser, chat, command, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -106,6 +106,16 @@ impl Mod for Guest {
             "render_hud",
             "render_clear",
             "render_shake",
+            "particles",
+            "configured_particles",
+            "colored_lights",
+            "post_effects",
+            "emissive",
+            "sample_block",
+            "local_sound",
+            "atmosphere",
+            "nearby",
+            "world_events",
             "input_claim",
             "input_poll",
             "input_held",
@@ -468,6 +478,238 @@ impl Mod for Guest {
                     });
                 }
             }
+            "world_events" => {
+                let events = game::poll_world_events();
+                chat::show(&format!(
+                    "events {} first {}",
+                    events.len(),
+                    events.first().map_or(0, |e| e.tick)
+                ));
+            }
+            "nearby" => {
+                let radius = args.parse().unwrap_or(f32::NAN);
+                chat::show(&format!("entities {}", game::nearby_entities(radius).len()));
+            }
+            "atmosphere" => {
+                let value = (args != "clear").then_some(render::Atmosphere {
+                    sky_color: Some(0x123456),
+                    fog_color: None,
+                    cloud_color: None,
+                    fog_start: Some(0.0),
+                    fog_end: Some(128.0),
+                    star_brightness: None,
+                    cloud_opacity: Some(if args == "invalid" { f32::NAN } else { 0.5 }),
+                    transition_seconds: 1.0,
+                });
+                chat::show(if render::set_atmosphere(value).is_ok() {
+                    "ok"
+                } else {
+                    "invalid"
+                });
+                if args == "panic" {
+                    panic!("after atmosphere");
+                }
+            }
+            "local_sound" => {
+                let p = game::get_player();
+                let mut s = audio::Sound {
+                    id: "minecraft:block.note_block.harp".into(),
+                    x: p.as_ref().map_or(0.0, |p| p.x),
+                    y: p.as_ref().map_or(0.0, |p| p.y),
+                    z: p.as_ref().map_or(0.0, |p| p.z),
+                    volume: 0.5,
+                    pitch: 1.0,
+                };
+                match args {
+                    "nan" => s.volume = f32::NAN,
+                    "pitch" => s.pitch = 10.0,
+                    "far" => s.x += 33.0,
+                    "path" => s.id = "minecraft:../private".into(),
+                    _ => {}
+                }
+                let accepted = (0..9).filter(|_| audio::play(&s)).count();
+                chat::show(&format!("sounds {accepted}"));
+                if args == "panic" {
+                    panic!("after sound");
+                }
+            }
+            "sample_block" => {
+                let xyz: Vec<i32> = args
+                    .split_whitespace()
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                if xyz.len() == 3 {
+                    let count = (0..65)
+                        .filter(|_| game::sample_block(xyz[0], xyz[1], xyz[2]).is_some())
+                        .count();
+                    chat::show(&format!("samples {count}"));
+                }
+            }
+            "post_effects" => {
+                let mut bloom = render::Bloom {
+                    strength: 0.5,
+                    threshold: 0.5,
+                    radius: 2.0,
+                };
+                match args {
+                    "nan" => bloom.strength = f32::NAN,
+                    "radius" => bloom.radius = 100.0,
+                    "threshold" => bloom.threshold = -1.0,
+                    _ => {}
+                }
+                let effects = if args == "clear" {
+                    vec![]
+                } else if args == "rays" {
+                    vec![render::PostEffect::Godrays(render::Godrays {
+                        strength: 0.5,
+                        light_x: 0.5,
+                        light_y: 0.5,
+                        color: 0xFFAA55,
+                    })]
+                } else {
+                    vec![render::PostEffect::Bloom(bloom); if args == "many" { 3 } else { 1 }]
+                };
+                chat::show(&format!("{:?}", render::set_post_effects(&effects)));
+                if args == "panic" {
+                    panic!("after post effects");
+                }
+            }
+            "emissive" => {
+                let materials = match args {
+                    "foreign" => vec![render::EmissiveMaterial {
+                        base: "minecraft:block/diamond_ore".into(),
+                        overlay: "other:emissive/ore".into(),
+                    }],
+                    "bad" => vec![render::EmissiveMaterial {
+                        base: "../ore".into(),
+                        overlay: "test_ui_guest:emissive/ore".into(),
+                    }],
+                    _ => vec![],
+                };
+                chat::show(&format!(
+                    "{:?}",
+                    render::set_emissive_materials(&materials, args != "clear")
+                ));
+                if args == "panic" {
+                    panic!("after emissive");
+                }
+            }
+            "colored_lights" => {
+                if args == "clear" {
+                    chat::show(&format!("{:?}", render::set_colored_lights(&[])));
+                    return Ok(None);
+                }
+                let p = game::get_player();
+                let mut l = render::ColoredLight {
+                    x: p.as_ref().map_or(0.0, |p| p.x),
+                    y: p.as_ref().map_or(0.0, |p| p.y),
+                    z: p.as_ref().map_or(0.0, |p| p.z),
+                    color: 0xFF0000,
+                    radius: 4.0,
+                    intensity: 0.5,
+                };
+                match args {
+                    "far" => l.x += 33.0,
+                    "nan" => l.radius = f32::NAN,
+                    "color" => l.color = 0x1000000,
+                    "intensity" => l.intensity = 2.0,
+                    _ => {}
+                }
+                chat::show(&format!(
+                    "{:?}",
+                    render::set_colored_lights(&vec![l; if args == "many" { 9 } else { 1 }])
+                ));
+                if args == "panic" {
+                    panic!("after colored lights");
+                }
+            }
+            "configured_particles" => {
+                let Some(player) = game::get_player() else {
+                    chat::show(&render::emit_configured_particles(&[]).to_string());
+                    return Ok(None);
+                };
+                let mut p = render::ConfiguredParticle {
+                    particle: render::WorldParticle {
+                        kind: render::AmbientParticle::EndRod,
+                        x: player.x,
+                        y: player.y,
+                        z: player.z,
+                        velocity_x: 0.1,
+                        velocity_y: 0.0,
+                        velocity_z: 0.0,
+                    },
+                    color: 0x55CCAA,
+                    alpha: 0.5,
+                    size: 0.2,
+                    lifetime: 40,
+                    gravity: 0.5,
+                    friction: 0.9,
+                    collision: true,
+                    full_bright: true,
+                };
+                match args {
+                    "nan" => p.alpha = f32::NAN,
+                    "size" => p.size = 2.0,
+                    "life" => p.lifetime = 201,
+                    "zero" => p.lifetime = 0,
+                    "color" => p.color = 0x1000000,
+                    "gravity" => p.gravity = f32::INFINITY,
+                    "friction" => p.friction = -0.1,
+                    "far" => p.particle.x += 33.0,
+                    _ => {}
+                }
+                if args.starts_with("sprite") {
+                    let sprite = match args {
+                        "sprite_foreign" => "other:particle/spark",
+                        "sprite_parent" => "test_ui_guest:particle/../spark",
+                        "sprite_bad" => "test_ui_guest:particle/",
+                        _ => "test_ui_guest:particle/spark",
+                    };
+                    chat::show(
+                        &render::emit_sprite_particles(&vec![
+                            render::SpriteParticle {
+                                particle: p,
+                                sprite: sprite.into()
+                            };
+                            100
+                        ])
+                        .to_string(),
+                    );
+                } else {
+                    chat::show(&render::emit_configured_particles(&vec![p; 100]).to_string());
+                }
+                if args == "panic" {
+                    panic!("after configured particles");
+                }
+            }
+            "particles" => {
+                let Some(player) = game::get_player() else {
+                    chat::show(&render::emit_particles(&[]).to_string());
+                    return Ok(None);
+                };
+                let mut p = render::WorldParticle {
+                    kind: render::AmbientParticle::Smoke,
+                    x: player.x,
+                    y: player.y,
+                    z: player.z,
+                    velocity_x: 0.0,
+                    velocity_y: 0.05,
+                    velocity_z: 0.0,
+                };
+                match args {
+                    "far" => p.x += 33.0,
+                    "nan" => p.y = f64::NAN,
+                    "speed" => p.velocity_x = 2.0,
+                    "inf" => p.velocity_z = f64::INFINITY,
+                    "edge" => p.x += 32.0,
+                    _ => {}
+                }
+                let count = render::emit_particles(&vec![p; 100]);
+                chat::show(&count.to_string());
+                if args == "panic" {
+                    panic!("after particles");
+                }
+            }
             // Clamped to (1, 10); the two after it shake nothing.
             "render_shake" => {
                 render::shake(2.0, 99.0);
@@ -479,6 +721,43 @@ impl Mod for Guest {
         Ok(None)
     }
     fn tick(&mut self, _tick: u64) {
+        // A synthetic dimension used only by the aggregate particle-budget fixture.
+        if let Some(p) = game::get_player().filter(|p| p.dimension == "test:particles") {
+            render::emit_configured_particles(&vec![
+                render::ConfiguredParticle {
+                    particle: render::WorldParticle {
+                        kind: render::AmbientParticle::EndRod,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        velocity_x: 0.0,
+                        velocity_y: 0.0,
+                        velocity_z: 0.0
+                    },
+                    color: 0xFFFFFF,
+                    alpha: 1.0,
+                    size: 0.1,
+                    lifetime: 10,
+                    gravity: 0.0,
+                    friction: 1.0,
+                    collision: false,
+                    full_bright: true,
+                };
+                16
+            ]);
+            render::emit_particles(&vec![
+                render::WorldParticle {
+                    kind: render::AmbientParticle::Smoke,
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    velocity_x: 0.0,
+                    velocity_y: 0.0,
+                    velocity_z: 0.0,
+                };
+                16
+            ]);
+        }
         if let Some((book, all, id)) = self.pending.take() {
             match recipes::place(book, all) {
                 Err(e) if e.starts_with("no screen") => self.pending = Some((book, all, id)),

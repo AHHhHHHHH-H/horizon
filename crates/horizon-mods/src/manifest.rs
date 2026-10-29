@@ -103,9 +103,11 @@ pub enum Capability {
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
     Recipes,
+    /// Bounded client-local positional sound events.
+    Audio,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -118,6 +120,7 @@ impl Capability {
         Capability::Players,
         Capability::World,
         Capability::Recipes,
+        Capability::Audio,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -129,6 +132,7 @@ impl Capability {
     /// The WIT interface it grants, in `horizon:mods`.
     pub fn interface(self) -> &'static str {
         match self {
+            Capability::Audio => "audio",
             Capability::GameRead => "game",
             Capability::Chat => "chat",
             Capability::Hud => "hud",
@@ -148,20 +152,27 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::Audio
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
         match self {
-            Capability::GameRead => "see your position, health and the time",
+            Capability::Audio => "play local sounds near you",
+            Capability::GameRead => "see your position, health, time and nearby loaded world",
             Capability::Chat => "show you chat messages",
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
             Capability::Command => "run commands as you, with your permissions",
             Capability::Registries => "add blocks and items to your worlds",
             Capability::Ui => "show its own screens and a settings page",
-            Capability::Render => "draw on your screen, shake and zoom the camera",
+            Capability::Render => {
+                "draw on your screen, emit nearby particles, change local lighting and world appearance, apply visual filters, shake and zoom the camera"
+            }
             Capability::Input => {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
             }
@@ -199,6 +210,7 @@ impl Capability {
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
+            Capability::Audio => "audio",
             Capability::GameRead => "game-read",
             Capability::Chat => "chat",
             Capability::Hud => "hud",

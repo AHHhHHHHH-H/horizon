@@ -1,0 +1,8 @@
+id = "effect_lab"
+name = "Effect Lab"
+version = "0.1.0"
+description = "Original API demo: particles, colored lights, emissive overlays and bloom. Off until enabled in its settings. Not a port of another mod."
+authors = ["Horizon contributors"]
+api = "0.2"
+capabilities = ["game-read", "render", "ui", "storage", "chat", "registries"]
+experimental = ["render", "ui"]

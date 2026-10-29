@@ -38,9 +38,16 @@ don't import it); faster, or fixing behaviour to what the reference already says
 
 A new WIT function doesn't break older mods, but a mod that calls it can't run on a Horizon from before it. So every
 function the game offers mods has an **API level**, the one it arrived at (`crates/horizon-mods/src/api_level.rs`):
-level 0 is the contract of Horizon 0.2.67 to 0.2.69, level 1 adds `render.set-minimap` and server mods' `players`, level 2 `game.raycast`, level 3 `command.run-quiet`, level 4 server mods' `world`, level 5 `recipes` (`items`, `all`, `known`), level 6 `browser` (`set-items`, `poll`, `set-recipes`) and `recipes.place` and `recipes.give`, level 7 `render.set-far-terrain`. A mod needs the level of
+level 0 is the contract of Horizon 0.2.67 to 0.2.69, level 1 adds `render.set-minimap` and server mods' `players`, level 2 `game.raycast`, level 3 `command.run-quiet`, level 4 server mods' `world`, level 5 `recipes` (`items`, `all`, `known`), level 6 `browser` (`set-items`, `poll`, `set-recipes`) and `recipes.place` and `recipes.give`, level 7 `render.set-far-terrain`, level 8 `render.emit-particles`, level 9 `game.sample-block`, level 10 `audio.play`, level 11 `render.set-atmosphere`, level 12 `game.nearby-entities`, level 13 `game.poll-world-events`, level 14 `render.emit-configured-particles`. A mod needs the level of
 the newest function it imports (a component imports only the functions it calls). The level is read from the file,
-never declared:
+never declared.
+
+The subsequent visual APIs are level 15 `render.set-colored-lights`, level 16
+`render.emit-sprite-particles`, level 17 `render.set-emissive-materials`, and
+level 18 `render.set-post-effects`; see [Visual effects](visual-effects.md) for
+their bounded contracts and renderer compatibility.
+
+The level is enforced in two places:
 
 - the game refuses a mod that needs a function it doesn't have, with "made for a newer Horizon (it uses
   render.set-minimap): update Horizon to run it", instead of a linking error;

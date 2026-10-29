@@ -82,6 +82,7 @@ pub struct Assets {
 /// The block models and their baked sprites, read from the pack at `root` over
 /// an existing block registry: everything the mesher and renderer need.
 pub struct RenderAssets {
+    pub emissive_suffixes: Vec<String>,
     pub sprite_size: u32,
     pub sprite_minimum_size: u32,
     pub pixels: Vec<u8>,
@@ -217,11 +218,13 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
+        crate::mod_emissive::load(root, &mut sprites);
         sprites.finish();
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
         Ok(Self {
             sprite_size: sprites.size,
+            emissive_suffixes: crate::mod_emissive::suffixes(root),
             sprite_minimum_size: sprites.minimum_size,
             texture_layers: u32::try_from(sprites.count())?,
             pixels: sprites.pixels,

@@ -7,14 +7,15 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 7;
+pub const LEVEL: u32 = 18;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 46] = [
+pub const FUNCTIONS: [(&str, u32); 57] = [
     ("log.write", 0),
+    ("audio.play", 10),
     ("game.get-player", 0),
     ("game.get-clock", 0),
     ("chat.show", 0),
@@ -37,6 +38,13 @@ pub const FUNCTIONS: [(&str, u32); 46] = [
     ("render.set-hud", 0),
     ("render.gui-size", 0),
     ("render.shake", 0),
+    ("render.emit-particles", 8),
+    ("render.emit-configured-particles", 14),
+    ("render.set-colored-lights", 15),
+    ("render.emit-sprite-particles", 16),
+    ("render.set-emissive-materials", 17),
+    ("render.set-post-effects", 18),
+    ("render.set-atmosphere", 11),
     ("render.set-corner", 0),
     ("render.clear-corner", 0),
     ("render.text-width", 0),
@@ -47,6 +55,9 @@ pub const FUNCTIONS: [(&str, u32); 46] = [
     ("players.tell", 1),
     ("players.broadcast", 1),
     ("game.raycast", 2),
+    ("game.sample-block", 9),
+    ("game.nearby-entities", 12),
+    ("game.poll-world-events", 13),
     ("command.run-quiet", 3),
     ("world.get-block", 4),
     ("world.get-biome", 4),

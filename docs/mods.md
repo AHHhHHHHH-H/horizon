@@ -689,3 +689,94 @@ Modpacks ([modpacks.md](modpacks.md)) move data-driven `registries` first:
 API 0.2 is content-only `.hmod`s (blocks, items, recipes, loot, models and
 textures), then server hooks (0.3) and block entities, menus, capabilities and
 `net` (0.4), in the order the ATM10 inventory needs them.
+
+### Experimental world particles (API level 8)
+
+A client mod declaring `capabilities = ["game-read", "render"]` and
+`experimental = ["render"]` can call `render::emit_particles` with
+`render::WorldParticle` records. Positions are world coordinates, velocities
+are blocks per tick. The initial kinds are smoke, flame, bubble, splash,
+end rod, cherry leaves, white ash and spore blossom air. They use Horizon's
+existing vanilla particle providers and resource-pack textures, respecting
+the player’s particle setting and the engine’s normal distance culling.
+
+The host examines at most the first 32 records in a call, accepts at most
+32 particles per mod per game tick across all hooks, and delivers at most
+256 across all mods per tick. It rejects non-finite values, velocity
+components outside -1..1 and positions over 32 blocks from the local player.
+No player means no accepted particles. Requests for unloaded chunks or a
+dimension the player has left are dropped. Nothing is sent to the server.
+Pending requests disappear if their mod stops or fails; particles already
+spawned expire through the normal particle engine. Tick hooks are recommended;
+frame hooks share the same quota and cannot raise it with frame rate.
+
+This first API does not add custom particle types, asset registration,
+biome/block queries, lighting overrides, or lifetime/texture overrides.
+Those remain follow-ups in #2884. A full ambient-effect port needs more than
+this function.
+
+```rust,ignore
+if let Some(player) = horizon_mod_sdk::game::get_player() {
+    use horizon_mod_sdk::render::{self, AmbientParticle, WorldParticle};
+    render::emit_particles(&[WorldParticle {
+        kind: AmbientParticle::Smoke,
+        x: player.x, y: player.y + 1.0, z: player.z,
+        velocity_x: 0.0, velocity_y: 0.02, velocity_z: 0.0,
+    }]);
+}
+```
+
+### Client loaded-world queries (API level 9)
+
+`game::sample_block(x, y, z)` returns a block state, biome, fluid, block light
+and sky light from chunks this client already has. It cannot read a remote
+server's unloaded terrain or trigger chunk generation. The view holds at most
+25 nearby immutable chunk references and only exists while a running mod imports
+this function. Queries share a limit of 64 per mod per tick and a 32-block
+radius; missing/out-of-range data and exhausted budgets return `None`.
+
+### Positional audio (API level 10, experimental)
+
+Declare `capabilities = ["audio"]` and `experimental = ["audio"]` to call
+`audio::play(&Sound)`. This plays an existing sound event from the active
+resource packs locally, with a position, volume (0..1) and pitch (0.5..2).
+The host rejects non-finite values, malformed resource IDs and locations
+more than 32 blocks away. Each mod has eight attempts per tick; all mods
+share 64 delivered sounds per tick. Pending requests are discarded when
+the owner stops or the player leaves the dimension. No remote command,
+network access or automatic asset download is involved. Already playing
+one-shot sounds finish through the normal audio engine and mixer settings.
+
+### Atmosphere overrides (API level 11, experimental render)
+
+`render::set_atmosphere(Some(&Atmosphere))` overrides optional sky/fog/cloud
+RGB colours, fog distances, star brightness and cloud opacity for the current
+dimension. Unset fields keep vanilla values. The first running owner wins.
+Transitions interpolate smoothly from the last drawn values over 0..10 seconds.
+Clearing the override, disabling/crashing the mod, leaving the dimension or
+returning to the title screen restores the native environment. The API does
+not change server weather, light propagation, mob spawning or other gameplay.
+Invalid values leave the previous configuration intact. Fog distances stay
+finite and ordered, colours are 24-bit RGB and brightness/opacity are 0..1.
+
+### Nearby entities (API level 12)
+
+`game::nearby_entities(radius)` reads at most 128 nearest loaded living
+entities (including remote players), dropped items, experience orbs, boats
+and minecarts. Records include the client entity ID, kind, position, velocity,
+size, grounded state and burning flag. The local player stays in `get_player`.
+Only a finite radius in 0..32 blocks is accepted, and calls share the
+64-query per-tick budget with block sampling. No server-only entity state
+is requested. The snapshot is built only while a running mod imports it.
+
+### Observed client events (API level 13)
+
+`game::poll_world_events()` drains at most 128 events visible to this client
+within 32 blocks. Overflow removes the oldest entries. Landings and water/lava
+entry come from successive local-player and nearby-mob states; initial sightings
+do not create a false landing. Events also report block interaction attempts,
+observed block updates, local container opening and local eating-particle
+animations. An interaction is an attempt, not proof the server accepted it.
+Container events use the last interacted block when the remote menu does not
+carry a location. No server-only events are synthesized. Queues are per mod,
+disappear with their owner, and clear on dimension/world changes.
