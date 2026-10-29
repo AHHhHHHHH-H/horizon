@@ -251,6 +251,31 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> Vec<PackedImage> {
     out.sort_unstable_by_key(|(order, _)| *order);
     out.into_iter().map(|(_, image)| image).collect()
 }
+/// The colored hearts extra's tinted heart sprites (`heart_colors`): every
+/// heart sprite variant recolored to each configured color, as atlas slots
+/// the extra's draws name.
+fn heart_slots(images: &mut Vec<PackedImage>, palette: &crate::heart_colors::Palette) {
+    for (variant, source) in crate::heart_colors::VARIANT_SOURCES.iter().enumerate() {
+        let Some((w, h, pixels)) = images
+            .iter()
+            .find(|image| image.0 == *source)
+            .map(|image| (image.1, image.2, image.3.clone()))
+        else {
+            continue;
+        };
+        for (absorption, colors) in [(false, &palette.health), (true, &palette.absorption)] {
+            for (color, target) in colors.iter().enumerate() {
+                images.push((
+                    crate::heart_colors::slot_atlas_name(absorption, variant, color),
+                    w,
+                    h,
+                    crate::heart_colors::recolored(&pixels, *target),
+                ));
+            }
+        }
+    }
+}
+
 impl HudAtlas {
     /// A font glyph's atlas cell (8x8 GUI pixels) and advance.
     pub fn glyph(&self, ch: char) -> Option<(Rect, f32)> {
@@ -268,6 +293,16 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
+        Self::build_over_hearts(root, defaults, None)
+    }
+    /// The same atlas with the colored hearts extra's tinted heart sprites
+    /// baked in (`heart_colors`): one slot per configured color and sprite
+    /// variant, so turning the extra on needs no restart.
+    pub fn build_over_hearts(
+        root: &Path,
+        defaults: &Path,
+        hearts: Option<&crate::heart_colors::Palette>,
+    ) -> Result<Self> {
         Self::pack(
             root,
             defaults,
@@ -285,6 +320,7 @@ impl HudAtlas {
                 "map",
             ],
             true,
+            hearts,
         )
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
@@ -342,7 +378,7 @@ impl HudAtlas {
     /// holding its textures. The pixels are dropped once the glyph widths are
     /// read, since nothing uploads them.
     pub fn fonts(root: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(root, root, &["font"], false)?;
+        let mut atlas = Self::pack(root, root, &["font"], false, None)?;
         atlas.pixels = Vec::new();
         Ok(atlas)
     }
@@ -385,7 +421,13 @@ impl HudAtlas {
     }
     /// Pack the textures under these folders of `textures/`, and for the
     /// `full` atlas the generated sprites and the run-time slots too.
-    fn pack(root: &Path, defaults: &Path, folders: &[&str], full: bool) -> Result<Self> {
+    fn pack(
+        root: &Path,
+        defaults: &Path,
+        folders: &[&str],
+        full: bool,
+        hearts: Option<&crate::heart_colors::Palette>,
+    ) -> Result<Self> {
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
@@ -497,6 +539,15 @@ impl HudAtlas {
                 crate::title_edition::rust_edition(edition.1, edition.2, &edition.3)
         {
             edition.3 = pixels;
+        }
+        // The colored hearts extra's tinted copies of the heart sprites
+        // (`heart_colors`): one slot per sprite variant and configured color,
+        // so turning the extra on needs no restart and a pack's own hearts
+        // recolor too.
+        if full
+            && let Some(hearts) = hearts
+        {
+            heart_slots(&mut images, hearts);
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
         if full {

@@ -58,6 +58,7 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
+pub mod heart_colors;
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;

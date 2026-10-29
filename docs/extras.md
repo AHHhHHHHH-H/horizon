@@ -80,6 +80,33 @@ The game still draws the minimap, for the mod (`render.set-minimap`, [mods.md](m
   blocks change within 0.3 ms a frame; the 128x128 image is recomposed only when the view moved or a tile changed, and
   uploaded into a dedicated atlas slot. With no mod showing a map, nothing runs.
 
+### Colored hearts (`coloredHearts`, default off)
+- Past ten hearts, the HUD stops adding rows of hearts and tints the one row
+  of ten instead: it shows the row of ten hearts the player is currently in,
+  one color per row of ten — health first, then absorption with its own
+  colors, filling up through the colors as it regenerates. The row reads as
+  a stack: behind the current row's fill, its icons show full hearts of the
+  row below's color, and in the first row the black container (covering only
+  a half-filled icon's filled half). The idea is ported, not a mod's code.
+- The colors are the `heartColors` and `absorptionColors` lists in
+  `horizon-extras.txt`, `#RRGGBB` values separated by commas, up to 32 each.
+  The defaults start with the heart sprite's own red and the absorbing
+  heart's gold, so a first row of either looks vanilla; further rows are
+  gold, green, cyan, purple, pink, yellow and white (absorption varies).
+  Past the list's end the colors repeat in order, each full pass one step
+  lighter (odd passes) or darker (even ones), a step further each time —
+  deterministic, so even hundreds of hearts keep climbing through colors.
+- The tinted sprites are generated when the atlas is packed, from the
+  installed resource pack's own heart sprites: each sprite's distinct
+  colors, ranked by luminance (shade, body, highlight), map onto darker,
+  plain and lighter copies of the target color. A pack's hearts recolor too,
+  and turning the extra on needs no restart.
+- A half-filled heart's background covers only its filled half, so an odd
+  point of absorption doesn't read as an empty right half.
+- The row blinks as a whole after damage. While the extra is on, the
+  per-effect sprites (poison, wither, frozen) and the regeneration bounce
+  are not drawn: every heart is the heart sprite in its row's color.
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection
