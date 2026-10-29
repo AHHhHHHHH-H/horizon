@@ -125,7 +125,7 @@ impl Game<'_> {
         words: &[&str],
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<Handled> {
         if !matches!(words[0], "ui" | "click" | "set") {
             return Ok(Handled::No);

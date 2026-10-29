@@ -26,7 +26,10 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
-    event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
+    event::{
+        ButtonSource, ElementState, MouseButton, MouseScrollDelta, PointerSource, ScrollSource,
+        TouchPhase, WindowEvent,
+    },
     event_loop::ActiveEventLoop,
     keyboard::KeyCode,
 };
@@ -924,7 +927,7 @@ impl Game<'_> {
     /// Synthesize the pointer moving to GUI pixel (x, y) and a click there.
     pub(super) fn synth_click(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         x: f32,
         y: f32,
         button: MouseButton,
@@ -935,7 +938,7 @@ impl Game<'_> {
     /// the others and a release at the last (one point is a click).
     fn synth_drag(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         points: &[(f32, f32)],
         button: MouseButton,
     ) -> Result<()> {
@@ -945,25 +948,30 @@ impl Game<'_> {
             .as_ref()
             .map(|r| horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale)
             .ok_or("no renderer yet")?;
-        let device_id = DeviceId::dummy();
+        let mut position = PhysicalPosition::default();
         for (i, &(x, y)) in points.iter().enumerate() {
-            let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
+            position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
             self.window_event(
                 event_loop,
                 id,
-                WindowEvent::CursorMoved {
-                    device_id,
+                WindowEvent::PointerMoved {
+                    device_id: None,
                     position,
+                    primary: true,
+                    source: PointerSource::Mouse,
                 },
             );
             if i == 0 {
                 self.window_event(
                     event_loop,
                     id,
-                    WindowEvent::MouseInput {
-                        device_id,
+                    WindowEvent::PointerButton {
+                        device_id: None,
                         state: ElementState::Pressed,
-                        button,
+                        position,
+                        primary: true,
+                        button: ButtonSource::Mouse(button),
+                        is_macos_activation_click: false,
                     },
                 );
             }
@@ -971,10 +979,13 @@ impl Game<'_> {
         self.window_event(
             event_loop,
             id,
-            WindowEvent::MouseInput {
-                device_id,
+            WindowEvent::PointerButton {
+                device_id: None,
                 state: ElementState::Released,
-                button,
+                position,
+                primary: true,
+                button: ButtonSource::Mouse(button),
+                is_macos_activation_click: false,
             },
         );
         Ok(())
@@ -1002,7 +1013,7 @@ impl Game<'_> {
         words: &[&str],
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<Handled> {
         let name = words[0];
         let a = parse_args(&words[1..]);
@@ -1516,14 +1527,15 @@ impl Game<'_> {
                         horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale
                     })
                     .ok_or("no renderer yet")?;
-                let device_id = DeviceId::dummy();
                 let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
                 self.window_event(
                     event_loop,
                     id,
-                    WindowEvent::CursorMoved {
-                        device_id,
+                    WindowEvent::PointerMoved {
+                        device_id: None,
                         position,
+                        primary: true,
+                        source: PointerSource::Mouse,
                     },
                 );
                 for _ in 0..steps.abs() as u32 {
@@ -1531,9 +1543,10 @@ impl Game<'_> {
                         event_loop,
                         id,
                         WindowEvent::MouseWheel {
-                            device_id,
+                            device_id: None,
                             delta: MouseScrollDelta::LineDelta(0.0, steps.signum()),
                             phase: TouchPhase::Moved,
+                            source: ScrollSource::Wheel,
                         },
                     );
                 }

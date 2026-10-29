@@ -90,7 +90,7 @@ pub fn set_display(width: u32, height: u32, refresh_hz: u32, scale: f64) {
 
 /// The screen `window` is on, else the primary one, else the only one: right after the window
 /// is made, Wayland doesn't say yet which screen it is on.
-pub fn monitor(window: &winit::window::Window) -> Option<winit::monitor::MonitorHandle> {
+pub fn monitor(window: &dyn winit::window::Window) -> Option<winit::monitor::MonitorHandle> {
     let only = || {
         let mut all = window.available_monitors();
         all.next().filter(|_| all.next().is_none())
@@ -102,12 +102,15 @@ pub fn monitor(window: &winit::window::Window) -> Option<winit::monitor::Monitor
 }
 
 /// Keeps [`monitor`]'s size, refresh rate and scale for the items' `system.display`.
-pub fn note_display(window: &winit::window::Window) {
+pub fn note_display(window: &dyn winit::window::Window) {
     if let Some(m) = monitor(window) {
+        let mode = m.current_video_mode();
+        let size = mode.as_ref().map(|v| v.size()).unwrap_or_default();
         set_display(
-            m.size().width,
-            m.size().height,
-            m.refresh_rate_millihertz().map_or(0, |r| r.div_ceil(1000)),
+            size.width,
+            size.height,
+            mode.and_then(|v| v.refresh_rate_millihertz())
+                .map_or(0, |r| r.get().div_ceil(1000)),
             m.scale_factor(),
         );
     }

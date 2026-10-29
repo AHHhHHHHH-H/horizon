@@ -16,7 +16,7 @@ impl Game<'_> {
         let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.keys.contains(k));
         // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
         let edit = if cfg!(target_os = "macos") {
-            m.super_key() || held([KeyCode::SuperLeft, KeyCode::SuperRight])
+            m.meta_key() || held([KeyCode::MetaLeft, KeyCode::MetaRight])
         } else {
             m.control_key() || held([KeyCode::ControlLeft, KeyCode::ControlRight])
         };

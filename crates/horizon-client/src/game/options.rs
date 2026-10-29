@@ -9,7 +9,7 @@ use horizon_client::{
     window::{FrameContext, InactivityFpsLimit, framerate_limit},
 };
 use serde_json::{Value, json};
-use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
+use winit::{event::MouseButton, keyboard::KeyCode, monitor::Fullscreen};
 
 pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",

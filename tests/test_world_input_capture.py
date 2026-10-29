@@ -80,7 +80,7 @@ struct Renderer { config: Config }
 #[derive(Default)]
 struct Window { grabs: Cell<u32>, visible: Cell<bool>, fail: bool, warps: Cell<u32>, at: Cell<(f64, f64)> }
 impl Window {
-    fn inner_size(&self) -> PhysicalSize<u32> { PhysicalSize { width: 854, height: 480 } }
+    fn surface_size(&self) -> PhysicalSize<u32> { PhysicalSize { width: 854, height: 480 } }
     fn set_cursor_position(&self, position: PhysicalPosition<f64>) -> Result<(), ()> {
         self.warps.set(self.warps.get() + 1);
         self.at.set((position.x, position.y));

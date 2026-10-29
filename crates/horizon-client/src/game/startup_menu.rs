@@ -5,7 +5,10 @@ use horizon_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
     options_ui::{Event, OptionsUi, Page},
 };
-use winit::{event::KeyEvent, keyboard::ModifiersState};
+use winit::{
+    event::{ButtonSource, KeyEvent},
+    keyboard::ModifiersState,
+};
 
 #[derive(Default)]
 pub(super) struct StartupMenu {
@@ -136,7 +139,7 @@ impl StartupMenu {
 
     fn shortcut(&mut self, event: &KeyEvent) -> Option<clipboard::EditShortcut> {
         let edit = if cfg!(target_os = "macos") {
-            self.modifiers.super_key()
+            self.modifiers.meta_key()
         } else {
             self.modifiers.control_key()
         };
@@ -284,7 +287,7 @@ impl Loading {
         if let Some(window) = &self.window
             && let Some(want) = self.fullscreen.request(self.settings.fullscreen)
         {
-            window.set_fullscreen(want.then_some(winit::window::Fullscreen::Borderless(None)));
+            window.set_fullscreen(want.then_some(winit::monitor::Fullscreen::Borderless(None)));
         }
         self.update_menu_cursor();
     }
@@ -417,7 +420,7 @@ impl Loading {
         self.menu_option_events(events);
     }
 
-    fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn menu_action(&mut self, event_loop: &dyn ActiveEventLoop, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_menu_options(Page::Main),
@@ -436,7 +439,7 @@ impl Loading {
 
     pub(super) fn menu_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         event: WindowEvent,
     ) -> Result<()> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -453,7 +456,7 @@ impl Loading {
                 self.save_menu_settings();
                 event_loop.exit();
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
                 }
@@ -493,9 +496,9 @@ impl Loading {
                     }
                 }
             }
-            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
+            WindowEvent::PointerButton { .. } | WindowEvent::MouseWheel { .. }
                 if self.menu.win.is_some() => {}
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::PointerMoved { position, .. } => {
                 self.menu.pointer = (position.x, position.y);
                 self.update_menu_cursor();
                 if self.menu.options_open && self.menu.dragging {
@@ -510,7 +513,11 @@ impl Loading {
                     title.drag_field(&self.gui.as_ref().unwrap().atlas, self.menu.cursor.0);
                 }
             }
-            WindowEvent::MouseInput { state, button, .. } if self.menu.options_open => {
+            WindowEvent::PointerButton {
+                state,
+                button: ButtonSource::Mouse(button),
+                ..
+            } if self.menu.options_open => {
                 if state == ElementState::Pressed && self.menu.options.selected_key.is_some() {
                     let events = self.menu.options.bind_mouse(&mut self.settings, button);
                     self.menu_option_events(events);
@@ -525,9 +532,9 @@ impl Loading {
                     }
                 }
             }
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state,
-                button: MouseButton::Left,
+                button: ButtonSource::Mouse(MouseButton::Left),
                 ..
             } => {
                 let batch = HudBatch::new(self.menu_size());
@@ -560,6 +567,7 @@ impl Loading {
                 let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y / 30.0) as f32,
+                    _ => 0.0,
                 };
                 let amount = if self.settings.discrete_scroll {
                     horizon_client::mouse::java_signum(f64::from(raw)) as f32

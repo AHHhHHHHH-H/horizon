@@ -250,11 +250,11 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("key.keyboard.left.control", KeyCode::ControlLeft),
     ("key.keyboard.left.shift", KeyCode::ShiftLeft),
     ("key.keyboard.left.alt", KeyCode::AltLeft),
-    ("key.keyboard.left.win", KeyCode::SuperLeft),
+    ("key.keyboard.left.win", KeyCode::MetaLeft),
     ("key.keyboard.right.control", KeyCode::ControlRight),
     ("key.keyboard.right.shift", KeyCode::ShiftRight),
     ("key.keyboard.right.alt", KeyCode::AltRight),
-    ("key.keyboard.right.win", KeyCode::SuperRight),
+    ("key.keyboard.right.win", KeyCode::MetaRight),
 ];
 pub fn key_code(name: &str) -> Option<KeyCode> {
     KEYS.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
@@ -269,7 +269,7 @@ pub fn mouse_name(button: MouseButton) -> String {
         MouseButton::Middle => "key.mouse.middle".into(),
         MouseButton::Back => "key.mouse.4".into(),
         MouseButton::Forward => "key.mouse.5".into(),
-        MouseButton::Other(n) => format!("key.mouse.{}", n + 1),
+        other => format!("key.mouse.{}", other as u8 + 1),
     }
 }
 pub fn mouse_button(name: &str) -> Option<MouseButton> {
