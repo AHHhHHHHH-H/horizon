@@ -41,7 +41,7 @@ symphonia = { version = "0.5", default-features = false, features = ["ogg", "vor
 unicode-bidi = "0.3.18"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
-winit = "0.30.13"
+winit = "0.31.0-beta.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
